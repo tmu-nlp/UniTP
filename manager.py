@@ -7,7 +7,7 @@ import importlib
 import data
 import experiments
 from os import mkdir, listdir, rmdir, rename
-from os.path import isdir, isfile, join, abspath
+from os.path import isdir, isfile, join
 from utils.yaml_io import save_yaml, load_yaml
 from utils.file_io import rm_rf, create_join, DelayedKeyboardInterrupt
 from utils.types import valid_size, fill_placeholder
@@ -196,7 +196,7 @@ class Manager:
         verbose = defaultdict(list)
         status = load_yaml(*self._mfile_lfile)
         tools  = status['tool']
-        data_status = status['data']
+        data_status   = status['data']
         
         if isfile(tools['fasttext']['path']):
             fasttext = tools['fasttext']
@@ -278,8 +278,6 @@ class Manager:
             evalb_errors.append('Invalid evalb path')
         if not isfile(evalb['prm']):
             evalb_errors.append('Invalid evalb prm file')
-        if not evalb_errors:
-            evalb = abspath(evalb['path']), '-p', abspath(evalb['prm'])
 
         for module_name, task_config in status['task'].items():
             m = self._exp_modules[module_name]
@@ -315,15 +313,15 @@ class Manager:
             for task_name, msg in verbose.items():
                 print(task_name.rjust(15), '; '.join(msg) + '.', file = sys.stderr)
 
-        return ready_dpaths, ready_tasks, evalb
+        return ready_dpaths, ready_tasks, status
 
     def ready_experiments(self, print_file = sys.stdout):
-        ready_dpaths, ready_tasks, evalb = self.check_task_settings()
+        ready_dpaths, ready_tasks, status = self.check_task_settings()
         print('Ready experiments:', ', '.join(ready_tasks.keys()), file = print_file)
-        return ready_dpaths, ready_tasks, evalb
+        return ready_dpaths, ready_tasks, status
 
     def select_and_run(self, args):
-        ready_paths, ready_tasks, evalb = self.check_task_settings()
+        ready_paths, ready_tasks, status = self.check_task_settings()
         assert ready_tasks, 'No experiments ready :('
 
         from utils.mgr import check_select, check_resume_and_instances, check_train
@@ -346,6 +344,10 @@ class Manager:
                 data_config[d] = dict(data_path = ready_paths[d])
             else:
                 c['data_path'] = ready_paths[d]
+                if c['trapezoid_height'] is not None: # a trigger for source corpus
+                    corp_status = status['data'][d]
+                    c['source_path'] = corp_status['source_path']
+                    c['data_splits'] = corp_status['build_params']
 
         def diff_recorder(config_dict_or_instance):
             task_dir = create_join(self._work_dir, task)
@@ -353,8 +355,7 @@ class Manager:
                             module,
                             config_dict_or_instance,
                             name,
-                            evalb = evalb)
-
+                            evalb = status['tool']['evalb'])
 
         if resume or exp_ids[0] is None:
             train_params = check_train(args.train)
@@ -363,8 +364,8 @@ class Manager:
             recorder = diff_recorder(task_spec) if exp_id is None else diff_recorder(exp_id)
             print(recorder.create_join())
             if exp_id is None or resume:
-                operator = module.get_configs(recorder)
                 try:
+                    operator = module.get_configs(recorder)
                     recorder.register_test_scores(train(train_params, operator))
                 except (Exception, KeyboardInterrupt) as e:
                     print(f'Cancel experiment ({recorder.create_join()})', file = sys.stderr)
@@ -387,7 +388,7 @@ def get_args():
     parser.add_argument('base', metavar = 'DIR', help = 'working directory', type = str)
     parser.add_argument('-R', '--reset',     help = 'initial manager.yaml', action = 'store_true', default = False)
     parser.add_argument('-p', '--prepare',   help = 'prepare all dataset for training', action = 'store_true', default = False)
-    parser.add_argument('-P', '--threads',   help = 'a number of threads for pre-processing the data', type = int, default = (os.cpu_count() - 2) if os.cpu_count() > 2 else 1)
+    parser.add_argument('-P', '--threads',   help = 'a number of threads for pre-processing the data', type = int, default = -1)
     parser.add_argument('-m', '--menu',      help = 'list available sublayer configurations', action = 'store_true', default = False)
     parser.add_argument('-g', '--gpu',       help = 'pass to environment', type = str, default = '0')
     parser.add_argument('-x', '--train',     help = '[:max_epoch][>eval_skip][/eval_nth][|wander_stop][&test_with_eval]', type = str, default = '')
@@ -406,6 +407,9 @@ if __name__ == '__main__':
     args = get_args()
     manager = Manager(args.base, args.reset)
     os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu
+    if args.threads > 0:
+        from utils import types
+        types.num_threads = args.threads
     # os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
     if args.menu:# args.experiments
         manager.ready_experiments()
@@ -415,6 +419,6 @@ if __name__ == '__main__':
         #     print('Dev: ValueError [Exit]')
         #     print(ve)
     else:
-        manager.check_data(build_if_not_yet = args.prepare, num_thread = args.threads)
+        manager.check_data(build_if_not_yet = args.prepare, num_thread = types.num_threads)
         # with DelayedKeyboardInterrupt():
         #     manager.list_experiments_status() # refine this one

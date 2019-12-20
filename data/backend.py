@@ -1,7 +1,7 @@
 from os.path import join
 from utils.pickle_io import pickle_load
 from data.io import TreeSpecs, get_fasttext, encapsulate_vocabs
-from data.delta import s_index, xtype_to_logits, logits_to_xtype
+from data.delta import xtype_to_logits, logits_to_xtype
 from collections import defaultdict, namedtuple
 from utils.param_ops import HParams
 from utils.types import NIL, UNK, BOS, EOS
@@ -23,6 +23,7 @@ class BaseReader:
                 weights[0] = 0
             else:
                 i2v = i2vs['word'] = i2vs['word'][1:] + [BOS, EOS]
+                weights = weights[1:]
                 num = len(i2v)
                 paddings['word'] = (num-2, num-1)
         else:
@@ -119,64 +120,30 @@ import torch
 from torch.utils.data import Dataset, DataLoader
 import numpy as np
 from collections import defaultdict
-from utils.file_io import read_data
-from time import time
-from data.delta import write_tensors, E_XDIM
-from tqdm import tqdm
 
 E_MODE = 'plain', 'increase', 'bucket'
 M_PLN, M_INC, M_BKT = E_MODE
-fields = 'word', 'tag', 'ftag'
-fieldx = 'label', 'xtype'
-FieldOrder = 'word', 'tag', 'label', 'xtype', 'ftag', 'length'
 
-class TriangularDataset(Dataset):
+class LengthOrderedDataset(Dataset):
     def __init__(self,
-                 dir_join,
-                 prefix,
-                 field_v2is,
-                 paddings,
-                 device,
-                 factors = None,
-                 min_len = 0,
-                 max_len = None):
-
-        columns = {}
-        heads = set()
-        if 'label' in field_v2is:
-            field_v2is = field_v2is.copy()
-            field_v2is['xtype'] = (len(E_XDIM), int)
-
-        for field, v2i in field_v2is.items():
-            start = time()
-            heads.add(field)
-            if field in fields:
-                print(f'Load Dataset {prefix}.{field}', end = ' ', flush = True)
-                extra = field == 'word'
-                column = read_data(dir_join(f'{prefix}.{field}'), v2i, extra)
-                if extra:
-                    column, lengths, sentences = column
-                columns[field] = column
-            else:
-                for factor, prob in factors.items():
-                    with tqdm(total = len(lengths), desc = f'Load Dataset {prefix}.{field}.{factor}') as qbar:
-                        column = read_data(dir_join(f'{prefix}.{field}.{factor}'), v2i, qbar = qbar)
-                    columns[(field, factor)] = column
-            print(f'in {time() - start:.2f}s')
-        assert all(len(lengths) == len(col) for col in columns.values())
-
+                 heads,
+                 lengths,
+                 factors,
+                 min_len,
+                 max_len,
+                 extra_text_helper):
         indices = defaultdict(list)
         if max_len is None:
             max_len = max(lengths) + 1
         for i, length in enumerate(lengths):
-            if min_len < length < max_len:
+            if min_len <= length <= max_len:
                 indices[length].append(i)
 
         self._heads = ('length',) + tuple(heads) # create order
-        self._columns = columns
         self._indices = indices
         self._lengths = lengths
         self._mode = None
+        self._extra_text_helper = extra_text_helper
         if factors:
             factors = tuple(factors.items())
             if len(factors) > 1:
@@ -184,7 +151,10 @@ class TriangularDataset(Dataset):
             else:
                 factors = factors[0][0]
         self._factors = factors # none, str or f-p
-        self._paddings_device = paddings, device
+
+    @property
+    def heads(self):
+        return self._heads
 
     def plain_mode(self):
         plain_indices = []
@@ -255,7 +225,7 @@ class TriangularDataset(Dataset):
             idx -= seg_size
             seg_size = len(buffer[pointer])
         self._inc_buffer_size -= 1
-        if seg_size == 1: # last one
+        if seg_size == 1: # last chunk
             idx = buffer.pop(pointer).pop(0)
             to_sample.pop(pointer)
             if pointer == 0:
@@ -268,7 +238,12 @@ class TriangularDataset(Dataset):
         to_sample, tolerance, buffer = self._inc_mode
         if len(to_sample) == 0:
             return False
-        pointer = len(buffer) if append else 0
+        if append:
+            pointer = len(buffer)
+            if pointer >= len(to_sample):
+                return False
+        else:
+            pointer = 0
         min_len = to_sample[0]
 
         while to_sample[pointer] <= min_len + tolerance:
@@ -279,14 +254,18 @@ class TriangularDataset(Dataset):
             if pointer == len(to_sample):
                 return False # end of the tape
         return True
+            
+    def __len__(self):
+        return sum(len(s) for s in self._indices.values())
         
     def __getitem__(self, idx):
-        sample = {}
+
         factor = self._factors
-        if isinstance(factor, tuple):
+        if isinstance(factor, tuple): # or is None or str
             factors, probs = factor
             factor = np.random.choice(factors, p = probs)
             # print(factor)
+
         if self._mode == M_PLN:
             idx = self._plain_indices[idx]
         elif self._mode == M_INC:
@@ -295,59 +274,21 @@ class TriangularDataset(Dataset):
         elif self._mode == M_BKT:
             idx = self.__take_bkt_buffer(idx)
 
-        for field, column in self._columns.items():
-            if field in fields:
-                sample[field]    = column[idx]
-            elif field[1] == factor:
-                sample[field[0]] = column[idx]
+        sample = self.at_idx(idx, factor)
         sample['length'] = self._lengths[idx]
         sample = tuple(sample[h] for h in self._heads)
+        if self._extra_text_helper is not None:
+            self._extra_text_helper.buffer(idx)
         return sample
-            
-    def __len__(self):
-        return sum(len(s) for s in self._indices.values())
+
+
+    def at_idx(self, idx, factor):
+        raise NotImplementedError()
+
+    def _collate_fn(self, batch):
+        raise NotImplementedError()
 
     def collate_fn(self, batch):
-        dtype = np.int32
-        field_columns = {}
-        paddings, device = self._paddings_device
-        
-        for field, column in zip(self._heads, zip(*batch)):
-            if field == 'length':
-                batch_size = len(column)
-                lengths = np.asarray(column, dtype)
-                max_len = np.max(lengths)
-                if paddings:
-                    max_len += 2 # BOS and EOS
-                tri_len = s_index(max_len)
-                offsets = (max_len - lengths) // 2
-                field_columns['offset'] = offsets
-                tensor = lengths
-            elif field in fields: # word or tags
-                tensor = np.zeros([batch_size, max_len], dtype)
-                for i, (values, offset, length) in enumerate(zip(column, offsets, lengths)):
-                    end = offset + length
-                    tensor[i, offset:end] = values
-                    if paddings:
-                        bid, eid = paddings[field]
-                        tensor[i, :offset] = bid
-                        tensor[i, end:]    = eid
-            else:
-                tensor = column, np.zeros([batch_size, tri_len], dtype)
-            field_columns[field] = tensor
-
-        if 'label' in field_columns and 'xtype' in field_columns:
-            paddings = paddings['label'] + paddings['xtype'] if paddings else None
-            label, label_tensor = field_columns['label']
-            xtype, xtype_tensor = field_columns['xtype']
-            for offset, l, lt, x, xt in zip(offsets, label, label_tensor, xtype, xtype_tensor):
-                write_tensors(l, x, lt, xt, offset, paddings)
-            field_columns['label'] = label_tensor
-            field_columns['xtype'] = xtype_tensor
-
-        for f, column in field_columns.items():
-            field_columns[f] = torch.as_tensor(column, dtype = (None if f == 'xtype' else torch.long), device = device)
-
         if self._mode == M_INC and self._self_reinit and self._inc_buffer_size == 0:
             to_sample = sorted(self._indices.keys())
             self._inc_mode = (to_sample,) + self._inc_mode[1:]
@@ -358,4 +299,8 @@ class TriangularDataset(Dataset):
                 self.bucketed_mode(bucket_len)
             else:
                 self._bkt_next_bucket = None
+
+        field_columns = self._collate_fn(batch)
+        if self._extra_text_helper:
+            field_columns.update(self._extra_text_helper.get())
         return field_columns

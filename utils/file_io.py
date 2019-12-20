@@ -75,12 +75,12 @@ def read_data(fname, v2i, lengths_and_lines = False, qbar = None):
         lines = []
     with open(fname) as fr:
         for line in fr:
-            line = line.rstrip()
-            value = array('H', (v2i(tok) for tok in line.split()))
+            words = line.rstrip().split()
+            value = array('H', (v2i(tok) for tok in words))
             values.append(value)
             if lengths_and_lines:
                 lengths.append(len(value))
-                lines.append(line)
+                lines.append(words)
             if qbar: qbar.update(1)
     if lengths_and_lines:
         return values, lengths, lines

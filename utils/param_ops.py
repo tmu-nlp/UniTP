@@ -27,7 +27,8 @@ class HParams:
             dict_data = zip_nt_params(dict_data)
         return dict_data
 
-    def __init__(self, dict_data = None, **kwargs):
+    def __init__(self, dict_data = None, fallback_to_none = False, **kwargs):
+        self._fb2non = fallback_to_none
         self._nested = HParams.check(dict_data, kwargs)
 
     def create(self, dict_data = None, **kwargs):
@@ -37,6 +38,8 @@ class HParams:
         self._nested[name] = HParams.check(dict_data, kwargs)
 
     def __getattr__(self, attr_name):
+        if self._fb2non and attr_name not in self._nested:
+            return None
         val = self._nested[attr_name]
         if isinstance(val, dict):
             return HParams(val)

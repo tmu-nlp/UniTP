@@ -65,8 +65,8 @@ valid_size      = lambda x: isinstance(x, int) and x > 0
 valid_odd_size  = lambda x: valid_size(x) and x % 2 == 1
 valid_even_size = lambda x: valid_size(x) and x % 2 == 0
 beam_size_exp  = BaseType(0, as_index = True, default_set = range(100))
-false_type     = BaseType(False)
-true_type      = BaseType(True )
+false_type     = BaseType(False, as_exception = True)
+true_type      = BaseType(True,  as_exception = True)
 frac_1         = BaseType(0.1, validator = frac_open_1)
 frac_2         = BaseType(0.2, validator = frac_open_1)
 frac_4         = BaseType(0.4, validator = frac_open_1)
@@ -84,9 +84,6 @@ train_bucket_len = BaseType(4, validator = lambda x: isinstance(x, int) and 0 <=
 train_max_len    = BaseType(100, validator = valid_size, default_set = (None,))
 fill_placeholder = '//FILL//THIS//'
 
-activation = BaseType(0, as_index = True, default_set = 'tanh relu sigmoid'.split())
-E_ACT = activation._set
-
 NIL, UNK, BOS, EOS = '<nil>', '<unk>', '<bos>', '<eos>'
 M_TRAIN = 'train'
 M_DEVEL = 'devel'
@@ -95,6 +92,9 @@ M_INFER = 'infer'
 E_MODE = (M_TRAIN, M_DEVEL, M_TEST, M_INFER)
 E_ORIF = 'left', 'right', 'midin', 'midout'
 O_LFT, O_RGT, O_MIN, O_MOT = E_ORIF
+
+import os
+num_threads = (os.cpu_count() - 2) if os.cpu_count() > 2 else 1
 
 frac_7 = BaseType(0.7, frac_close)
 frac_1 = BaseType(0.1, frac_close)

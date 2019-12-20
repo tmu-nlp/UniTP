@@ -71,7 +71,7 @@ class Operator:
                     qbar.update(num_samples)
                     qbar.desc = f'V-{epoch:.1f}'
                 desc += vis._after() + '; '
-                # self._after_validation(vis)
+                self._after_validation(vis)
             qbar.desc = desc[:-2]
             self._recorder.log(timestamp(epoch, 'V') + '  ' + desc[:-2])
         return self._recorder.check_betterment(epoch, falling, self._global_step, self._model, self._optimizer, self._key())
@@ -91,7 +91,7 @@ class Operator:
                     qbar.update(num_samples)
                     qbar.desc = f'T-{epoch:.1f}'
                 desc += vis._after() + '; '
-                # self._after_validation(vis)
+                self._after_validation(vis)
             qbar.desc = desc[:-2]
         return self._scores()
 

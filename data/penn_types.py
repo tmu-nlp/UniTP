@@ -6,7 +6,7 @@ E_PENN = C_PTB, C_CTB, C_KTB
 
 def temp_dict(tr, vl, ts):
     return dict(train_set = tr,
-                valid_set = vl,
+                devel_set = vl,
                 test_set  = ts)
                 
 build_params = {C_PTB: temp_dict('2-21',             '22',      '23'    ),
@@ -17,20 +17,21 @@ ft_bin = {C_PTB: 'en', C_CTB: 'zh', C_KTB: 'ja'}
 
 from utils.types import none_type, false_type, true_type, binarization, NIL
 from utils.types import train_batch_size, train_max_len, train_bucket_len, vocab_size
-parsing_config = dict(vocab_size     = vocab_size,
-                      binarization   = binarization,
-                      batch_size     = train_batch_size,
-                      max_len        = train_max_len,
-                      bucket_len     = train_bucket_len,
-                      with_ftags     = false_type,
-                      unify_sub      = true_type,
-                      sort_by_length = false_type,
-                      nil_as_pads    = true_type)
+parsing_config = dict(vocab_size       = vocab_size,
+                      binarization     = binarization,
+                      batch_size       = train_batch_size,
+                      max_len          = train_max_len,
+                      bucket_len       = train_bucket_len,
+                      with_ftags       = false_type,
+                      unify_sub        = true_type,
+                      sort_by_length   = false_type,
+                      nil_as_pads      = true_type,
+                      trapezoid_height = vocab_size)
 
 from utils.str_ops import histo_count, str_percentage, strange_to
 from utils.pickle_io import pickle_load, pickle_dump
 from sys import stderr
-from os.path import join, isfile
+from os.path import join, isfile, dirname
 from os import listdir
 from contextlib import ExitStack
 from tqdm import tqdm
@@ -135,11 +136,49 @@ def reduce_sum(xs):
         res += i
     return res
 
+def select_and_split_corpus(corp_name, corp_path,
+                            train_set, devel_set, test_set):
+    from nltk.corpus import BracketParseCorpusReader
+    if corp_name == C_PTB:
+        folder_pattern = lambda x: f'{x:02}'
+        reader = BracketParseCorpusReader(corp_path, r".*/wsj_.*\.mrg")
+        def get_id(fpath):
+            bar = fpath.index('/') # 23/xxx_0000.xxx
+            fid = fpath[:bar]
+            sid = fpath[bar+7:-4]
+            return fid, sid
+        get_fnames = lambda data_split: [fn for fn in reader.fileids() if dirname(fn) in data_split]
+    elif corp_name == C_CTB:
+        folder_pattern = lambda x: f'{x:04}'
+        reader = CorpusReader(corp_path)
+        get_id = lambda fpath: (fpath[5:-3], '-')
+        get_fnames = lambda data_split: [fn for fn in reader.fileids() if fn[5:-3] in data_split]
+    elif corp_name == C_KTB:
+        folder_pattern = lambda x: f'{x:04}'
+        reader = CorpusReader(corp_path)
+        reader.break_corpus(int(train_set))
+        train_set = '__rest__'
+        get_id = lambda fpath: (fpath, '-')
+        get_fnames = lambda data_split: [fn for fn in reader.fileids() if fn in data_split]
+
+    devel_set = strange_to(devel_set, folder_pattern)
+    test_set  = strange_to(test_set,  folder_pattern)
+    if train_set == '__rest__':
+        corpus = reader.fileids()
+        non_train_set = set(devel_set + test_set)
+        if corp_name == C_CTB:
+            train_set = [fid[5:-3] for fid in corpus if fid not in non_train_set]
+        else:
+            train_set = [fid for fid in corpus if fid not in non_train_set]
+    else:
+        train_set = strange_to(train_set, folder_pattern)
+    return reader, get_fnames, get_id, (train_set, devel_set, test_set)
+
 def build(save_to_dir,
-          wsj_path,
+          corp_path,
           corp_name,
           train_set,
-          valid_set,
+          devel_set,
           test_set,
           verbose    = True,
           num_thread = 2,
@@ -147,44 +186,15 @@ def build(save_to_dir,
     from multiprocessing import Process, Queue # seamless with threading.Thread
     from data.delta import DeltaX, bottom_up_ftags, xtype_to_logits, lnr_order, OriFct
     from utils.types import E_ORIF, O_LFT, O_RGT, M_TRAIN, M_DEVEL, M_TEST
-    from nltk.corpus import BracketParseCorpusReader
-    from os.path import dirname
     from itertools import count
     from time import sleep
 
-    if corp_name == C_PTB:
-        folder_pattern = lambda x: f'{x:02}'
-        reader = BracketParseCorpusReader(wsj_path, r".*/wsj_.*\.mrg")
-    elif corp_name == C_CTB:
-        folder_pattern = lambda x: f'{x:04}'
-        reader = CorpusReader(wsj_path)
-    elif corp_name == C_KTB:
-        folder_pattern = lambda x: f'{x:04}'
-        reader = CorpusReader(wsj_path)
-        reader.break_corpus(int(train_set))
-        train_set = '__rest__'
+    reader, get_fnames, get_id, (train_set, devel_set, test_set) = select_and_split_corpus(corp_name, corp_path, train_set, devel_set, test_set)
 
-    valid_set = strange_to(valid_set, folder_pattern)
-    test_set  = strange_to(test_set,  folder_pattern)
-    if train_set == '__rest__':
-        corpus = reader.fileids()
-        non_train_set = set(valid_set + test_set)
-        if corp_name == C_CTB:
-            train_set = [fid[5:-3] for fid in corpus if fid not in non_train_set]
-        else:
-            train_set = [fid for fid in corpus if fid not in non_train_set]
-    else:
-        train_set = strange_to(train_set, folder_pattern)
-
-    assert any(t not in valid_set for t in train_set)
-    assert any(tv not in test_set for tv in train_set + valid_set)
-    corpus = set(train_set + valid_set + test_set)
-    if corp_name == C_PTB:
-        corpus = [fn for fn in reader.fileids() if dirname(fn) in corpus]
-    elif corp_name == C_CTB:
-        corpus = [fn for fn in reader.fileids() if fn[5:-3] in corpus]
-    elif corp_name == C_KTB:
-        corpus = [fn for fn in reader.fileids() if fn in corpus]
+    assert any(t not in devel_set for t in train_set)
+    assert any(tv not in test_set for tv in train_set + devel_set)
+    corpus = set(train_set + devel_set + test_set)
+    corpus = get_fnames(corpus)
 
     x2l = lambda xl: tuple(xtype_to_logits(x) for x in xl)
     class WorkerX(Process):
@@ -193,13 +203,13 @@ def build(save_to_dir,
             self._tid_q_reader_fns = args
 
         def run(self):
-            q, reader, fns = self._tid_q_reader_fns[1:]
+            q, reader, fns, get_id = self._tid_q_reader_fns[1:]
             inst_cnt   = 0
             unary_cnt  = defaultdict(list)
             train_length_cnt = defaultdict(int)
             valid_length_cnt = defaultdict(int)
             test_length_cnt  = defaultdict(int)
-            non_train_set = valid_set + test_set
+            non_train_set = devel_set + test_set
             lrcs = [[0, 0] for _ in E_ORIF]
             word_trace = corp_name == C_KTB
 
@@ -207,7 +217,7 @@ def build(save_to_dir,
                 if sent_len < 2:
                     unary_cnt[fid].append(sid)
                     return True
-                elif fid in valid_set:
+                elif fid in devel_set:
                     valid_length_cnt[sent_len] += 1
                 elif fid in test_set:
                     test_length_cnt [sent_len] += 1
@@ -216,16 +226,7 @@ def build(save_to_dir,
                 return False
 
             for fn in fns:
-                if corp_name == C_PTB:
-                    bar = fn.index('/')
-                    fid = fn[:bar]
-                    sid = fn[bar+7:-4]
-                elif corp_name == C_CTB:
-                    fid = fn[5:-3]
-                    sid = '-'
-                elif corp_name == C_KTB:
-                    fid = fn
-                    sid = '-'
+                fid, sid = get_id(fn)
 
                 for tree in reader.parsed_sents(fn):
                     if len(tree.leaves()) < 2:
@@ -233,10 +234,10 @@ def build(save_to_dir,
                         continue
 
                     if any(len(b) > 2 for b in tree.subtrees()):
-                        dxs, lrs = DeltaX.from_penn_paired(tree, word_trace = word_trace)
+                        dxs, lrs = DeltaX.from_penn_quad(tree, word_trace = word_trace)
                         if stat_is_unary(len(tree.leaves()), fid, sid):
                             continue
-                        ws, ps = dxs[0].word_tag
+                        ws, ps = dxs[0].word_tag()
                         ss, xs, fs, xs_ = [], [], [], []
                         for dx in dxs:
                             s, x, f = dx.to_triangles()
@@ -249,7 +250,7 @@ def build(save_to_dir,
                         dx, lr = DeltaX.from_penn(tree, 'left', word_trace = word_trace)
                         if stat_is_unary(len(tree.leaves()), fid, sid):
                             continue
-                        ws, ps     = dx.word_tag
+                        ws, ps     = dx.word_tag()
                         ss, xs, fs = dx.to_triangles()
                         t = fid, 1, ws, ps, ss, xs, bottom_up_ftags(fs), x2l(xs)
                         lrs = OriFct(lr, lr, lr, lr)
@@ -311,7 +312,7 @@ def build(save_to_dir,
                 t = q.get()
                 if len(t) == 8:
                     fid, num_directions, ws, ps, ss, dr, ft, xs = t
-                    if fid in valid_set:
+                    if fid in devel_set:
                         fw, fp, ff, fs, fxs, fls = fvw, fvp, fvf, fvs, fvxs, fvls
                         ftag_p = 1
                     elif fid in test_set:

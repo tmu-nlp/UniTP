@@ -17,7 +17,7 @@ IOData = namedtuple('IOData', 'offset, length, word, tag, label, right, tree, mp
 
 inf_none_gen = (None for _ in count())
 
-def to_layers(data, *size_offset_length_vocab):
+def triangle_to_layers(data, *size_offset_length_vocab):
     if size_offset_length_vocab:
         size, offset, length, vocab = size_offset_length_vocab
     else:
@@ -40,7 +40,28 @@ def to_layers(data, *size_offset_length_vocab):
         layers.append(layer)
     return layers
 
-def __before_to_tree(offset, length, words, tags, labels, rights, vocabs):
+def trapezoid_to_layers(data, segments, seg_length, vocab = None, offset = 0):
+    layers  = []
+    l_end   = len(data)
+    seg_len = list(zip(segments, seg_length))
+    while seg_len:
+        size, seq_len = seg_len.pop()
+        l_start = l_end - size + offset
+        layer = data[l_start:l_start + seq_len]
+        if vocab:
+            layer = tuple(vocab(x) for x in layer)
+        layers.append(layer)
+        if seq_len == 1: break
+        l_end -= size
+    return layers
+
+def __before_to_tree_(offset, length, words, tags, labels, rights, segments, seg_lengths, vocabs):
+    word_layer, tag_layer, label_vocab = __before_to_seq(offset, length, words, tags, labels, vocabs)
+    label_layers = trapezoid_to_layers(labels, segments, seg_lengths, label_vocab)
+    right_layers = trapezoid_to_layers(rights, segments, seg_lengths,        None)
+    return word_layer, tag_layer, label_layers, right_layers
+
+def __before_to_seq(offset, length, words, tags, labels, vocabs):
     word_layer      = tuple(vocabs.word[w] for w in words[offset:offset+length])
     if tags is not None: # label_mode
         tag_layer   = tuple(vocabs.tag[t]  for t in tags [offset:offset+length])
@@ -48,17 +69,38 @@ def __before_to_tree(offset, length, words, tags, labels, rights, vocabs):
     else:
         tag_layer = None
         label_vocab = lambda x: NIL if x < 0 else vocabs.label[x]
+    return word_layer, tag_layer, label_vocab
+
+def __before_to_tree(offset, length, words, tags, labels, rights, vocabs):
     size = len(words)
-    label_layers = to_layers(labels, size, offset, length, label_vocab)
-    right_layers = to_layers(rights, size, offset, length,        None)
+    word_layer, tag_layer, label_vocab = __before_to_seq(offset, length, words, tags, labels, vocabs)
+    label_layers = triangle_to_layers(labels, size, offset, length, label_vocab)
+    right_layers = triangle_to_layers(rights, size, offset, length,        None)
     label_layers.reverse()
     right_layers.reverse()
     return word_layer, tag_layer, label_layers, right_layers
+
+def head_to_tree_(offset, length, words, tags, labels, rights, seg_lengths, segments, vocabs):
+    args = __before_to_tree_(offset, length, words, tags, labels, rights, segments, seg_lengths, vocabs)
+    tree, warn = get_tree_from_triangle(*args)
+    assert len(warn) == 0
+    return tree
 
 def head_to_tree(offset, length, words, tags, labels, rights, vocabs):
     tree, warn = get_tree_from_triangle(*__before_to_tree(offset, length, words, tags, labels, rights, vocabs))
     assert len(warn) == 0
     return tree
+
+def data_to_tree_(offset, length, words, tags, labels, rights, seg_lengths, segments, vocabs,
+                  return_warnings = False,
+                  on_warning      = None,
+                  on_error        = None,
+                  error_prefix    = ''):
+    return __after_to_tree(*__before_to_tree_(offset, length, words, tags, labels, rights, segments, seg_lengths, vocabs),
+                           return_warnings,
+                           on_warning,
+                           on_error,
+                           error_prefix)
 
 # demands:
 # 1. want to know whether there are warnings or errors and a safe results (e.g. individual visualization, calc whole scores)
@@ -70,8 +112,17 @@ def data_to_tree(offset, length, words, tags, labels, rights, vocabs,
                  on_warning      = None,
                  on_error        = None,
                  error_prefix    = ''):
-    (word_layer, tag_layer, label_layers,
-     right_layers) = __before_to_tree(offset, length, words, tags, labels, rights, vocabs)
+    return __after_to_tree(*__before_to_tree(offset, length, words, tags, labels, rights, vocabs),
+                           return_warnings,
+                           on_warning,
+                           on_error,
+                           error_prefix)
+
+def __after_to_tree(word_layer, tag_layer, label_layers, right_layers,
+                    return_warnings = False,
+                    on_warning      = None,
+                    on_error        = None,
+                    error_prefix    = ''):
     try:
         tree, warnings = get_tree_from_triangle(word_layer, tag_layer, label_layers, right_layers)
     except ValueError as e:
@@ -88,16 +139,16 @@ def data_to_tree(offset, length, words, tags, labels, rights, vocabs,
         return tree, warnings
     return tree
 
-def convert_batch(h, d, num_word, vocabs, fh, fd):
+# def convert_batch(h, d, num_word, vocabs, fh, fd):
 
-    for i, l in enumerate(h.len):
-        if fh is not None:
-            tree = head_to_tree(h.word[i], h.tag[i], h.label[i], l, h.left[i], vocabs)
-            print(' '.join(str(tree).split()), file = fh)
-        tree, warnings = data_to_tree(h.word[i], d.tag[i], _label(i), l, _left(i), vocabs, return_warnings = True)
-        if fd is not None:
-            print(' '.join(str(tree).split()), file = fd)
-        yield i, l, warnings
+#     for i, l in enumerate(h.len):
+#         if fh is not None:
+#             tree = head_to_tree(h.word[i], h.tag[i], h.label[i], l, h.left[i], vocabs)
+#             print(' '.join(str(tree).split()), file = fh)
+#         tree, warnings = data_to_tree(h.word[i], d.tag[i], _label(i), l, _left(i), vocabs, return_warnings = True)
+#         if fd is not None:
+#             print(' '.join(str(tree).split()), file = fd)
+#         yield i, l, warnings
 
 def set_vocab(fpath, vocabs, model_vocab_size = None, fname = 'vocabs.pkl'):
     assert isinstance(vocabs, dict)
@@ -107,19 +158,31 @@ def set_vocab(fpath, vocabs, model_vocab_size = None, fname = 'vocabs.pkl'):
     pickle_dump(fname, vocabs)
     return True
 
-def set_head(fpath, batch_id, size, offset, length, word, tag, label, right, vocabs, fhtree, vfname = 'vocabs.pkl'):
+def set_head(fpath, batch_id, size,
+             offset, length, word, tag, label, right,
+             trapezoid_info,
+             vocabs, fhtree, vfname = 'vocabs.pkl'):
     old_tag = tag
 
     if tag is None:
         tag = inf_none_gen
     trees = []
-    for args in zip(offset, length, word, tag, label, right):
-        tree = str(head_to_tree(*args, vocabs))
+    if trapezoid_info is None:
+        func_args = zip(offset, length, word, tag, label, right)
+    else:
+        segment, seg_length = trapezoid_info
+        func_args = zip(offset, length, word, tag, label, right, seg_length)
+
+    for args in func_args:
+        if trapezoid_info is None:
+            tree = str(head_to_tree(*args, vocabs))
+        else:
+            tree = str(head_to_tree_(*args, segment, vocabs))
         tree = ' '.join(tree.split())
         trees.append(tree)
         print(tree, file = fhtree)
 
-    if fpath:
+    if fpath and trapezoid_info is None:
         assert isfile(join(fpath, vfname))
         fname = join(fpath, f'head.{batch_id}_{size}.pkl')
         head  = IOHead(offset, length, word, old_tag, label, right, trees)
@@ -133,6 +196,7 @@ from utils.shell_io import parseval, rpt_summary
 def set_data(fpath, batch_id, size, epoch,
              offset, length, word, tag, label, right, mpc_word, mpc_phrase,
              tag_score, label_score, split_score,
+             trapezoid_info,
              vocabs, fdtree, on_error = None, evalb = None):
 
     tree_kwargs = dict(return_warnings = True, on_error = on_error)
@@ -143,17 +207,24 @@ def set_data(fpath, batch_id, size, epoch,
     if tag is None: tag = inf_none_gen
     trees = []
     batch_warnings = []
-    for i, args in enumerate(zip(offset, length, word, tag, label, right)):
-        tree, warnings = data_to_tree(*args, vocabs,
-                                      **tree_kwargs,
-                                      error_prefix = error_prefix + f']-{i} len={args[1]}')
+    if trapezoid_info is None:
+        func_args = zip(offset, length, word, tag, label, right)
+    else:
+        segment, seg_length = trapezoid_info
+        func_args = zip(offset, length, word, tag, label, right, seg_length)
+    for i, args in enumerate(func_args):
+        tree_kwargs['error_prefix'] = error_prefix + f']-{i} len={args[1]}'
+        if trapezoid_info is None:
+            tree, warnings = data_to_tree(*args, vocabs, **tree_kwargs)
+        else:
+            tree, warnings = data_to_tree_(*args, segment, vocabs, **tree_kwargs)
         tree = str(tree)
         tree = ' '.join(tree.split())
         trees.append(tree)
         print(tree, file = fdtree) # TODO use stack to protect opened file close and delete
         batch_warnings.append(warnings)
 
-    if fpath:
+    if fpath and trapezoid_info is None:
         fdata = join(fpath, f'data.{batch_id}.tree')
         with open(fdata, 'w') as fw:
             for tree in trees:
@@ -806,11 +877,13 @@ if desktop:
     class SentenceEnergy:
         def __init__(self, mpc_word, mpc_phrase):
             mpc_all = mpc_phrase
-            stats = phrase = tuple(LayerMPCStat(l) for l in to_layers(mpc_phrase))
+            stats = phrase = tuple(LayerMPCStat(l) for l in triangle_to_layers(mpc_phrase))
             if mpc_word is not None:
                 mpc_all = np.concatenate([mpc_phrase, mpc_word])
                 word = LayerMPCStat(mpc_word)
                 stats = (word,) + phrase
+            else:
+                word = None
 
             self._min = np.min(mpc_all, 0)
             self._max = np.max(mpc_all, 0)
@@ -1539,10 +1612,10 @@ if desktop:
                 nil = vocabs.label.index(NIL)
             else:
                 nil = -1
-            tlabel = to_layers(head.label)
-            plabel = to_layers(data.label)
-            tright = to_layers(head.right)
-            pright = to_layers(data.right)
+            tlabel = triangle_to_layers(head.label)
+            plabel = triangle_to_layers(data.label)
+            tright = triangle_to_layers(head.right)
+            pright = triangle_to_layers(data.right)
             tlabel.reverse()
             plabel.reverse()
             tright.reverse()

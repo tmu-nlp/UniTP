@@ -287,14 +287,29 @@ def get_tree_from_triangle(word_layer, tag_layer, label_layers, right_layers, po
     for layer_cnt, (right, upper) in enumerate(zip(right_layers, label_layers[1:])):
         this_layer = []
         rightmost -= 1
-        # import pdb; pdb.set_trace()
+        smooth = len(right) == len(upper) + 1
+        skipped_none = 0
+
         for i, p in enumerate(upper):
             if p[0] == pos_in_syn:
                 p = p[1:]
-            l_child, r_child = last_layer[i], last_layer[i+1]
-            lcrward, rclward =      right[i],  not right[i+1]
-            left_relay       = l_child and lcrward
-            right_relay      = r_child and rclward
+            if smooth:
+                l_child, r_child = last_layer[i], last_layer[i+1]
+                lcrward, rclward =      right[i],  not right[i+1]
+                left_relay       = l_child and lcrward
+                right_relay      = r_child and rclward
+            else:
+                while True: # 2 or 3 hours ???
+                    if i+skipped_none+1 == len(last_layer):
+                        raise ValueError((layer_cnt, i+skipped_none, -1), last_layer, warnings)
+                    l_child, r_child = last_layer[i+skipped_none], last_layer[i+skipped_none+1]
+                    lcrward, rclward =      right[i+skipped_none],  not right[i+skipped_none+1]
+                    left_relay       = l_child and lcrward
+                    right_relay      = r_child and rclward
+                    if left_relay or right_relay:
+                        break
+                    skipped_none += 1
+
             if i == leftmost and not lcrward: # left most shall be restrictly not nil and rightwards
                 warnings.append((layer_cnt, i, 1))
                 if r_child is None:
@@ -422,6 +437,11 @@ class X:
         self._xtype = NOX # dynamic
         self._tid   = t_index(sid)
 
+    def reset(self):
+        if self._goods:
+            self._goods = None
+            self._xtype = NOX
+
     def prepare(self, path, label_callback, pop_time): # TODO: test
         path = list(path)
         if any(path.pop() for _ in range(pop_time)):
@@ -429,7 +449,7 @@ class X:
         self._goods = self._tid, path, label_callback
         self._xtype = get_xtype(path, '<->') + 'j'
 
-    def leave(self):
+    def leave(self, remove = False):
         if self._goods is None:
             return self._sid # <nil> node
 
@@ -445,13 +465,17 @@ class X:
             next_tid = lid - 1, offset - 1
         else: # as right child goes left
             next_tid = lid - 1, offset
-        return s_index(*next_tid), (next_tid, path, label_callback)
+        if remove:
+            xtype = self._xtype
+            self.reset()
+            return xtype, (path, label_callback)
+        return next_tid, (path, label_callback)
 
-    def arrive(self, goods):
+    def arrive(self, goods, legacy = None):
         if self._goods is None:
             # pass the necessary goods
             self._goods = goods
-            self._xtype = get_xtype(goods[1], '<->')
+            self._xtype = get_xtype(goods[1], '<->') if legacy is None else legacy
         else: # join with other
             tid, path, lcb = self._goods
             path = path.copy()
@@ -523,15 +547,22 @@ class X:
 
 class DeltaX:
     @classmethod
-    def from_penn(cls, tree, cnf_direction = 'left', word_trace = False):
-        preproc_cnf(tree, word_trace = word_trace) # open in the furture
-        tree.chomsky_normal_form(cnf_direction)
+    def from_penn(cls, tree, factor = 'left', word_trace = False, do_preproc = True):
+        if do_preproc:
+            preproc_cnf(tree, word_trace = word_trace) # open in the furture
+        if factor in ('left', 'right'):
+            tree = deepcopy(tree)
+            tree.chomsky_normal_form(factor)
+        elif factor == 'midin':
+            tree = midin_factored(tree)
+        else:
+            tree = midout_factored(tree)
         tree.collapse_unary(collapseRoot = True)
         lrc = count_binarized_lr_children(tree)
         return cls(tree, 2), lrc
 
     @classmethod
-    def from_penn_paired(cls, tree, word_trace = False):
+    def from_penn_quad(cls, tree, word_trace = False):
         preproc_cnf(tree, word_trace = word_trace) # open in the furture
         midi = midin_factored(tree)
         mido = midout_factored(tree)
@@ -569,7 +600,7 @@ class DeltaX:
             tree[p] = w
         return cls(tree, 1)
 
-    def __init__(self, tree, pop_time, debug_mode = False):
+    def __init__(self, tree, pop_time):
         get_label = lambda path: tree[path].label()
         self._wp  = tree.pos()
         l         = len(self._wp)
@@ -579,13 +610,55 @@ class DeltaX:
             x.prepare(tree.leaf_treeposition(i), get_label, pop_time)
         self._depth = l
         self._nodes = n
+        self._segments = None
 
-        # build the triangular in a bottom-up fashin
+    def word_tag(self, *v2is):
+        if v2is:
+            w2i, t2i = v2is
+            return zip(*((w2i(w), t2i(t)) for w, t in self._wp))
+        return zip(*self._wp)
+
+    def build_trapezoid(self, every_n = 3):
+        n = self._nodes
+        lives = self._depth
+        self._segments = []
+        while True:
+            self._segments.append(lives)
+            end = lives - every_n
+            if end < 1:
+                end = 1
+            for l in range(lives, end, -1): # till the top
+                bottom = n[s_index(l-1):s_index(l)]
+                for x in bottom:
+                    status = x.leave()
+                    if isinstance(status, tuple):
+                        tid, goods = status
+                        goods = (tid,) + goods
+                        n[s_index(*tid)].arrive(goods)
+            if end == 1:
+                break
+            top = n[s_index(end-1):s_index(end)]
+            top = [x for x in top if x._goods is not None]
+            lives = len(top)
+            level = lives - 1
+            for l, x in enumerate(top):
+                xtype, goods = x.leave(remove = True)
+                tid = level, l
+                goods = (tid,) + goods
+                n[s_index(level, l)].arrive(goods, xtype)
+        if self._segments[-1] - every_n == 1:
+            self._segments.append(1)
+
+    def build_triangle(self, debug_mode = False):
+        l = self._depth
+        n = self._nodes
+
+        # build the triangular in a bottom-up fashion
         if debug_mode:
             debug_mode = ['Verbose message']
             
         for l in range(self._depth, 1, -1): # till the top
-            bottom = n[-l:]
+            bottom = n[-l:] # without s_index
             if debug_mode:
                 debug_mode.append("Nodes: %d" % l)
             for x in bottom:
@@ -593,9 +666,11 @@ class DeltaX:
                     debug_mode.append(' ' + str(x))
                 status = x.leave()
                 if isinstance(status, tuple):
-                    sid, goods = status
-                    n[sid].arrive(goods)
+                    tid, goods = status
+                    goods = (tid,) + goods
+                    n[s_index(*tid)].arrive(goods)
             n = n[:-l]
+        self._segments = [l]
 
         if debug_mode:
             debug_mode.append("Final:")
@@ -603,11 +678,9 @@ class DeltaX:
             debug_mode.reverse()
             print('\n'.join(debug_mode))
 
-    @property
-    def word_tag(self):
-        return zip(*self._wp)
-
     def to_triangles(self):
+        if self._segments is None:
+            self.build_triangle()
         ftags = {}
         labels = []
         xtypes = []
@@ -626,8 +699,34 @@ class DeltaX:
                 
         return labels, xtypes, ftags #, prof, de
 
+    def trapezoid_gen(self, every_n, *i2vs):
+        if i2vs:
+            l2i, x2i = i2vs
+        if self._segments is not None:
+            for n in self._nodes[:s_index(self._depth-1)]:
+                n.reset()
+        self.build_trapezoid(every_n)
+        for seg_start in self._segments:
+            for l in range(every_n):
+                labels = []
+                xtypes = []
+                start = s_index(seg_start-1-l)
+                end   = s_index(seg_start-l)
+                if start == end:
+                    break
+                for n in self._nodes[start:end]:
+                    xty = n.xtype
+                    lbl = n.labels()
+                    lbl = NIL if lbl is None else lbl[1][0]
+                    if i2vs:
+                        lbl = l2i(lbl)
+                        xty = x2i(xty)
+                    labels.append(lbl)
+                    xtypes.append(xty)
+                yield labels, xtypes
+
     def __str__(self):
-        words, tags = self.word_tag
+        words, tags = self.word_tag()
         labels, xtypes, _ = self.to_triangles()
         num_words = len(words)
         l_desc = ''
@@ -640,7 +739,9 @@ class DeltaX:
             l_desc += ''.join(l.center(6) for l in labels[start:end]) + '\n'
             x_desc += pad
             x_desc += ''.join(l.center(6) for l in xtypes[start:end]) + '\n'
+        l_desc += ' ' * 3
         l_desc += ''.join(l.center(6) for l in tags) + '\n'
+        l_desc += ' ' * 3
         l_desc += ''.join(l.center(6) if len(l) < 6 else (l[:5] + '…') for l in words) + '\n'
         return l_desc + x_desc[:-1]
 

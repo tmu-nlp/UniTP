@@ -2,7 +2,7 @@ from utils.types import fill_placeholder, M_TRAIN, M_DEVEL, M_TEST, E_ORIF, UNK,
 from data.io import load_i2vs
 
 SUB = '_SUB'
-from data.backend import BaseReader, TriangularDataset, DataLoader, BatchSpec
+from data.backend import BaseReader, DataLoader, BatchSpec
 
 class PennReader(BaseReader):
     def __init__(self,
@@ -11,8 +11,10 @@ class PennReader(BaseReader):
                  load_label,
                  unify_sub   = True,
                  load_ftags  = False,
-                 nil_as_pads = True):
-        self._load_options = load_label, load_ftags
+                 nil_as_pads = True,
+                 trapezoid_specs   = None,
+                 extra_text_helper = None):
+        self._load_options = load_label, load_ftags, trapezoid_specs, extra_text_helper
         vocabs = 'word tag'
         if load_label:
             vocabs += ' label'
@@ -35,9 +37,10 @@ class PennReader(BaseReader):
               min_len        = 2,
               max_len        = None,
               sort_by_length = True):
-        load_label, load_ftags = self._load_options
+        load_label, load_ftags, trapezoid_specs, extra_text_helper = self._load_options
 
         assert mode in (M_TRAIN, M_DEVEL, M_TEST)
+
         if load_label:
             assert isinstance(binarization, dict)
             binarization = {k:v for k,v in binarization.items() if v}
@@ -45,15 +48,30 @@ class PennReader(BaseReader):
         else:
             assert binarization is None
 
-        ds = TriangularDataset(self.dir_join, mode, self.v2is, self.paddings, self.device, binarization, min_len = min_len, max_len = max_len)
+        common_args = dict(field_v2is = self.v2is,
+                           paddings = self.paddings,
+                           device = self.device,
+                           factors = binarization,
+                           min_len = min_len,
+                           max_len = max_len, 
+                           extra_text_helper = extra_text_helper)
+
+        if not load_label or trapezoid_specs is None:
+            from data.triangle import TriangularDataset
+            len_sort_ds = TriangularDataset(self.dir_join, mode, **common_args)
+        else:
+            from data.trapezoid import TrapezoidDataset
+            tree_reader, get_fnames, _, data_splits, trapezoid_height = trapezoid_specs
+            len_sort_ds = TrapezoidDataset(trapezoid_height, tree_reader, get_fnames, data_splits[mode], **common_args)
+
         if mode != M_TRAIN:
-            ds.plain_mode()
+            len_sort_ds.plain_mode()
         elif sort_by_length:
             if bucket_length > 0:
-                ds.increasing_mode(bucket_length)
+                len_sort_ds.increasing_mode(bucket_length)
             else:
-                ds.plain_mode()
+                len_sort_ds.plain_mode()
         else:
-            ds.bucketed_mode(bucket_length)
-        di = DataLoader(ds, batch_size = batch_size, collate_fn = ds.collate_fn, shuffle = mode == M_TRAIN)#, num_workers = 1) # no way to get more!
-        return BatchSpec(len(ds), di)
+            len_sort_ds.bucketed_mode(bucket_length)
+        di = DataLoader(len_sort_ds, batch_size = batch_size, collate_fn = len_sort_ds.collate_fn, shuffle = mode == M_TRAIN)#, num_workers = 1) # no way to get more!
+        return BatchSpec(len(len_sort_ds), di)
