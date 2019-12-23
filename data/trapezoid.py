@@ -187,10 +187,11 @@ class TrapezoidDataset(LengthOrderedDataset):
                         tensor[i_, start:end] = values
                         tensor[i_,      end:] = eid
                     else:
-                        try:
-                            tensor[i_, :length] = values
-                        except:
-                            import pdb; pdb.set_trace()
+                        tensor[i_, :length] = values
+                        # try:
+                            
+                        # except:
+                        #     import pdb; pdb.set_trace()
             else: # label or xtype
                 tensor = np.zeros([batch_size, full_triangular_len], dtype = np.uint8)
                 cumu_length = 0

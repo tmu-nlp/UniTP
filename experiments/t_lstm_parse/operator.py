@@ -20,7 +20,7 @@ class PennOperator(Operator):
         self._orient_hinge_loss = True
 
     def _build_optimizer(self):
-        self._loss_weights_of_tag_label_orient = 0.3, 0.1, 0.6
+        self._loss_weights_of_tag_label_orient = 0.3, 0.1, 0.5
         self._writer = SummaryWriter(self.recorder.create_join('train'))
         self._current_scores = None
         self._last_wander_ratio = 0

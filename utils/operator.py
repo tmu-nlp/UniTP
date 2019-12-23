@@ -1,6 +1,7 @@
 from utils.types import M_TRAIN, M_DEVEL, M_TEST
 from numpy.random import choice
 from tqdm import tqdm
+from time import time
 from torch import nn, no_grad
 from utils.recorder import Recorder, timestamp
 class Operator:
@@ -65,14 +66,17 @@ class Operator:
             for ds_name, ds_iter in zip(ds_names, ds_iters):
                 vis = self._before_validation(ds_name, timestamp(epoch, ''))
                 vis._before() # TODO: mpc
+                start, cnt = time(), 0
                 for batch_id, batch in enumerate(ds_iter):
                     with no_grad():
                         num_samples, _ = self._step(M_DEVEL, ds_names, batch, extra = (vis, batch_id))
+                    cnt += num_samples
                     qbar.update(num_samples)
                     qbar.desc = f'V-{epoch:.1f}'
-                desc += vis._after() + '; '
+                speed = cnt / (time() - start)
+                desc += vis._after() + f' in {speed:.2f} s/s.; '
                 self._after_validation(vis)
-            qbar.desc = desc[:-2]
+            qbar.desc = desc[:-2] + '.'
             self._recorder.log(timestamp(epoch, 'V') + '  ' + desc[:-2])
         return self._recorder.check_betterment(epoch, falling, self._global_step, self._model, self._optimizer, self._key())
 
@@ -85,14 +89,17 @@ class Operator:
             for ds_name, ds_iter in zip(ds_names, ds_iters):
                 vis = self._before_validation(ds_name, timestamp(epoch, ''), use_test_set = True)
                 vis._before() # TODO: mpc
+                start, cnt = time(), 0
                 for batch_id, batch in enumerate(ds_iter):
                     with no_grad():
                         num_samples, _ = self._step(M_TEST, ds_names, batch, extra = (vis, batch_id))
+                    cnt += num_samples
                     qbar.update(num_samples)
                     qbar.desc = f'T-{epoch:.1f}'
-                desc += vis._after() + '; '
+                speed = cnt / (time() - start)
+                desc += vis._after() + f' in {speed:.2f} s/s.; '
                 self._after_validation(vis)
-            qbar.desc = desc[:-2]
+            qbar.desc = desc[:-2] + '.'
         return self._scores()
 
     def _schedule(self, epoch, wander_ratio):

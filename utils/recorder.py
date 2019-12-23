@@ -102,10 +102,10 @@ class Recorder:
             model_fname = self._ckpt_fname
 
         elif isdir(self._model_dir) or restore_from_best_validation:
-            model_fls = listdir(self._model_dir)
-            if model_fls:
-                model_fls.sort(key = timestamp)
-                model_fname = join(self._model_dir, model_fls[-1])
+            resutls = load_yaml(*self._sv_file_lock)['results']
+            if resutls:
+                best_model = max(resutls, key = lambda x: resutls[x])
+                model_fname = join(self._model_dir, best_model)
 
         if model_fname is None:
             epoch = global_step = 0
@@ -151,12 +151,12 @@ class Recorder:
             model_fname = timestamp(epoch)
             copy_with_prefix_and_rename(self._ckpt_fname, self._model_dir, model_fname)
             specs['results'][model_fname] = key
-            model_fls = listdir(self._model_dir)
-            if len(model_fls) > self._keep_top_k:
-                model_fls.sort(key = timestamp)
-                remove(join(self._model_dir, model_fls[0]))
-                specs['results'].pop(model_fls[0])
-                print('Replace worst model', model_fls[0], 'with a', 'new best' if betterment else 'better', 'model', model_fname, **self._print_args)
+            results = specs['results']
+            if len(results) > self._keep_top_k:
+                weakest_model = min(results, key = lambda x: results[x])
+                remove(join(self._model_dir, weakest_model))
+                results.pop(weakest_model)
+                print('Replace worst model', weakest_model, 'with a', 'new best' if betterment else 'better', 'model', model_fname, **self._print_args)
             else:
                 print('A new', 'best' if betterment else 'better', 'model', model_fname, **self._print_args)
             save_yaml(specs, *self._sv_file_lock)

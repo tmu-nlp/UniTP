@@ -156,27 +156,31 @@ class XLNetLeaves(nn.Module):
         return self._word_dim
 
     def forward(self, word_idx, offset, xl_ids, xl_start):
+        squeeze_params = dict(offset  = offset,
+                              out_len = word_idx.shape[1],
+                              get_rid_of_last_k = 1)
+
         with torch.no_grad():
             xl_hidden = self._xlnet_model(xl_ids)[0]
             # xl_hidden = xl_hidden[:, :-2] # Bad idea: git rid of some [cls][sep]
 
-        _, seq_len = word_idx.shape
-        xl_hidden = self._to_word_emb(xl_hidden)
-        if self._is_linear:
-            xl_hidden = self._activation(xl_hidden)
-        else:
-            xl_hidden = xl_hidden[0]
+        def transform_dim(xl_hidden):
+            word_hidden = self._to_word_emb(xl_hidden)
+            if self._is_linear:
+                word_hidden = self._activation(word_hidden)
+            else:
+                word_hidden = word_hidden[0]
+            return word_hidden
 
         if self._avg_subwords:
-            as_existence = False
-        else:
-            as_existence = True
-        xl_base, xl_cumu = squeeze_left(xl_hidden, xl_start, as_existence, offset = offset, out_len = seq_len, get_rid_of_last_k = 1)
-        
-        if self._avg_subwords:
+            word_hidden = transform_dim(xl_hidden)
+            xl_base, xl_cumu = squeeze_left(word_hidden, xl_start, as_existence = False, **squeeze_params)
             xl_cumu[xl_cumu < 1] = 1 # prevent 0
             xl_base = xl_base / xl_cumu
-
+        else:
+            xl_hidden, _ = squeeze_left(xl_hidden, xl_start, as_existence = True, **squeeze_params)
+            xl_base = transform_dim(xl_hidden) # use left most sub-word to save precious time!
+        
         if self._paddings: # will overwrite [cls][sep]
             bos, eos = self._paddings['word']
             bos = (word_idx == bos)

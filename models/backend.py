@@ -137,7 +137,10 @@ class Stem(nn.Module):
         for l_ in count():
             if not teacher_forcing:
                 segment.append(seq_len)
-                seg_length.append(existence.sum(dim = 1)) # [b, s, 1] -> [b, 1]
+                if l_ % height == 0:
+                    seg_length.append(existence.sum(dim = 1)) #
+                else:
+                    seg_length.append(seg_length[-1] - 1)
                 
             orient_hidden, _ = self.orient_emb(unit_hidden, h0c0)
             orient_hidden = self._dp_layer(orient_hidden)
