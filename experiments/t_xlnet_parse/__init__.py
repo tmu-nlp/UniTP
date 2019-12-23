@@ -1,7 +1,7 @@
 from data.penn import PennReader
-from data.penn_types import C_ABSTRACT, parsing_config
-from utils.types import M_TRAIN
-from utils.param_ops import HParams
+from data.penn_types import C_ABSTRACT, parsing_config, select_and_split_corpus
+from utils.types import M_TRAIN, M_DEVEL, M_TEST
+from utils.param_ops import HParams, get_sole_key
 
 from experiments.t_xlnet_parse.model import XLNetPennTree, xlnet_penn_tree_config, XLNetDatasetHelper
 from experiments.t_lstm_parse.operator import PennOperator
@@ -18,7 +18,24 @@ def get_configs(recorder = None):
     train_cnf     = penn.binarization._nested
     non_train_cnf = {max(train_cnf, key = lambda x: train_cnf[x]): 1}
     
-    reader = PennReader(penn.data_path, penn.vocab_size, True, penn.unify_sub, penn.with_ftags, penn.nil_as_pads, extra_text_helper = XLNetDatasetHelper)
+    trapezoid_specs = None
+    if penn.trapezoid_height:
+        specs = select_and_split_corpus(get_sole_key(data_config), 
+                                        penn.source_path,
+                                        penn.data_splits.train_set,
+                                        penn.data_splits.devel_set,
+                                        penn.data_splits.test_set)
+        data_splits = {k:v for k,v in zip((M_TRAIN, M_DEVEL, M_TEST), specs[-1])}
+        trapezoid_specs = specs[:-1] + (data_splits, penn.trapezoid_height)
+
+    reader = PennReader(penn.data_path,
+                        penn.vocab_size,
+                        True, # load_label
+                        penn.unify_sub,
+                        penn.with_ftags,
+                        penn.nil_as_pads,
+                        trapezoid_specs,
+                        extra_text_helper = XLNetDatasetHelper)
     
     def get_datasets(mode):
         datasets = {}

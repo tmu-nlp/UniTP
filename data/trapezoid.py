@@ -147,7 +147,6 @@ class TrapezoidDataset(LengthOrderedDataset):
             qbar.desc = f'{len(lengths)} TreesKeepers'
 
         heads = 'word tag label xtype'.split()
-        extra_text_helper = None
         if extra_text_helper:
             extra_text_helper = extra_text_helper(text, device)
         super().__init__(heads, lengths, factors, min_len, max_len, extra_text_helper)

@@ -2,14 +2,16 @@ import torch
 from torch import nn, Tensor
 from utils.math_ops import s_index
 
-from utils.types import BaseType, true_type, frac_4
-from utils.types import orient_dim, combine_type
+from utils.types import BaseType, true_type, frac_4, frac_2
+from utils.types import orient_dim, combine_type, num_pre_layer
 
 contextual_type = BaseType(0, as_index = True, as_exception = True, default_set = (nn.LSTM, nn.GRU))
 activation_type = BaseType(0, as_index = True, as_exception = True, default_set = (nn.ReLU, nn.Sigmoid, nn.Tanh))
 
 stem_config = dict(orient_dim   = orient_dim,
                    combine_type = combine_type,
+                   num_layers   = num_pre_layer,
+                   rnn_drop_out = frac_2,
                    drop_out     = frac_4,
                    trainable_initials = true_type)
 
@@ -21,19 +23,23 @@ class Stem(nn.Module):
                  word_dim,
                  orient_dim,
                  combine_type,
+                 num_layers,
+                 rnn_drop_out,
                  trainable_initials,
                  drop_out):
         super().__init__()
         hidden_size = orient_dim // 2
         self.orient_emb = nn.LSTM(word_dim, hidden_size,
+                                  num_layers    = num_layers,
                                   bidirectional = True,
-                                  batch_first   = True)
+                                  batch_first   = True,
+                                  dropout = rnn_drop_out if num_layers > 1 else 0)
         self._dp_layer = nn.Dropout(drop_out)
         self.orient = nn.Linear(orient_dim, 1)
         self.combine = get_combinator(combine_type, word_dim)
         if trainable_initials:
-            c0 = torch.randn(1 * 2, 1, hidden_size)
-            h0 = torch.randn(1 * 2, 1, hidden_size)
+            c0 = torch.randn(num_layers * 2, 1, hidden_size)
+            h0 = torch.randn(num_layers * 2, 1, hidden_size)
             self._c0 = nn.Parameter(c0, requires_grad = True)
             self._h0 = nn.Parameter(h0, requires_grad = True)
             self._initial_size = hidden_size
