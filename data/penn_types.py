@@ -16,7 +16,7 @@ build_params = {C_PTB: temp_dict('2-21',             '22',      '23'    ),
 ft_bin = {C_PTB: 'en', C_CTB: 'zh', C_KTB: 'ja'}
 
 from utils.types import none_type, false_type, true_type, binarization, NIL
-from utils.types import train_batch_size, train_max_len, train_bucket_len, vocab_size
+from utils.types import train_batch_size, train_max_len, train_bucket_len, vocab_size, trapezoid_height
 parsing_config = dict(vocab_size       = vocab_size,
                       binarization     = binarization,
                       batch_size       = train_batch_size,
@@ -26,7 +26,7 @@ parsing_config = dict(vocab_size       = vocab_size,
                       unify_sub        = true_type,
                       sort_by_length   = false_type,
                       nil_as_pads      = true_type,
-                      trapezoid_height = vocab_size)
+                      trapezoid_height = trapezoid_height)
 
 from utils.str_ops import histo_count, str_percentage, strange_to
 from utils.pickle_io import pickle_load, pickle_dump
@@ -181,11 +181,10 @@ def build(save_to_dir,
           devel_set,
           test_set,
           verbose    = True,
-          num_thread = 2,
           **kwargs):
     from multiprocessing import Process, Queue # seamless with threading.Thread
     from data.delta import DeltaX, bottom_up_ftags, xtype_to_logits, lnr_order, OriFct
-    from utils.types import E_ORIF, O_LFT, O_RGT, M_TRAIN, M_DEVEL, M_TEST
+    from utils.types import E_ORIF, O_LFT, O_RGT, M_TRAIN, M_DEVEL, M_TEST, num_threads
     from itertools import count
     from time import sleep
 
@@ -261,15 +260,15 @@ def build(save_to_dir,
 
             q.put((inst_cnt, unary_cnt, train_length_cnt, valid_length_cnt, test_length_cnt, lrcs))
 
-    num_thread = min(num_thread, len(corpus))
-    workers = [[] for i in range(num_thread)]
+    num_threads = min(num_threads, len(corpus))
+    workers = [[] for i in range(num_threads)]
     pool = SourcePool(workers)
     q = Queue()
     for fileid in corpus:
         worker = pool()
         worker.append(fileid)
     del pool
-    for i in range(num_thread):
+    for i in range(num_threads):
         w = WorkerX(i, q, reader, workers[i])
         w.start()
         workers[i] = w
@@ -285,7 +284,7 @@ def build(save_to_dir,
     train_length_cnt, valid_length_cnt, test_length_cnt = Counter(), Counter(), Counter()
     cnf_diff = [0, 0, 0]
     thread_join_cnt = 0
-    with ExitStack() as stack, tqdm(desc = f'  Receiving samples from {num_thread} threads') as qbar:
+    with ExitStack() as stack, tqdm(desc = f'  Receiving samples from {num_threads} threads') as qbar:
         ftw  = stack.enter_context(open(join(save_to_dir, M_TRAIN + '.word'), 'w'))
         ftp  = stack.enter_context(open(join(save_to_dir, M_TRAIN + '.tag'),  'w'))
         ftf  = stack.enter_context(open(join(save_to_dir, M_TRAIN + '.ftag'), 'w'))
@@ -355,14 +354,14 @@ def build(save_to_dir,
                         qbar.total += ic
                     else:
                         qbar.total = ic
-                    qbar.desc = f'  {thread_join_cnt} of {num_thread} threads ended with {qbar.total} samples, receiving'
+                    qbar.desc = f'  {thread_join_cnt} of {num_threads} threads ended with {qbar.total} samples, receiving'
 
                     unary_counters.append(uc)
                     train_length_cnt.update(tlc)
                     valid_length_cnt.update(vlc)
                     test_length_cnt .update(_lc)
                     positional_iadd(lrcs, lrbc)
-                    if thread_join_cnt == num_thread:
+                    if thread_join_cnt == num_threads:
                         break
                 else:
                     raise ValueError('Unknown data: %r' % t)

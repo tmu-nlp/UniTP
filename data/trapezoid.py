@@ -4,6 +4,7 @@ from data.penn_types import select_and_split_corpus, SourcePool
 from tqdm import tqdm
 from itertools import zip_longest, count
 from multiprocessing import Process, Queue
+from utils.file_io import DelayedKeyboardInterrupt
 from time import sleep
 # from data.delta import E_XDIM
 
@@ -133,18 +134,24 @@ class TrapezoidDataset(LengthOrderedDataset):
             works[i] = w
 
         with tqdm(desc = f'Receiving from {num_threads} threads ...') as qbar:
-            while any(x.is_alive() for x in works):
-                if q.empty():
-                    sleep(0.01)
-                else:
-                    words, length, tree_str, factored = q.get()
-                    text.append(words)
-                    lengths.append(length)
-                    keeper = TreeKeeper(Tree.fromstring(tree_str), v2is, trapezoid_height)
-                    keeper.update_factored(argmax_factor, factored, words)
-                    keepers.append(keeper)
-                qbar.update(1)
-            qbar.desc = f'{len(lengths)} TreesKeepers'
+            try:
+                while any(x.is_alive() for x in works):
+                    if q.empty():
+                        sleep(0.01)
+                    else:
+                        words, length, tree_str, factored = q.get()
+                        text.append(words)
+                        lengths.append(length)
+                        keeper = TreeKeeper(Tree.fromstring(tree_str), v2is, trapezoid_height)
+                        keeper.update_factored(argmax_factor, factored, words)
+                        keepers.append(keeper)
+                    qbar.update(1)
+                qbar.desc = f'{len(lengths)} TreesKeepers'
+            except KeyboardInterrupt as ex:
+                with DelayedKeyboardInterrupt(ignore = True):
+                    for x in works:
+                        x.kill()
+                raise ex
 
         heads = 'word tag label xtype'.split()
         if extra_text_helper:

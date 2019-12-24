@@ -1,4 +1,93 @@
 from models.penn import BasePennTree, penn_tree_config, torch, nn, Tensor
+from utils.types import word_dim, num_ctx_layer, false_type, frac_2, frac_4
+from models.backend import activation_type, contextual_type
+xlnt_leaves_config = dict(contextual   = contextual_type,
+                          num_layers   = num_ctx_layer,
+                          drop_out     = frac_4,
+                          rnn_drop_out = frac_2,
+                          word_dim     = word_dim,
+                          activation   = activation_type,
+                          avg_subwords = false_type)
+xlnet_penn_tree_config = penn_tree_config.copy()
+xlnet_penn_tree_config['embed_layer'] = xlnt_leaves_config
+
+from models.utils import squeeze_left
+class XLNetLeaves(nn.Module):
+    def __init__(self,
+                 contextual,
+                 num_layers,
+                 drop_out,
+                 rnn_drop_out,
+                 word_dim,
+                 activation,
+                 paddings,
+                 avg_subwords):
+        super().__init__()
+        from transformers import XLNetModel
+        self._xlnet_model = XLNetModel.from_pretrained(model_key_name)
+        self._xlnet_dp = nn.Dropout(drop_out)
+        if num_layers == 0:
+            self._is_linear = True
+            self._to_word_emb = nn.Linear(768, word_dim)
+        else:
+            self._is_linear = False
+            self._to_word_emb = contextual(768, word_dim // 2, num_layers,
+                                           batch_first = True,
+                                           bidirectional = True,
+                                           dropout = rnn_drop_out if num_layers > 1 else 0)
+        self._activation = activation()
+        if paddings:
+            self._bos = nn.Parameter(torch.randn(1, 1, word_dim), requires_grad = True)
+            self._eos = nn.Parameter(torch.randn(1, 1, word_dim), requires_grad = True)
+        self._paddings = paddings
+        self._word_dim = word_dim
+        self._avg_subwords = avg_subwords
+        # self._xlnet_model.train()
+
+    @property
+    def embedding_dim(self):
+        return self._word_dim
+
+    def forward(self, word_idx, offset, xl_ids, xl_start):
+        squeeze_params = dict(offset  = offset,
+                              out_len = word_idx.shape[1],
+                              get_rid_of_last_k = 1)
+
+        with torch.no_grad():
+            xl_hidden = self._xlnet_model(xl_ids)[0]
+            xl_hidden = self._xlnet_dp(xl_hidden)
+            # xl_hidden = xl_hidden[:, :-2] # Bad idea: git rid of some [cls][sep]
+
+        def transform_dim(xl_hidden):
+            word_hidden = self._to_word_emb(xl_hidden)
+            if self._is_linear:
+                word_hidden = self._activation(word_hidden)
+            else:
+                word_hidden = word_hidden[0]
+            return word_hidden
+
+        if self._avg_subwords:
+            word_hidden = transform_dim(xl_hidden)
+            xl_base, xl_cumu = squeeze_left(word_hidden, xl_start, as_existence = False, **squeeze_params)
+            xl_cumu[xl_cumu < 1] = 1 # prevent 0
+            xl_base = xl_base / xl_cumu
+        else:
+            xl_hidden, _ = squeeze_left(xl_hidden, xl_start, as_existence = True, **squeeze_params)
+            xl_base = transform_dim(xl_hidden) # use left most sub-word to save precious time!
+        
+        if self._paddings: # will overwrite [cls][sep]
+            bos, eos = self._paddings['word']
+            bos = (word_idx == bos)
+            eos = (word_idx == eos)
+            bos.unsqueeze_(dim = 2)
+            eos.unsqueeze_(dim = 2)
+            xl_base = torch.where(bos, self._bos.expand_as(xl_base), xl_base) # 不要让nn做太多离散的决定，人来做！
+            xl_base = torch.where(eos, self._eos.expand_as(xl_base), xl_base)
+        else:
+            non_nil = (word_idx > 0)
+            non_nil.unsqueeze_(dim = 2)
+            xl_base = xl_base * non_nil # in-place fails at FloatTensor
+        return None, xl_base # just dynamic
 
 class XLNetPennTree(nn.Module):
     def __init__(self,
@@ -113,84 +202,3 @@ class XLNetDatasetHelper(object):
         xl_ids = torch.tensor(xl_ids, device = self._device)
         xl_start = torch.tensor(xl_start, device = self._device)
         return dict(xl_ids = xl_ids, xl_start = xl_start)
-
-from utils.types import word_dim, num_pre_layer, false_type
-from models.backend import activation_type, contextual_type
-xlnt_leaves_config = dict(contextual   = contextual_type,
-                          num_layers   = num_pre_layer,
-                          word_dim     = word_dim,
-                          activation   = activation_type,
-                          avg_subwords = false_type)
-xlnet_penn_tree_config = penn_tree_config.copy()
-xlnet_penn_tree_config['embed_layer'] = xlnt_leaves_config
-
-from models.utils import squeeze_left
-class XLNetLeaves(nn.Module):
-    def __init__(self,
-                 contextual,
-                 num_layers,
-                 word_dim,
-                 activation,
-                 paddings,
-                 avg_subwords):
-        super().__init__()
-        from transformers import XLNetModel
-        self._xlnet_model = XLNetModel.from_pretrained(model_key_name)
-        if num_layers == 0:
-            self._is_linear = True
-            self._to_word_emb = nn.Linear(768, word_dim)
-        else:
-            self._is_linear = False
-            self._to_word_emb = contextual(768, word_dim // 2, num_layers, batch_first = True, bidirectional = True)
-        self._activation = activation()
-        if paddings:
-            self._bos = nn.Parameter(torch.randn(1, 1, word_dim), requires_grad = True)
-            self._eos = nn.Parameter(torch.randn(1, 1, word_dim), requires_grad = True)
-        self._paddings = paddings
-        self._word_dim = word_dim
-        self._avg_subwords = avg_subwords
-        # self._xlnet_model.train()
-
-    @property
-    def embedding_dim(self):
-        return self._word_dim
-
-    def forward(self, word_idx, offset, xl_ids, xl_start):
-        squeeze_params = dict(offset  = offset,
-                              out_len = word_idx.shape[1],
-                              get_rid_of_last_k = 1)
-
-        with torch.no_grad():
-            xl_hidden = self._xlnet_model(xl_ids)[0]
-            # xl_hidden = xl_hidden[:, :-2] # Bad idea: git rid of some [cls][sep]
-
-        def transform_dim(xl_hidden):
-            word_hidden = self._to_word_emb(xl_hidden)
-            if self._is_linear:
-                word_hidden = self._activation(word_hidden)
-            else:
-                word_hidden = word_hidden[0]
-            return word_hidden
-
-        if self._avg_subwords:
-            word_hidden = transform_dim(xl_hidden)
-            xl_base, xl_cumu = squeeze_left(word_hidden, xl_start, as_existence = False, **squeeze_params)
-            xl_cumu[xl_cumu < 1] = 1 # prevent 0
-            xl_base = xl_base / xl_cumu
-        else:
-            xl_hidden, _ = squeeze_left(xl_hidden, xl_start, as_existence = True, **squeeze_params)
-            xl_base = transform_dim(xl_hidden) # use left most sub-word to save precious time!
-        
-        if self._paddings: # will overwrite [cls][sep]
-            bos, eos = self._paddings['word']
-            bos = (word_idx == bos)
-            eos = (word_idx == eos)
-            bos.unsqueeze_(dim = 2)
-            eos.unsqueeze_(dim = 2)
-            xl_base = torch.where(bos, self._bos.expand_as(xl_base), xl_base) # 不要让nn做太多离散的决定，人来做！
-            xl_base = torch.where(eos, self._eos.expand_as(xl_base), xl_base)
-        else:
-            non_nil = (word_idx > 0)
-            non_nil.unsqueeze_(dim = 2)
-            xl_base = xl_base * non_nil # in-place fails at FloatTensor
-        return None, xl_base # just dynamic

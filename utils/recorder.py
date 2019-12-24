@@ -1,32 +1,46 @@
 
 from datetime import datetime
-from utils.file_io import join, create_join, listdir, isdir, isfile, remove, rm_rf, abspath
+from utils.file_io import join, create_join, listdir, isdir, isfile, remove, rm_rf, abspath, rename
 from utils.file_io import DelayedKeyboardInterrupt, copy_with_prefix_and_rename
 from utils.yaml_io import load_yaml, save_yaml
-from utils.param_ops import zip_nt_params, dict_print
+from utils.param_ops import zip_nt_params, dict_print, change_key
 from sys import stderr
 from itertools import count
 import torch
+
+_rt_file = 'register_and_tests.yaml'
+_rt_lock = 'register_and_tests.lock'
+_sv_file = 'settings_and_validation.yaml'
+_sv_lock = 'settings_and_validation.lock'
+
 class Recorder:
     '''A Recorder provides environment for an Operator, created in a Manager, operated by the Operator.'''
     
     def __init__(self, task_dir, task_module, config_dict_or_instance, instance_name = None, keep_top_k = 4, evalb = None):
         def create_sv_file_lock(instance_dir):
-            sv_file = join(instance_dir, 'settings_and_validation.yaml')
-            sv_lock = join(instance_dir, 'settings_and_validation.lock')
+            sv_file = join(instance_dir, _sv_file)
+            sv_lock = join(instance_dir, _sv_lock)
             return sv_file, sv_lock
         # with DelayedKeyboardInterrupt():
-        rt_file = join(task_dir, 'register_and_tests.yaml')
-        rt_lock = join(task_dir, 'register_and_tests.lock')
-        rt = load_yaml(rt_file, rt_lock)
+        rt_file = join(task_dir, _rt_file)
+        rt_lock = join(task_dir, _rt_lock)
         if isinstance(config_dict_or_instance, dict):
-            for instance in count():
-                instance = str(instance)
-                if instance in rt:
-                    continue
-                else:
+            rt, unlock = load_yaml(rt_file, rt_lock, True)
+            if len(rt):
+                name_len = max(len(i) for i in rt.keys())
+                inames = tuple(int(i) for i in rt.keys())
+                for instance in count():
+                    if instance in inames:
+                        continue
                     break
+            else:
+                instance = 0
+                name_len = 1
+            instance = str(instance)
+            if len(instance) < name_len:
+                instance = '0' * (name_len - len(instance)) + instance
             rt[instance] = {}
+            unlock()
             save_yaml(rt, rt_file, rt_lock) # final confirm
             if instance_name:
                 instance_dir = f'{instance}.{instance_name}'
@@ -53,6 +67,7 @@ class Recorder:
         self._module     = task_module
         self._ckpt_fname = join(instance_dir, 'checkpoint')
         self._model_dir  = create_join(instance_dir, 'models')
+        _, self._sv_unlock = load_yaml(sv_file, sv_lock, True)
         self._rt_file_lock = rt_file, rt_lock
         self._sv_file_lock = sv_file, sv_lock
         self._key = None
@@ -63,6 +78,7 @@ class Recorder:
     def __del__(self):
         if isdir(self._instance_dir[1]):
             self._print_args['file'].close() # critical zone
+            self._sv_unlock()
         # if input('*** Remove Experiment ? [n/N or any key] *** ').lower() != 'n':
 
     def delete_all(self):
@@ -77,7 +93,7 @@ class Recorder:
         print(*args, **self._print_args, **kwargs)
 
     def task_specs(self):
-        specs = load_yaml(*self._sv_file_lock)
+        specs = load_yaml(*self._sv_file_lock, wait_lock = False)
         _, model_type = self._module.get_configs()
         model_config = get_obj_from_config(model_type, specs['model'])
         return specs['data'], model_config, specs['results']
@@ -102,7 +118,7 @@ class Recorder:
             model_fname = self._ckpt_fname
 
         elif isdir(self._model_dir) or restore_from_best_validation:
-            resutls = load_yaml(*self._sv_file_lock)['results']
+            resutls = load_yaml(*self._sv_file_lock, wait_lock = False)['results']
             if resutls:
                 best_model = max(resutls, key = lambda x: resutls[x])
                 model_fname = join(self._model_dir, best_model)
@@ -137,7 +153,7 @@ class Recorder:
         return epoch, global_step, fine_validation
 
     def check_betterment(self, epoch, falling, global_step, model, optimizer, key):
-        specs = load_yaml(*self._sv_file_lock)
+        specs = load_yaml(*self._sv_file_lock, wait_lock = False)
         betterment = (self._key is None or self._key < key)
         in_top_k = any(old_key < key for old_key in specs['results'].values())
         fine_validation = falling and not betterment
@@ -159,7 +175,7 @@ class Recorder:
                 print('Replace worst model', weakest_model, 'with a', 'new best' if betterment else 'better', 'model', model_fname, **self._print_args)
             else:
                 print('A new', 'best' if betterment else 'better', 'model', model_fname, **self._print_args)
-            save_yaml(specs, *self._sv_file_lock)
+            save_yaml(specs, *self._sv_file_lock, wait_lock = False)
         return betterment
 
     def register_test_scores(self, scores):
@@ -167,6 +183,54 @@ class Recorder:
         rt = load_yaml(*self._rt_file_lock)
         rt[instance] = scores
         save_yaml(rt, *self._rt_file_lock)
+
+    @staticmethod
+    def experiments_status(task_path):
+        rt_file = join(task_path, _rt_file)
+        rt_lock = join(task_path, _rt_lock)
+        (instance_status, unlock), modifed = load_yaml(rt_file, rt_lock, True), False
+        status = dict(locking = [], unlocked = [], other = [])
+        folders = listdir(task_path)
+
+        name_len = 0
+        instance_folders = []
+        for fx in folders:
+            if '.' in fx:
+                sep = fx.index('.')
+                instance = fx[:sep]
+                exp_name = fx[sep+1:]
+            else:
+                instance = fx
+                exp_name = None
+            instance_path = join(task_path, fx)
+            if isdir(instance_path):
+                if instance in instance_status:
+                    name_len = max(name_len, len(instance))
+                    if isfile(join(instance_path, _sv_lock)):
+                        status['locking'].append(instance_path) # avoid ongoing experiments
+                    else:
+                        instance_folders.append((instance, exp_name, fx, instance_path))
+
+                else:
+                    status['other'].append(instance_path)
+
+        for instance, exp_name, folder, fpath in instance_folders:
+            ap_zeros = name_len - len(instance)
+            if ap_zeros:
+                _instance = '0' * ap_zeros + instance
+                new_folder = f'{_instance}.{exp_name}' if exp_name else _instance
+                new_fpath = join(task_path, new_folder)
+                change_key(instance_status, instance, _instance)
+                rename(fpath, new_fpath)
+                fpath = new_fpath + ' <- ' + folder
+                instance = _instance
+                modifed = True
+            status['unlocked'].append(f'({instance_status[instance]["key"]})\t {fpath}')
+
+        unlock()
+        if modifed:
+            save_yaml(instance_status, rt_file, rt_lock)
+        return status
 
     @property
     def evalb(self):

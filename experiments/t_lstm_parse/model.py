@@ -1,14 +1,15 @@
 from models.backend import contextual_type
 from models.penn import BasePennTree, penn_tree_config, torch, nn, Tensor
 from models.utils import PCA
-from utils.types import true_type, false_type, word_dim, num_pre_layer, frac_4
+from utils.types import true_type, false_type, word_dim, num_ctx_layer, frac_4, frac_2
 
 leaves_config = dict(use_fasttext = true_type,
                      word_dim     = word_dim,
                      trainable    = false_type,
                      contextual   = contextual_type,
-                     num_layers   = num_pre_layer,
-                     drop_out     = frac_4)
+                     num_layers   = num_ctx_layer,
+                     drop_out     = frac_4,
+                     rnn_drop_out = frac_2)
 
 class LstmLeaves(nn.Module):
     def __init__(self,
@@ -19,7 +20,8 @@ class LstmLeaves(nn.Module):
                  trainable,
                  contextual,
                  num_layers,
-                 drop_out):
+                 drop_out,
+                 rnn_drop_out):
         super().__init__()
 
         # word
@@ -61,7 +63,8 @@ class LstmLeaves(nn.Module):
                                               word_dim // 2,
                                               num_layers,
                                               bidirectional = True,
-                                              batch_first = True)
+                                              batch_first = True,
+                                              dropout = rnn_drop_out if num_layers > 1 else 0)
             else:
                 raise NotImplementedError()
         else:
@@ -99,7 +102,7 @@ class LstmLeaves(nn.Module):
         else:
             dynamic_emb, _ = self._contextual(static_emb)
             dynamic_emb = dynamic_emb + static_emb # += does bad to gpu
-            dynamic_emb = self._dp_layer(dynamic_emb)
+            # dynamic_emb = self._dp_layer(dynamic_emb)
 
         return static_emb, dynamic_emb, bottom_existence
 

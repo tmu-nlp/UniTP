@@ -1,4 +1,4 @@
-from os import remove, mkdir, rmdir, walk, listdir
+from os import remove, mkdir, rmdir, walk, listdir, rename
 from os.path import join, isdir, isfile, abspath, sep, basename, dirname
 from shutil import copy
 from array import array
@@ -99,11 +99,16 @@ import signal
 import logging
 
 class DelayedKeyboardInterrupt(object):
+    def __init__(self, ignore = False):
+        self._ignore = ignore
+
     def __enter__(self):
         self.signal_received = False
         self.old_handler = signal.signal(signal.SIGINT, self.handler)
 
     def handler(self, sig, frame):
+        if self._ignore:
+            return
         self.signal_received = (sig, frame)
         logging.debug('SIGINT received. Delaying KeyboardInterrupt.')
 

@@ -3,14 +3,14 @@ from torch import nn, Tensor
 from utils.math_ops import s_index
 
 from utils.types import BaseType, true_type, frac_4, frac_2
-from utils.types import orient_dim, combine_type, num_pre_layer
+from utils.types import orient_dim, combine_type, num_ori_layer
 
 contextual_type = BaseType(0, as_index = True, as_exception = True, default_set = (nn.LSTM, nn.GRU))
 activation_type = BaseType(0, as_index = True, as_exception = True, default_set = (nn.ReLU, nn.Sigmoid, nn.Tanh))
 
 stem_config = dict(orient_dim   = orient_dim,
                    combine_type = combine_type,
-                   num_layers   = num_pre_layer,
+                   num_layers   = num_ori_layer,
                    rnn_drop_out = frac_2,
                    drop_out     = frac_4,
                    trainable_initials = true_type)

@@ -74,7 +74,8 @@ frac_5         = BaseType(0.5, validator = frac_open_1)
 non0_5         = BaseType(0.5, validator = frac_open_0)
 none_type      = BaseType(None)
 # positive2_or_none = BaseType(2, validator = lambda x: x is None or x > 0)
-num_pre_layer = BaseType(8, validator = lambda x: isinstance(x, int) and 0 <= x <= 20)
+num_ctx_layer = BaseType(8, validator = lambda x: isinstance(x, int) and 0 <= x <= 24)
+num_ori_layer = BaseType(1, validator = lambda x: isinstance(x, int) and 1 <= x <= 4)
 vocab_size = BaseType(None, validator = lambda x: isinstance(x, int) and 2 < x, as_exception = True)
 word_dim   = BaseType(300, validator = valid_even_size)
 orient_dim = BaseType(32,  validator = valid_even_size)
@@ -83,6 +84,7 @@ train_batch_size = BaseType(80, validator = valid_size)
 train_bucket_len = BaseType(4, validator = lambda x: isinstance(x, int) and 0 <= x)
 train_max_len    = BaseType(100, validator = valid_size, default_set = (None,))
 fill_placeholder = '//FILL//THIS//'
+trapezoid_height = BaseType(None, valid_size, as_exception = True)
 
 NIL, UNK, BOS, EOS = '<nil>', '<unk>', '<bos>', '<eos>'
 M_TRAIN = 'train'

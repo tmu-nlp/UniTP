@@ -16,11 +16,13 @@ def _block(lfile):
         fw.write(str(datetime.now()))
 
 def _unblock(lfile):
-    remove(lfile)
-    return True
+    if isfile(lfile):
+        remove(lfile)
+        return True
+    return False
 
-def save_yaml(status, mfile, lfile):
-    if lfile:
+def save_yaml(status, mfile, lfile, wait_lock = True):
+    if lfile and wait_lock:
         _wait(lfile)
         _block(lfile)
 
@@ -45,17 +47,18 @@ def save_yaml(status, mfile, lfile):
             yaml.dump(status, fw, default_flow_style = False)
     return True
 
-def load_yaml(mfile, lfile, block = False):
+def load_yaml(mfile, lfile, block = False, wait_lock = True):
     if isfile(mfile):
-        _wait(lfile)
-        if block:
-            _block(lfile)
+        if wait_lock:
+            _wait(lfile)
+            if block:
+                _block(lfile)
     else:
         save_yaml({}, mfile, lfile)
     with open(mfile, 'r') as fr:
         status = yaml.load(fr, Loader = yaml.FullLoader)
     if not status:
         status = {}
-    if block:
+    if wait_lock and block:
         return status, lambda : _unblock(lfile)
     return status

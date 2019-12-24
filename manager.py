@@ -6,10 +6,10 @@ import argparse
 import importlib
 import data
 import experiments
-from os import mkdir, listdir, rmdir, rename
+from os import mkdir, listdir
 from os.path import isdir, isfile, join
 from utils.yaml_io import save_yaml, load_yaml
-from utils.file_io import rm_rf, create_join, DelayedKeyboardInterrupt
+from utils.file_io import create_join, DelayedKeyboardInterrupt
 from utils.types import valid_size, fill_placeholder
 from utils.param_ops import zip_nt_params, unzip_nt_params, iter_zipped_nt_params, change_key, dict_print
 from utils.str_ops import strange_to
@@ -138,57 +138,19 @@ class Manager:
             save_yaml(status, *self._mfile_lfile)
 
     def list_experiments_status(self, print_file = sys.stdout):
+        from utils.recorder import Recorder
         task_status = load_yaml(*self._mfile_lfile)['task']
-        status = dict(models=[], null=[], other=[])
-        for module_name in task_status.keys():
-            task_path = join(self._work_dir, module_name)
+        for task_name in task_status:
+            task_path = join(self._work_dir, task_name)
             if not isdir(task_path):
                 continue
-            for arch_name in listdir(task_path):
-                for var_name in listdir(join(task_path, arch_name)):
-                    var_path = join(task_path, arch_name, var_name)
-                    sfile = join(var_path, _rfile)
-                    slock = join(var_path, _rlock)
-                    if not isfile(sfile):
-                        continue
-                    (srdic, unlock), mod = load_yaml(sfile, slock, True), False
-                    work_dirs  = listdir(var_path)
-                    max_id_len = max(len(work_dir.split('_')[0]) if work_dir[0].isdigit() else 0 for work_dir in work_dirs)
-                    for work_dir in work_dirs:
-                        if '_' in work_dir:
-                            sep = work_dir.index('_')
-                            exp_id   = work_dir[:sep]
-                            exp_name = work_dir[sep+1:]
-                        else:
-                            exp_id   = work_dir
-                            exp_name = None
-                        var_work_dir = join(var_path, work_dir)
-                        if isdir(var_work_dir):
-                            if exp_id in srdic:
-                                ap_zeros = max_id_len - len(exp_id)
-                                if ap_zeros and srdic[exp_id] is not None: # avoid ongoing experiments
-                                    new_exp_id = '0' * ap_zeros + exp_id
-                                    new_work_dir = f'{new_exp_id}_{exp_name}' if exp_name else new_exp_id
-                                    new_var_work_dir = join(var_path, new_work_dir)
-                                    change_key(srdic, exp_id, new_exp_id)
-                                    rename(var_work_dir, new_var_work_dir)
-                                    exp_id, work_dir, var_work_dir = new_exp_id, new_work_dir, new_var_work_dir
-                                    mod = True
-
-                                if srdic[exp_id] is None:
-                                    status['null'].append(var_work_dir)
-                                else:
-                                    status['models'].append(var_work_dir)
-                            else:
-                                status['other'].append(var_work_dir)
-                    unlock()
-                    if mod:
-                        save_yaml(srdic, sfile, slock)
-        for k, v in status.items():
-            if v:
-                print(k.title(), file = print_file)
-                print('\n'.join(v), file = print_file)
-                print(file = print_file)
+            print(f'In task ==={task_name}===', file = print_file)
+            status = Recorder.experiments_status(task_path)
+            for key, vlist in status.items():
+                if vlist:
+                    print(f'  {key}:', file = print_file)
+                    for info in vlist:
+                        print(info, file = print_file)
 
     def check_data(self, build_if_not_yet = False, num_thread = 1):
         modified = []
@@ -333,21 +295,6 @@ class Manager:
         module = self._exp_modules[task]
         task_spec = ready_tasks[task]
         data_config = task_spec['data']
-        
-        if corp_name in E_PENN: # only happen at penn data
-            change_key(data_config, C_ABSTRACT, corp_name)
-        for d, c in data_config.items():
-            if d not in ready_paths:
-                print(f"{d} is an abstract data, you might mean: {' or '.join(ready_paths.keys())}", file = sys.stderr)
-                exit()
-            if c is None:
-                data_config[d] = dict(data_path = ready_paths[d])
-            else:
-                c['data_path'] = ready_paths[d]
-                if c['trapezoid_height'] is not None: # a trigger for source corpus
-                    corp_status = status['data'][d]
-                    c['source_path'] = corp_status['source_path']
-                    c['data_splits'] = corp_status['build_params']
 
         def diff_recorder(config_dict_or_instance):
             task_dir = create_join(self._work_dir, task)
@@ -357,8 +304,24 @@ class Manager:
                             name,
                             evalb = status['tool']['evalb'])
 
-        if resume or exp_ids[0] is None:
+        if resume or None in exp_ids:
             train_params = check_train(args.train)
+        
+        if None in exp_ids: # train new
+            if corp_name in E_PENN: # only happen at penn data
+                change_key(data_config, C_ABSTRACT, corp_name)
+            for d, c in data_config.items():
+                if d not in ready_paths:
+                    print(f"{d} is an abstract data, you might mean: {' or '.join(ready_paths.keys())}", file = sys.stderr)
+                    exit()
+                if c is None:
+                    data_config[d] = dict(data_path = ready_paths[d])
+                else:
+                    c['data_path'] = ready_paths[d]
+                    if c['trapezoid_height'] is not None: # a trigger for source corpus
+                        corp_status = status['data'][d]
+                        c['source_path'] = corp_status['source_path']
+                        c['data_splits'] = corp_status['build_params']
 
         for exp_id in exp_ids:
             recorder = diff_recorder(task_spec) if exp_id is None else diff_recorder(exp_id)
@@ -419,6 +382,6 @@ if __name__ == '__main__':
         #     print('Dev: ValueError [Exit]')
         #     print(ve)
     else:
-        manager.check_data(build_if_not_yet = args.prepare, num_thread = types.num_threads)
-        # with DelayedKeyboardInterrupt():
-        #     manager.list_experiments_status() # refine this one
+        manager.check_data(build_if_not_yet = args.prepare)
+        with DelayedKeyboardInterrupt():
+            manager.list_experiments_status() # refine this one
