@@ -22,9 +22,10 @@ def _unblock(lfile):
     return False
 
 def save_yaml(status, mfile, lfile, wait_lock = True):
-    if lfile and wait_lock:
-        _wait(lfile)
-        _block(lfile)
+    if lfile:
+        if wait_lock:
+            _wait(lfile)
+            _block(lfile)
 
         finished = False
         do_exit = None
@@ -38,9 +39,10 @@ def save_yaml(status, mfile, lfile, wait_lock = True):
                 do_exit = e
                 print('suppress', e, 'for saving', mfile)
         # release
-        _unblock(lfile)
-        if do_exit is not None:
-            raise do_exit
+        if wait_lock:
+            _unblock(lfile)
+            if do_exit is not None:
+                raise do_exit
     else:
         with open(mfile, 'a+') as fw:
             fw.write(f'# {datetime.now()}\n')

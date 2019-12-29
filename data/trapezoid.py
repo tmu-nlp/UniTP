@@ -27,9 +27,8 @@ class TreeKeeper:
         self._factored = {}
         self._trapezoid_height = trapezoid_height
 
-    def update_factored(self, factor, factored, words):
-        self._w_p = factored['word'], factored['tag']
-        self._factored[factor] = factored
+    def update_factored(self, factored, words):
+        self._factored.update(factored)
         tree = self._tree
         for i, word in enumerate(words):
             if word == '(':
@@ -73,11 +72,11 @@ class TreeKeeper:
 class WorkerX(Process):
     def __init__(self, *args):
         Process.__init__(self)
-        self._q_reader_fns_height_v2is_factor = args
+        self._q_reader_fns_height_v2is_factors = args
 
     def run(self):
         (q, reader, fns, height, v2is,
-         factor) = self._q_reader_fns_height_v2is_factor
+         factors) = self._q_reader_fns_height_v2is_factors
         
         for fn in fns:
             for tree in reader.parsed_sents(fn):
@@ -85,7 +84,7 @@ class WorkerX(Process):
                 words = tree.leaves()
                 length = len(words)
                 keeper = TreeKeeper(tree, v2is, height)
-                factored = keeper[factor]
+                factored = {f: keeper[f] for f in factors}
                 if '(' in words or ')' in words:
                     for i, word in enumerate(words):
                         if word == '(':
@@ -126,10 +125,8 @@ class TrapezoidDataset(LengthOrderedDataset):
             work = task_pool()
             work.append(fname)
         del task_pool
-        argmax_factor = max(factors, key = lambda x: factors[x])
-        # import pdb; pdb.set_trace()
         for i in range(num_threads):
-            w = WorkerX(q, reader, works[i], trapezoid_height, v2is, argmax_factor)
+            w = WorkerX(q, reader, works[i], trapezoid_height, v2is, factors)
             w.start()
             works[i] = w
 
@@ -143,9 +140,9 @@ class TrapezoidDataset(LengthOrderedDataset):
                         text.append(words)
                         lengths.append(length)
                         keeper = TreeKeeper(Tree.fromstring(tree_str), v2is, trapezoid_height)
-                        keeper.update_factored(argmax_factor, factored, words)
+                        keeper.update_factored(factored, words)
                         keepers.append(keeper)
-                    qbar.update(1)
+                        qbar.update(1)
                 qbar.desc = f'{len(lengths)} TreesKeepers'
             except KeyboardInterrupt as ex:
                 with DelayedKeyboardInterrupt(ignore = True):

@@ -18,6 +18,7 @@ class PennOperator(Operator):
         self._softmax = nn.Softmax(dim = 2)
         self._sigmoid = nn.Sigmoid()
         self._orient_hinge_loss = True
+        self._mode_length_bins = None, None
 
     def _build_optimizer(self):
         self._loss_weights_of_tag_label_orient = 0.3, 0.1, 0.6
@@ -33,7 +34,6 @@ class PennOperator(Operator):
 
     def _schedule(self, epoch, wander_ratio):
         wander_threshold = 0.15
-        # lr_half_life = 40
 
         if wander_ratio < wander_threshold:
             learning_rate = self._base_lr * (1 - exp(- epoch))
@@ -47,9 +47,13 @@ class PennOperator(Operator):
                     self._base_lr *= self._lr_discount_rate
 
             # if epoch > lr_half_life:
-            #     base_lr *= exp(-(epoch - lr_half_life) / lr_half_life) # fine decline
+            #     base_lr *= 
             linear_dec = (1 - (wander_ratio - wander_threshold) / (1 - wander_threshold + 1e-20))
             learning_rate = self._base_lr * linear_dec
+
+        lr_half_life = 40
+        if epoch > lr_half_life:
+            learning_rate *= exp(-(epoch - lr_half_life) / lr_half_life) # fine decline
         learning_rate += 1e-20
         
         self._writer.add_scalar('Batch/Learning_Rate', learning_rate, self.global_step)
@@ -115,6 +119,8 @@ class PennOperator(Operator):
             self._writer.add_scalar('Loss/Total',   total_loss,  gs)
             self._writer.add_scalar('Batch/SamplePerSec', batch_len / batch_time,  gs)
             self._writer.add_scalar('Batch/Length', batch_len,   gs)
+            if 'segment' in batch:
+                self._writer.add_scalar('Batch/Height', len(batch['segment']), gs)
         else:
             vis, batch_id = extra
             mpc_word = mpc_label = None
@@ -156,18 +162,41 @@ class PennOperator(Operator):
             vis._process(batch_id, b_size + b_head + b_data, trapezoid_info)
         return batch_size, batch_len
 
-    def _before_validation(self, ds_name, epoch, use_test_set = False):
+    def _before_validation(self, ds_name, epoch, use_test_set = False, final_test = True):
         def set_scores(scores):
             self._current_scores = scores
-        folder = 'vis_test' if use_test_set else 'vis_devel'
+        devel_bins, test_bins = self._mode_length_bins
+        if use_test_set:
+            if final_test:
+                folder = 'vis_test'
+            else:
+                folder = 'vis_test_with_devel'
+            save_tensors = True
+            length_bins = test_bins
+            scores_of_bins = True
+        else:
+            folder = 'vis_devel'
+            length_bins = devel_bins
+            save_tensors = is_bin_times(int(float(epoch)) - 1)
+            scores_of_bins = False
+
         self._model.eval()
-        return PennTrainVis(epoch,
+        pvis = PennTrainVis(epoch,
                             self.recorder.create_join(folder),
                             self._evalb,
                             self.i2vs,
                             self.recorder.log,
                             set_scores,
-                            is_bin_times(int(float(epoch)) - 1))
+                            save_tensors,
+                            length_bins,
+                            scores_of_bins)
+        length_bins = pvis.length_bins
+        if length_bins is not None:
+            if use_test_set:
+                self._mode_length_bins = devel_bins, length_bins # change test
+            else:
+                self._mode_length_bins = length_bins, test_bins # change devel
+        return pvis
 
     def _after_validation(self, vis):
         self._model.train()
@@ -217,7 +246,10 @@ from utils.param_ops import HParams
 from utils.shell_io import parseval, rpt_summary
 from visualization import set_vocab, set_head, set_data
 class PennTrainVis:#(Vis):
-    def __init__(self, epoch, work_dir, evalb, i2vs, logger, set_scores, save_tensors = True):
+    def __init__(self, epoch, work_dir, evalb, i2vs, logger, set_scores,
+                 save_tensors   = True,
+                 length_bins    = None,
+                 scores_of_bins = False):
         # super().__init__(epoch)
         self.epoch = epoch
         self._work_dir = work_dir
@@ -231,6 +263,8 @@ class PennTrainVis:#(Vis):
         self._data_tree = None
         self._set_scores = set_scores
         self._save_tensors = save_tensors
+        self._length_bins = length_bins
+        self._scores_of_bins = scores_of_bins
 
     @property
     def save_tensors(self):
@@ -250,7 +284,12 @@ class PennTrainVis:#(Vis):
             #         remove(fname)
             #     if fname.startswith('data.'):
             self._head_tree = open(htree, 'w')
+            self._length_bins = set()
         self._data_tree = open(dtree, 'w')
+
+    @property
+    def length_bins(self):
+        return self._length_bins
 
     def _process(self, batch_id, batch, trapezoid_info):
         # process batch to instances, compress
@@ -266,19 +305,25 @@ class PennTrainVis:#(Vis):
             segment, seg_length, d_segment, d_seg_length = trapezoid_info
             trapezoid_info = segment, seg_length
             d_trapezoid_info = d_segment, d_seg_length.cpu().numpy()
+            
         if self._head_tree:
-            set_head(self._work_dir, batch_id,
-                     size, h_offset, h_length, h_word, h_tag, h_label, h_right,
-                     trapezoid_info,
-                     self._i2vs, self._head_tree)
+            bins = set_head(self._work_dir, batch_id,
+                            size, h_offset, h_length, h_word, h_tag, h_label, h_right,
+                            trapezoid_info,
+                            self._i2vs, self._head_tree)
+            self._length_bins |= bins
         
         fpath = self._work_dir if self._save_tensors else None
+        if self._length_bins is not None and self._scores_of_bins:
+            bin_width = 10
+        else:
+            bin_width = None
         set_data(fpath, batch_id, size, self.epoch, 
                  h_offset, h_length, h_word, d_tag, d_label, d_right,
                  mpc_word, mpc_label,
                  tag_score, label_score, split_score,
                  d_trapezoid_info if trapezoid_info else None,
-                 self._i2vs, self._data_tree, self._logger, self._evalb)
+                 self._i2vs, self._data_tree, self._logger, self._evalb, bin_width)
 
     def _after(self):
         # call evalb to data.emm.rpt return the results, and time counted
@@ -295,6 +340,19 @@ class PennTrainVis:#(Vis):
         elif num_errors:
             self._logger(errors, end = '')
         self._head_tree = self._data_tree = None
+
+        if self._length_bins is not None and self._scores_of_bins:
+            with open(join(self._work_dir, f'{self.epoch}.scores'), 'w') as fw:
+                fw.write('wbin,num,lp,lr,f1,ta\n')
+                for wbin in self._length_bins:
+                    fhead = join(self._work_dir, f'head.bin_{wbin}.tree')
+                    fdata = join(self._work_dir, f'data.bin_{wbin}.tree')
+                    proc = parseval(self._evalb, fhead, fdata)
+                    smy = rpt_summary(proc.stdout.decode(), False, True)
+                    fw.write(f"{wbin},{smy['N']},{smy['LP']},{smy['LR']},{smy['F1']},{smy['TA']}\n")
+                    remove(fhead)
+                    remove(fdata)
+
         scores['key'] = scores.get('F1', 0)
         self._set_scores(scores)
         return ', '.join(f'{k}: {v}' for k,v in scores.items())

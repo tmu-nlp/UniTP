@@ -32,6 +32,8 @@ def rpt_summary(rpt_lines, get_individual, get_summary):
             sent = tuple(float(s) if '.' in s else int(s) for s in line.split())
             individuals.append(sent)
         elif get_summary:
+            if line.startswith('Number of sentence'):
+                summary['N'] = int(line[line.rfind(' '):])
             if line.startswith('Bracketing Recall'):
                 summary['LR'] = float(line[line.rfind(' '):])
             if line.startswith('Bracketing Precision'):

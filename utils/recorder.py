@@ -51,11 +51,13 @@ class Recorder:
             sv_file, sv_lock = create_sv_file_lock(instance_dir)
             save_yaml(config_dict_or_instance, sv_file, sv_lock)
         else:
-            assert config_dict_or_instance in rt, f'instance {config_dict_or_instance} not registered.'
+            rt = load_yaml(rt_file, rt_lock)
             for instance_dir in listdir(task_dir):
                 instance = instance_dir.split('.')[0]
                 if instance.isdigit() and int(instance) == int(config_dict_or_instance):
                     break
+                instance = None
+            assert instance in rt, f'instance {config_dict_or_instance} not registered.'
             instance_dir = create_join(task_dir, instance_dir)
             sv_file, sv_lock = create_sv_file_lock(instance_dir)
             assert isfile(sv_file), f"'{sv_file}' is not found."

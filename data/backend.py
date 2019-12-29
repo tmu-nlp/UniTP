@@ -132,9 +132,11 @@ class LengthOrderedDataset(Dataset):
                  min_len,
                  max_len,
                  extra_text_helper):
-        indices = defaultdict(list)
+        if min_len is None:
+            min_len = 0
         if max_len is None:
-            max_len = max(lengths) + 1
+            max_len = max(lengths)
+        indices = defaultdict(list)
         for i, length in enumerate(lengths):
             if min_len <= length <= max_len:
                 indices[length].append(i)
@@ -192,22 +194,22 @@ class LengthOrderedDataset(Dataset):
         if self._bkt_next_bucket is None:
             group_ids, bkt = zip(*buckets.items())
             bucket_probs = np.asarray([len(x) for x in bkt], dtype = np.float32)
-            total = sum(bucket_probs)
+            total = int(sum(bucket_probs))
             bucket_probs /= total
             group_id = np.random.choice(group_ids, p = bucket_probs)
             self._bkt_next_bucket = group_id
             self._bkt_buffer_size = total - 1
         else:
             group_id = self._bkt_next_bucket
-            bucket = buckets[group_id]
-            if len(bucket) == 0:
-                group_id = min(buckets, key = lambda k: abs(group_id - k))
             self._bkt_buffer_size -= 1
         bucket = buckets[group_id]
         idx = bucket.pop(idx % len(bucket))
         if len(bucket) == 0:
-            self._bkt_next_bucket = None
             buckets.pop(group_id)
+            if buckets:
+                self._bkt_next_bucket = min(buckets, key = lambda k: abs(group_id - k)) # find similar samples for batch
+            else:
+                self._bkt_next_bucket = None # final in a epoch
         return idx
 
     def __take_inc_buffer(self, idx):
@@ -289,6 +291,11 @@ class LengthOrderedDataset(Dataset):
         raise NotImplementedError()
 
     def collate_fn(self, batch):
+        field_columns = self._collate_fn(batch)
+        if self._extra_text_helper:
+            field_columns.update(self._extra_text_helper.get())
+
+        # internal preparation
         if self._mode == M_INC and self._self_reinit and self._inc_buffer_size == 0:
             to_sample = sorted(self._indices.keys())
             self._inc_mode = (to_sample,) + self._inc_mode[1:]
@@ -300,7 +307,4 @@ class LengthOrderedDataset(Dataset):
             else:
                 self._bkt_next_bucket = None
 
-        field_columns = self._collate_fn(batch)
-        if self._extra_text_helper:
-            field_columns.update(self._extra_text_helper.get())
         return field_columns

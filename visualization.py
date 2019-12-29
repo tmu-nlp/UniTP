@@ -158,46 +158,61 @@ def set_vocab(fpath, vocabs, model_vocab_size = None, fname = 'vocabs.pkl'):
     pickle_dump(fname, vocabs)
     return True
 
+from contextlib import ExitStack
 def set_head(fpath, batch_id, size,
              offset, length, word, tag, label, right,
              trapezoid_info,
-             vocabs, fhtree, vfname = 'vocabs.pkl'):
+             vocabs, fhtree, vfname = 'vocabs.pkl', bin_width = 10):
     old_tag = tag
 
     if tag is None:
         tag = inf_none_gen
-    trees = []
+
     if trapezoid_info is None:
         func_args = zip(offset, length, word, tag, label, right)
     else:
         segment, seg_length = trapezoid_info
         func_args = zip(offset, length, word, tag, label, right, seg_length)
 
+    trees = []
     for args in func_args:
         if trapezoid_info is None:
             tree = str(head_to_tree(*args, vocabs))
         else:
             tree = str(head_to_tree_(*args, segment, vocabs))
         tree = ' '.join(tree.split())
-        trees.append(tree)
         print(tree, file = fhtree)
+        trees.append(tree)
 
-    if fpath and trapezoid_info is None:
-        assert isfile(join(fpath, vfname))
-        fname = join(fpath, f'head.{batch_id}_{size}.pkl')
-        head  = IOHead(offset, length, word, old_tag, label, right, trees)
-        pickle_dump(fname, head)
-        fname = join(fpath, f'head.{batch_id}.tree')
-        with open(fname, 'w') as fw:
-            for tree in trees:
+    if fpath:
+
+        ftrees = {}
+        fhead = join(fpath, f'head.{batch_id}.tree')
+
+        with ExitStack() as stack, open(fhead, 'w') as fh:
+            for wlen, tree in zip(length, trees):
+                wbin = wlen // bin_width
+                if wbin in ftrees:
+                    fw = ftrees[wbin]
+                else:
+                    fw = open(join(fpath, f'head.bin_{wbin}.tree'), 'a')
+                    ftrees[wbin] = stack.enter_context(fw)
                 print(tree, file = fw)
+                print(tree, file = fh)
+
+        if trapezoid_info is None:
+            assert isfile(join(fpath, vfname))
+            fname = join(fpath, f'head.{batch_id}_{size}.pkl')
+            head  = IOHead(offset, length, word, old_tag, label, right, trees)
+            pickle_dump(fname, head)
+        return ftrees.keys()
 
 from utils.shell_io import parseval, rpt_summary
 def set_data(fpath, batch_id, size, epoch,
              offset, length, word, tag, label, right, mpc_word, mpc_phrase,
              tag_score, label_score, split_score,
              trapezoid_info,
-             vocabs, fdtree, on_error = None, evalb = None):
+             vocabs, fdtree, on_error = None, evalb = None, bin_width = 10):
 
     tree_kwargs = dict(return_warnings = True, on_error = on_error)
     error_prefix = f'  [{batch_id} {epoch}'
@@ -224,21 +239,24 @@ def set_data(fpath, batch_id, size, epoch,
         print(tree, file = fdtree) # TODO use stack to protect opened file close and delete
         batch_warnings.append(warnings)
 
-    if fpath and trapezoid_info is None:
+    if fpath:
         fdata = join(fpath, f'data.{batch_id}.tree')
         with open(fdata, 'w') as fw:
             for tree in trees:
                 print(tree, file = fw)
+                
         fhead = join(fpath, f'head.{batch_id}.tree')
         proc = parseval(evalb, fhead, fdata)
         idv, smy = rpt_summary(proc.stdout.decode(), True, True)
 
-        fhead = f'head.{batch_id}_{size}.pkl'
-        assert isfile(join(fpath, fhead)), f"Need a head '{fhead}'"
-        fdata = join(fpath, f'data.{batch_id}_{epoch}.pkl')
-        data = IOData(offset, length, word, tag, label, right, trees, mpc_word, mpc_phrase,
-                    batch_warnings, idv, tag_score, label_score, split_score, smy)
-        pickle_dump(fdata, data)
+        if trapezoid_info is None:
+            fhead = f'head.{batch_id}_{size}.pkl'
+            assert isfile(join(fpath, fhead)), f"Need a head '{fhead}'"
+            fdata = join(fpath, f'data.{batch_id}_{epoch}.pkl')
+            data = IOData(offset, length, word, tag, label, right, trees, mpc_word, mpc_phrase,
+                        batch_warnings, idv, tag_score, label_score, split_score, smy)
+            pickle_dump(fdata, data)
+
         fname = join(fpath, 'summary.pkl')
         if isfile(fname):
             summary = pickle_load(fname)
@@ -246,6 +264,20 @@ def set_data(fpath, batch_id, size, epoch,
             summary = {}
         summary[(batch_id, epoch)] = smy
         pickle_dump(fname, summary)
+
+        if isinstance(bin_width, int):
+            ftrees = {}
+            with ExitStack() as stack:
+                for wlen, tree in zip(length, trees):
+                    wbin = wlen // bin_width
+                    if wbin in ftrees:
+                        fw = ftrees[wbin]
+                    else:
+                        fw = open(join(fpath, f'data.bin_{wbin}.tree'), 'a')
+                        ftrees[wbin] = stack.enter_context(fw)
+                    print(tree, file = fw)
+
+        return smy['F1']
 
 def calc_stan_accuracy(folder, bid, e_major, e_minor, on_error):
     

@@ -36,6 +36,7 @@ class Operator:
         self._validate_materials = self.get_materials(M_DEVEL)
         (epoch, global_step, fine_validation) = self._recorder.initial_or_restore(self._model)
         self._global_step = global_step
+        self._epoch_start = time()
         return epoch, fine_validation
 
     def train_step(self, epoch_cnt, wander_ratio):
@@ -56,7 +57,7 @@ class Operator:
                 ds_freqs[ds_name] -= num_samples
                 self._global_step += 1
                 yield qbar.n / qbar.total
-
+        self._recorder.log(f'{epoch_cnt}. epoch - {time() - self._epoch_start:.0f} sec. from start')
         # next epoch
 
     def validate_betterment(self, epoch, falling):

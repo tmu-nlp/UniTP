@@ -82,7 +82,7 @@ orient_dim = BaseType(32,  validator = valid_even_size)
 hidden_dim = BaseType(200, validator = valid_size)
 train_batch_size = BaseType(80, validator = valid_size)
 train_bucket_len = BaseType(4, validator = lambda x: isinstance(x, int) and 0 <= x)
-train_max_len    = BaseType(100, validator = valid_size, default_set = (None,))
+train_max_len    = BaseType(None, validator = valid_size, as_exception = True)
 fill_placeholder = '//FILL//THIS//'
 trapezoid_height = BaseType(None, valid_size, as_exception = True)
 

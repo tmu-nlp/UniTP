@@ -19,12 +19,17 @@ trapo_data$type <- rep('Trapezoid', length(trapo_data$speed))
 
 data <- rbind(tri_data, trapo_data)
 
-p <- ggplot(data, aes(length, speed, color = type, shape = type, alpha = I(0.7)))
-p <- p + labs(x = 'Training Batch Length', y = 'Training Speed (sent./sec.)')
+p <- ggplot(data, aes(length, speed, color = type, shape = type, alpha = I(0.7), linetype = type))
+p <- p + labs(x = 'Training Batch Length', y = 'Speed (sents/sec)')
 p <- p + labs(color = "Data Format", shape = "Data Format")
-p <- p + theme(legend.position = c(0.89, 0.84))
+p <- p + theme(legend.position = c(0.38, 0.88),
+               legend.direction = "horizontal",
+               axis.title = element_text(size = 14),
+               legend.title = element_text(size = 12),
+               text = element_text(size = 15))
             #    legend.key = element_rect(fill = NA, color = NA))
 p <- p + geom_point()
+p <- p + stat_smooth(method = 'lm', formula = y ~ splines::bs(x, 4), geom = 'line', alpha = 0.5, color = 'black', show.legend=FALSE)
 
 # model, data, pre, cnf, f1, tid, eid
 # cnf_data <- data[data$exp == 'cnf',]

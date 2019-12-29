@@ -6,7 +6,11 @@ from utils.types import BaseType, true_type, frac_4, frac_2
 from utils.types import orient_dim, combine_type, num_ori_layer
 
 contextual_type = BaseType(0, as_index = True, as_exception = True, default_set = (nn.LSTM, nn.GRU))
-activation_type = BaseType(0, as_index = True, as_exception = True, default_set = (nn.ReLU, nn.Sigmoid, nn.Tanh))
+activation_type = BaseType(0, as_index = True, as_exception = True, default_set = (nn.ReLU, nn.ReLU6, nn.Softplus,# end == 0, nn.GELU
+                                                                                   nn.LeakyReLU, nn.ELU, nn.CELU, nn.SELU, nn.RReLU, # end < 0
+                                                                                   nn.Sigmoid, nn.LogSigmoid,
+                                                                                   nn.Tanh, nn.Softsign, nn.Hardtanh, # -<0<+
+                                                                                   nn.Tanhshrink, nn.Softshrink, nn.Hardshrink)) # -0+
 
 stem_config = dict(orient_dim   = orient_dim,
                    combine_type = combine_type,
@@ -42,6 +46,7 @@ class Stem(nn.Module):
             h0 = torch.randn(num_layers * 2, 1, hidden_size)
             self._c0 = nn.Parameter(c0, requires_grad = True)
             self._h0 = nn.Parameter(h0, requires_grad = True)
+            self._h0_act = nn.Tanh()
             self._initial_size = hidden_size
         else:
             self.register_parameter('_h0', None)
@@ -60,6 +65,7 @@ class Stem(nn.Module):
         if self._initial_size:
             c0 = self._c0.expand(2, batch_size, self._initial_size).contiguous()
             h0 = self._h0.expand(2, batch_size, self._initial_size).contiguous()
+            h0 = self._h0_act(h0)
             h0c0 = h0, c0
         else:
             h0c0 = None
