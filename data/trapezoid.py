@@ -234,6 +234,7 @@ class TrapezoidDataset(LengthOrderedDataset):
             
             field_columns[field] = tensor
 
+        field_columns['mask_length'] = cumu_length - mask_length
         for f, column in field_columns.items():
             field_columns[f] = torch.as_tensor(column, dtype = (None if f == 'xtype' else torch.long), device = device)
 
@@ -250,6 +251,10 @@ class TrapezoidDataset(LengthOrderedDataset):
         field_columns['height'] = height
         field_columns['segment'] = segments
         field_columns['seg_length'] = seg_length[:, -len(segments):]
-        field_columns['mask_length'] = mask_length
 
+        # if len(segments) > 15: # even still sooooo sparse
+        #     p_ = torch.arange(full_triangular_len, device = device)[None, :]
+        #     x_ = p_ >= field_columns['mask_length'][:, None]
+        #     import pdb; pdb.set_trace()
+        
         return field_columns

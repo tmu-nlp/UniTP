@@ -1,9 +1,12 @@
 from models.backend import contextual_type
 from models.penn import BasePennTree, penn_tree_config, torch, nn, Tensor
 from models.utils import PCA
-from utils.types import true_type, false_type, word_dim, num_ctx_layer, frac_4, frac_2
+from utils.types import true_type, false_type, word_dim, num_ctx_layer, frac_4, frac_2, BaseType
+
+act_fasttext = BaseType(None, as_index = True, as_exception = True, default_set = (nn.Tanh, nn.Softsign))
 
 leaves_config = dict(use_fasttext = true_type,
+                     act_fasttext = act_fasttext,
                      word_dim     = word_dim,
                      trainable    = false_type,
                      contextual   = contextual_type,
@@ -16,6 +19,7 @@ class LstmLeaves(nn.Module):
                  num_words,
                  initial_weight,
                  use_fasttext,
+                 act_fasttext,
                  word_dim,
                  trainable,
                  contextual,
@@ -48,6 +52,9 @@ class LstmLeaves(nn.Module):
             assert trainable
             dy_emb_layer = nn.Embedding(num_words, word_dim)
 
+        if act_fasttext is not None:
+            act_fasttext = act_fasttext()
+        self._act_fasttext = act_fasttext
         self._word_dim = word_dim
         self._st_dy_bound = st_dy_bound
         self._st_emb_layer = st_emb_layer
@@ -96,6 +103,8 @@ class LstmLeaves(nn.Module):
             bottom_existence = word_idx > 0
 
         static_emb = self._dp_layer(static_emb)
+        if self._act_fasttext is not None:
+            static_emb = self._act_fasttext(static_emb)
 
         if self._contextual is None:
             dynamic_emb = None

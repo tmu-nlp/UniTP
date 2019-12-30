@@ -95,8 +95,13 @@ class PennOperator(Operator):
             tag_weight    = (   tag_mis | bottom_existence)
             label_weight  = ( label_mis | existences)
 
+            if trapezoid_info is None:
+                height_mask = s_index(batch_len - batch['length'])[:, None, None]
+            else:
+                height_mask = batch['mask_length'] # ?? negative effect ???
+
             tag_loss    = cross_entropy(tag_logits,   batch['tag'],   None)
-            label_loss  = cross_entropy(label_logits, batch['label'], None, batch_len, batch['length'])
+            label_loss  = cross_entropy(label_logits, batch['label'], height_mask)
             if self._orient_hinge_loss:
                 orient_loss = hinge_loss(orient_logits, gold_orients, orient_weight)
             else:
@@ -211,20 +216,14 @@ class PennOperator(Operator):
 def fraction(cnt_n, cnt_d, dtype = torch.float32):
     return cnt_n.sum().type(dtype) / cnt_d.sum().type(dtype)
 
-def cross_entropy(x_, y_, w_, *s_l_):
+def cross_entropy(x_, y_, w_):
     b_, t_, c_ = x_.shape
     losses = F.cross_entropy(x_.view(-1, c_), y_.view(-1), reduction = 'none')
     if w_ is not None:
+        p_ = torch.arange(t_, device = w_.device)[None, :]
+        w_ = p_ >= w_[:, None]
         losses = losses * w_.view(-1)
-    if s_l_:
-        s_, l_ = s_l_
-        losses = losses * height_mask(t_, s_, l_).view(-1)
     return losses.sum() # TODO turn off non-train gradient tracking
-
-def height_mask(flatten_triangle_size, bottom_size, bottom_lengths):
-    p_ = torch.arange(flatten_triangle_size, device = bottom_lengths.device)[None, :, None]
-    t_ = s_index(bottom_size - bottom_lengths)[:, None, None]
-    return p_ >= t_
 
 def binary_cross_entropy(x, y, w):
     losses = F.binary_cross_entropy(x, y.type(x.dtype), reduction = 'none')

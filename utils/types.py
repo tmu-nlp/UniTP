@@ -14,9 +14,11 @@ class BaseType:
                     self._valid = lambda x: x == default_val
             else:
                 assert as_index
-                assert isinstance(default_val, int)
+                assert isinstance(default_val, int) or default_val is None
                 if as_exception: # (nn.LSTM, nn.GRU)
                     names_set = tuple(x.__name__ for x in default_set)
+                    if default_val is None:
+                        names_set = (None,) + names_set
                     self._valid = lambda x: x in names_set
                 else: # ('CV', 'NV')
                     self._valid = lambda x: x in default_set
@@ -39,19 +41,20 @@ class BaseType:
     @property
     def default(self):
         default_val, as_index, as_exception = self._val_as_index
-        return (self._set[default_val].__name__ if as_exception else self._set[default_val]) if as_index else default_val
+        if as_index and default_val is not None:
+            return (self._set[default_val].__name__ if as_exception else self._set[default_val])
+        return default_val
 
     def validate(self, val):
         return self._valid(val)
 
     def __getitem__(self, idx):
-        _, as_index, as_exception = self._val_as_index
+        default_val, as_index, as_exception = self._val_as_index
         if as_index and as_exception:
             for x in self._set:
                 if x.__name__ == idx:
                     return x
-            raise KeyError()
-            # return self._set[idx] 
+            return default_val
         return idx
 
 E_FT = (False, True)
