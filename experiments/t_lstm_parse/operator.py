@@ -1,7 +1,6 @@
 import torch
 from torch import optim, nn
 from torch.utils.tensorboard import SummaryWriter
-from torch.nn import functional as F
 from utils.operator import Operator
 from data.delta import get_rgt, get_dir, s_index
 from data.penn_types import C_ABSTRACT
@@ -9,13 +8,13 @@ from time import time
 from math import exp
 from utils.math_ops import is_bin_times
 from utils.types import M_TRAIN
-from models.utils import PCA
+from models.utils import PCA, fraction
+from models.loss import binary_cross_entropy, hinge_loss
 
 class PennOperator(Operator):
     def __init__(self, model, get_datasets, recorder, i2vs, evalb):
         super().__init__(model, get_datasets, recorder, i2vs)
         self._evalb = evalb
-        self._softmax = nn.Softmax(dim = 2)
         self._sigmoid = nn.Sigmoid()
         self._orient_hinge_loss = True
         self._mode_length_bins = None, None
@@ -85,8 +84,8 @@ class PennOperator(Operator):
             orients = orient_logits > 0.5
 
         if mode == M_TRAIN:
-            tags    = torch.argmax(tag_logits,   dim = 2)
-            labels  = torch.argmax(label_logits, dim = 2)
+            tags    = self._model.get_decision(tag_logits  )
+            labels  = self._model.get_decision(label_logits)
             bottom_existence = existences[:, -batch_len:]
             orient_weight = get_dir(batch['xtype'])
             tag_mis       = (tags    != batch['tag'])
@@ -100,8 +99,8 @@ class PennOperator(Operator):
             else:
                 height_mask = batch['mask_length'] # ?? negative effect ???
 
-            tag_loss    = cross_entropy(tag_logits,   batch['tag'],   None)
-            label_loss  = cross_entropy(label_logits, batch['label'], height_mask)
+            tag_loss   = self._model.get_loss(tag_logits,   batch, None)
+            label_loss = self._model.get_loss(label_logits, batch, height_mask)
             if self._orient_hinge_loss:
                 orient_loss = hinge_loss(orient_logits, gold_orients, orient_weight)
             else:
@@ -130,21 +129,15 @@ class PennOperator(Operator):
             vis, batch_id = extra
             mpc_word = mpc_label = None
             if vis.save_tensors:
-                if hasattr(self._model._emb_layer, 'pca'):
+                if hasattr(self._model._input_layer, 'pca'):
                     if dynamic is not None: # even dynamic might be None, being dynamic is necessary to train a good model
-                        mpc_word = self._model._emb_layer.pca(static, flush = flush)
-                    mpc_label    = self._model._emb_layer.pca(layers_of_base)
+                        mpc_word = self._model._input_layer.pca(static, flush = flush)
+                    mpc_label    = self._model._input_layer.pca(layers_of_base)
                 else:
                     mpc_label = PCA(layers_of_base[:, -batch_len:].reshape(-1, layers_of_base.shape[2]))(layers_of_base)
 
-                tag_logits   = self._softmax(tag_logits)
-                label_logits = self._softmax(label_logits)
-                tag_scores,   tags   = tag_logits  .topk(1)
-                label_scores, labels = label_logits.topk(1)
-                tags  .squeeze_(dim = 2)
-                labels.squeeze_(dim = 2)
-                tag_scores  .squeeze_(dim = 2)
-                label_scores.squeeze_(dim = 2)
+                tag_scores,   tags   = self._model.get_decision_with_value(tag_logits)
+                label_scores, labels = self._model.get_decision_with_value(label_logits)
                 if self._orient_hinge_loss: # otherwise with sigmoid
                     orient_logits += 1
                     orient_logits /= 2
@@ -153,8 +146,8 @@ class PennOperator(Operator):
                 b_mpcs = (None if mpc_word is None else mpc_word.type(torch.float16), mpc_label.type(torch.float16))
                 b_scores = (tag_scores.type(torch.float16), label_scores.type(torch.float16), orient_logits.type(torch.float16))
             else:
-                tags   = torch.argmax(tag_logits,   dim = 2)
-                labels = torch.argmax(label_logits, dim = 2)
+                tags    = self._model.get_decision(tag_logits  )
+                labels  = self._model.get_decision(label_logits)
                 b_mpcs = (mpc_word, mpc_label)
                 b_scores = (None, None, None)
             b_size = (batch_len,)
@@ -212,30 +205,6 @@ class PennOperator(Operator):
 
     def _scores(self):
         return self._current_scores
-
-def fraction(cnt_n, cnt_d, dtype = torch.float32):
-    return cnt_n.sum().type(dtype) / cnt_d.sum().type(dtype)
-
-def cross_entropy(x_, y_, w_):
-    b_, t_, c_ = x_.shape
-    losses = F.cross_entropy(x_.view(-1, c_), y_.view(-1), reduction = 'none')
-    if w_ is not None:
-        p_ = torch.arange(t_, device = w_.device)[None, :]
-        w_ = p_ >= w_[:, None]
-        losses = losses * w_.view(-1)
-    return losses.sum() # TODO turn off non-train gradient tracking
-
-def binary_cross_entropy(x, y, w):
-    losses = F.binary_cross_entropy(x, y.type(x.dtype), reduction = 'none')
-    losses = losses * w
-    return losses.sum()
-
-def hinge_loss(x, y, w):
-    ones = torch.ones_like(x)
-    y = torch.where(y, ones, -ones)
-    losses = 1 - (x * y)
-    losses[(losses < 0) | ~ w] = 0
-    return losses.sum()
     
 
 # from utils.vis import Vis
@@ -305,18 +274,20 @@ class PennTrainVis:#(Vis):
             trapezoid_info = segment, seg_length
             d_trapezoid_info = d_segment, d_seg_length.cpu().numpy()
             
+        fpath = self._work_dir if self._save_tensors else None
         if self._head_tree:
-            bins = set_head(self._work_dir, batch_id,
+            bins = set_head(fpath, batch_id,
                             size, h_offset, h_length, h_word, h_tag, h_label, h_right,
                             trapezoid_info,
                             self._i2vs, self._head_tree)
-            self._length_bins |= bins
+            if fpath:
+                self._length_bins |= bins
         
-        fpath = self._work_dir if self._save_tensors else None
         if self._length_bins is not None and self._scores_of_bins:
             bin_width = 10
         else:
             bin_width = None
+            
         set_data(fpath, batch_id, size, self.epoch, 
                  h_offset, h_length, h_word, d_tag, d_label, d_right,
                  mpc_word, mpc_label,

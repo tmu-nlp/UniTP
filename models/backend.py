@@ -24,7 +24,7 @@ from models.utils import squeeze_left
 from itertools import count
 class Stem(nn.Module):
     def __init__(self,
-                 word_dim,
+                 model_dim,
                  orient_dim,
                  combine_type,
                  num_layers,
@@ -33,14 +33,14 @@ class Stem(nn.Module):
                  drop_out):
         super().__init__()
         hidden_size = orient_dim // 2
-        self.orient_emb = nn.LSTM(word_dim, hidden_size,
+        self.orient_emb = nn.LSTM(model_dim, hidden_size,
                                   num_layers    = num_layers,
                                   bidirectional = True,
                                   batch_first   = True,
                                   dropout = rnn_drop_out if num_layers > 1 else 0)
         self._dp_layer = nn.Dropout(drop_out)
         self.orient = nn.Linear(orient_dim, 1)
-        self.combine = get_combinator(combine_type, word_dim)
+        self.combine = get_combinator(combine_type, model_dim)
         if trainable_initials:
             c0 = torch.randn(num_layers * 2, 1, hidden_size)
             h0 = torch.randn(num_layers * 2, 1, hidden_size)
@@ -53,6 +53,25 @@ class Stem(nn.Module):
             self.register_parameter('_c0', None)
             self._initial_size = None
 
+    @property
+    def combinator(self):
+        return self.combine
+    
+    def get_h0c0(self, batch_size):
+        if self._initial_size:
+            c0 = self._c0.expand(2, batch_size, self._initial_size).contiguous()
+            h0 = self._h0.expand(2, batch_size, self._initial_size).contiguous()
+            h0 = self._h0_act(h0)
+            h0c0 = h0, c0
+        else:
+            h0c0 = None
+        return h0c0
+
+    def forward_layer(self, unit_hidden, h0c0):
+        orient_hidden, _ = self.orient_emb(unit_hidden, h0c0)
+        orient_hidden = self._dp_layer(orient_hidden)
+        return self.orient(orient_hidden)
+
     def forward(self,
                 existence,
                 unit_hidden,
@@ -61,14 +80,7 @@ class Stem(nn.Module):
         batch_size, seq_len = existence.shape
         existence.unsqueeze_(dim = -1)
         unit_hidden *= existence
-        
-        if self._initial_size:
-            c0 = self._c0.expand(2, batch_size, self._initial_size).contiguous()
-            h0 = self._h0.expand(2, batch_size, self._initial_size).contiguous()
-            h0 = self._h0_act(h0)
-            h0c0 = h0, c0
-        else:
-            h0c0 = None
+        h0c0 = self.get_h0c0(batch_size)
 
         if height == 0:
             (layers_of_unit, layers_of_existence, layers_of_orient,
@@ -105,9 +117,7 @@ class Stem(nn.Module):
             ends = offsets + lengths - 1
 
         for length in range(num_layers, 0, -1):
-            orient_hidden, _ = self.orient_emb(unit_hidden, h0c0)
-            orient_hidden = self._dp_layer(orient_hidden)
-            orient = self.orient(orient_hidden)
+            orient = self.forward_layer(unit_hidden, h0c0)
             layers_of_orient.append(orient)
             layers_of_unit  .append(unit_hidden)
             layers_of_existence.append(existence)
@@ -154,9 +164,7 @@ class Stem(nn.Module):
                 else:
                     seg_length.append(seg_length[-1] - 1)
                 
-            orient_hidden, _ = self.orient_emb(unit_hidden, h0c0)
-            orient_hidden = self._dp_layer(orient_hidden)
-            orient = self.orient(orient_hidden)
+            orient = self.forward_layer(unit_hidden, h0c0)
             layers_of_orient.append(orient)
             layers_of_unit  .append(unit_hidden)
             layers_of_existence.append(existence)
@@ -186,3 +194,110 @@ class Stem(nn.Module):
             seg_length = torch.cat(seg_length, dim = 1)
             
         return (layers_of_unit, layers_of_existence, layers_of_orient, (segment, seg_length))
+
+
+from models.utils import PCA
+from utils.types import false_type, num_ctx_layer
+from utils.param_ops import HParams, dict_print
+act_fasttext = BaseType(None, as_index = True, as_exception = True, default_set = (nn.Tanh, nn.Softsign))
+input_config = dict(pre_trained = true_type, activation = act_fasttext, trainable = false_type, drop_out = frac_4)
+
+class InputLeaves(nn.Module):
+    def __init__(self,
+                 model_dim,
+                 num_types,
+                 initial_weight,
+                 pre_trained,
+                 trainable,
+                 activation,
+                 drop_out):
+        super().__init__()
+
+        st_dy_bound = 0
+        st_emb_layer = dy_emb_layer = None
+        if pre_trained:
+            num_special_tokens = num_types - initial_weight.shape[0]
+            assert num_special_tokens >= 0
+            if num_special_tokens > 0: # bos eos
+                if trainable:
+                    initial_weight = torch.cat([torch.tensor(initial_weight), torch.rand(num_special_tokens, model_dim)], 0)
+                    st_emb_layer = None
+                    dy_emb_layer = nn.Embedding.from_pretrained(initial_weight)
+                else:
+                    assert model_dim == initial_weight.shape[1]
+                    st_dy_bound = initial_weight.shape[0]
+                    st_emb_layer = nn.Embedding.from_pretrained(torch.as_tensor(initial_weight), freeze = True)
+                    dy_emb_layer = nn.Embedding(num_special_tokens, model_dim)
+            elif trainable: # nil nil
+                dy_emb_layer = nn.Embedding.from_pretrained(torch.as_tensor(initial_weight), freeze = False)
+            else: # nil nil
+                st_emb_layer = nn.Embedding.from_pretrained(torch.as_tensor(initial_weight), freeze = True)
+        else: # nil ... unk | ... unk bos eos
+            assert trainable
+            dy_emb_layer = nn.Embedding(num_types, model_dim)
+
+        if activation is None:
+            self._act_pre_trained = None
+        else:
+            self._act_pre_trained = activation()
+        self._dp_layer = nn.Dropout(drop_out)
+        self._model_dim = model_dim
+        self._st_dy_bound = st_dy_bound
+        self._st_emb_layer = st_emb_layer
+        self._dy_emb_layer = dy_emb_layer
+        self._pca_base = None
+
+    def pca(self, word_emb, flush = False):
+        # TODO: setup_pca with external
+        if flush or self._st_emb_layer is not None and self._pca_base is None:
+            self._pca_base = PCA(self._st_emb_layer.weight)
+        return self._pca_base(word_emb)
+
+    def forward(self, word_idx):
+        if self._st_dy_bound > 0:
+            b_ = self._st_dy_bound
+            c_ = word_idx < b_
+            st_idx = torch.where(c_, word_idx, torch.zeros_like(word_idx))
+            dy_idx = torch.where(c_, torch.zeros_like(word_idx), word_idx - b_)
+            st_emb = self._st_emb_layer(st_idx)
+            dy_emb = self._dy_emb_layer(dy_idx)
+            static_emb = torch.where(c_.unsqueeze(-1), st_emb, dy_emb)
+            bottom_existence = torch.ones_like(word_idx, dtype = torch.bool)
+        else:
+            emb_layer = self._st_emb_layer or self._dy_emb_layer
+            static_emb = emb_layer(word_idx)
+            bottom_existence = word_idx > 0
+
+        static_emb = self._dp_layer(static_emb)
+        if self._act_pre_trained is not None:
+            static_emb = self._act_pre_trained(static_emb)
+        return static_emb, bottom_existence
+
+contextual_config = dict(num_layers = num_ctx_layer, rnn_type = contextual_type, rnn_drop_out = frac_2)
+class Contextual(nn.Module):
+    def __init__(self,
+                 model_dim,
+                 num_layers,
+                 rnn_type,
+                 rnn_drop_out):
+        super().__init__()
+        if num_layers:
+            assert model_dim % 2 == 0
+            rnn_drop_out = rnn_drop_out if num_layers > 1 else 0
+            self._contextual = rnn_type(model_dim,
+                                        model_dim // 2,
+                                        num_layers,
+                                        bidirectional = True,
+                                        batch_first = True,
+                                        dropout = rnn_drop_out)
+        else:
+            self._contextual = None
+
+    def forward(self, static_emb):
+        if self._contextual is None:
+            dynamic_emb = None
+        else:
+            dynamic_emb, _ = self._contextual(static_emb)
+            dynamic_emb = dynamic_emb + static_emb # += does bad to gpu
+            # dynamic_emb = self._dp_layer(dynamic_emb)
+        return dynamic_emb

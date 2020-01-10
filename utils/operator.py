@@ -12,7 +12,7 @@ class Operator:
         assert isinstance(model, nn.Module)
         assert callable(get_datasets)
         assert isinstance(recorder, Recorder)
-        assert 'word' in i2vs._nested
+        assert 'word' in i2vs._nested or 'char' in i2vs._nested
         self._model = model
         self._get_datasets = get_datasets
         self._recorder = recorder
@@ -66,7 +66,7 @@ class Operator:
             desc = ''
             for ds_name, ds_iter in zip(ds_names, ds_iters):
                 vis = self._before_validation(ds_name, timestamp(epoch, ''))
-                vis._before() # TODO: mpc
+                if vis: vis._before() # TODO: mpc
                 start, cnt = time(), 0
                 for batch_id, batch in enumerate(ds_iter):
                     with no_grad():
@@ -75,7 +75,7 @@ class Operator:
                     qbar.update(num_samples)
                     qbar.desc = f'V-{epoch:.1f}'
                 speed = cnt / (time() - start)
-                desc += vis._after() + f' in {speed:.2f} s/s.; '
+                if vis: desc += vis._after() + f' in {speed:.2f} s/s.; '
                 self._after_validation(vis)
             qbar.desc = desc[:-2] + '.'
             self._recorder.log(timestamp(epoch, 'V') + '  ' + desc[:-2])
@@ -89,7 +89,7 @@ class Operator:
             desc = ''
             for ds_name, ds_iter in zip(ds_names, ds_iters):
                 vis = self._before_validation(ds_name, timestamp(epoch, ''), use_test_set = True)
-                vis._before() # TODO: mpc
+                if vis: vis._before() # TODO: mpc
                 start, cnt = time(), 0
                 for batch_id, batch in enumerate(ds_iter):
                     with no_grad():
@@ -98,7 +98,7 @@ class Operator:
                     qbar.update(num_samples)
                     qbar.desc = f'T-{epoch:.1f}'
                 speed = cnt / (time() - start)
-                desc += vis._after() + f' in {speed:.2f} s/s.; '
+                if vis: desc += vis._after() + f' in {speed:.2f} s/s.; '
                 self._after_validation(vis)
             qbar.desc = desc[:-2] + '.'
         return self._scores()

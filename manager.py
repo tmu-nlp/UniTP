@@ -318,7 +318,7 @@ class Manager:
                     data_config[d] = dict(data_path = ready_paths[d])
                 else:
                     c['data_path'] = ready_paths[d]
-                    if c['trapezoid_height'] is not None: # a trigger for source corpus
+                    if c.get('trapezoid_height', None) is not None: # a trigger for source corpus
                         corp_status = status['data'][d]
                         c['source_path'] = corp_status['source_path']
                         c['data_splits'] = corp_status['build_params']

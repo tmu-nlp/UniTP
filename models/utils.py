@@ -13,6 +13,8 @@ class PCA:
         pc = torch.matmul(emb, self._bases)
         return torch.cat([m_, pc], -1)
 
+def fraction(cnt_n, cnt_d, dtype = torch.float32):
+    return cnt_n.sum().type(dtype) / cnt_d.sum().type(dtype)
 
 import math
 from torch.nn import Module, Parameter, init
@@ -49,6 +51,47 @@ class SimplerLinear(Module):
     def extra_repr(self):
         return 'in_features={}, bias={}'.format(
             self.in_features, self.bias is not None
+        )
+
+class GaussianCodebook(Module):
+    __constants__ = ['bias', 'codebook' 'io_features']
+    def __init__(self, in_dim, num_codes, prefix_dims = 0):
+        super(GaussianCodebook, self).__init__()
+
+        self.io_features = in_dim, num_codes
+        size = [1 for _ in range(prefix_dims)]
+        size += [in_dim, num_codes]
+        self.codebook = Parameter(torch.Tensor(*size))
+        self.reset_parameters()
+
+    def reset_parameters(self):
+        init.kaiming_uniform_(self.codebook, a = math.sqrt(5))
+
+    def forward(self, x):
+        diff = (x.unsqueeze(dim = 3) - self.codebook) ** 2
+        return diff.mean(dim = -2) # [?...?, c]
+
+    def repulsion(self, coeff):
+        in_dim, num_codes = self.io_features
+        code = self.codebook.view(1, in_dim, num_codes)
+        _code = code.transpose(0, 2)
+        ccd = (code - _code) ** 2 # [c, h, c]
+        ccd = ccd.mean(dim = 1) # [c, c]
+        ccg = - ccd * coeff
+        ccg.exp_() # repulsion
+        return ccg.sum() # minimize
+
+    def distance(self, logtis, oracle):
+        # [b,s,c][b,s]
+        oracle = oracle.unsqueeze(dim = 2)
+        distance = logtis.gather(dim = 2, index = oracle)
+        distance.squeeze_(dim = 2)
+        return distance
+
+    def extra_repr(self):
+        in_features, out_features = self.io_features
+        return 'in_dim={}, num_codes={}'.format(
+            in_features, out_features
         )
 
 def squeeze_left(hidden, existence_or_start, as_existence = False, offset = None, out_len = None, get_rid_of_last_k = 0):

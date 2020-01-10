@@ -158,8 +158,10 @@ class TrapezoidDataset(LengthOrderedDataset):
         self._paddings_device_height = paddings, device, trapezoid_height
         self._keepers = tuple(keepers)
 
-    def at_idx(self, idx, factor):
-        return self._keepers[idx][factor]
+    def at_idx(self, idx, factor, length):
+        sample = self._keepers[idx][factor]
+        sample['length'] = length
+        return sample
 
     def _collate_fn(self, batch):
         dtype = np.int32

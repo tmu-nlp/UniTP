@@ -1,13 +1,17 @@
-from models.penn import BasePennTree, penn_tree_config, torch, nn, Tensor
-from utils.types import word_dim, num_ctx_layer, false_type, frac_2, frac_4
-from models.backend import activation_type, contextual_type
+from models.nccp import BaseRnnTree, penn_tree_config, torch, nn, Tensor
+from utils.types import word_dim, num_ctx_layer, frac_2, frac_4, BaseType
+
+E_SUB = S_LFT, S_AVG, S_SGT = 'leftmost average selfgate'.split()
+subword_proc = BaseType(0, as_index = True, default_set = E_SUB)
+
+from models.backend import contextual_type, activation_type
 xlnt_leaves_config = dict(contextual   = contextual_type,
                           num_layers   = num_ctx_layer,
                           drop_out     = frac_4,
                           rnn_drop_out = frac_2,
-                          word_dim     = word_dim,
+                          model_dim    = word_dim,
                           activation   = activation_type,
-                          avg_subwords = false_type)
+                          subword_proc = subword_proc)
 xlnet_penn_tree_config = penn_tree_config.copy()
 xlnet_penn_tree_config['embed_layer'] = xlnt_leaves_config
 
@@ -18,30 +22,37 @@ class XLNetLeaves(nn.Module):
                  num_layers,
                  drop_out,
                  rnn_drop_out,
-                 word_dim,
+                 model_dim,
                  activation,
                  paddings,
-                 avg_subwords):
+                 subword_proc):
         super().__init__()
         from transformers import XLNetModel
         self._xlnet_model = XLNetModel.from_pretrained(model_key_name)
         self._xlnet_dp = nn.Dropout(drop_out)
+        self._activation = activation()
+        
         if num_layers == 0:
             self._is_linear = True
-            self._to_word_emb = nn.Linear(768, word_dim)
+            self._to_word_emb = nn.Linear(768, model_dim + (subword_proc == S_SGT))
         else:
             self._is_linear = False
-            self._to_word_emb = contextual(768, word_dim // 2, num_layers,
+            self._to_word_emb = contextual(768, model_dim // 2 + (subword_proc == S_SGT), 
+                                           num_layers,
                                            batch_first = True,
                                            bidirectional = True,
                                            dropout = rnn_drop_out if num_layers > 1 else 0)
-        self._activation = activation()
+            if subword_proc == S_SGT:
+                self._rnn_word_gate = nn.Linear(2, 1)
+        if subword_proc == S_SGT:
+            self._gate_act = nn.Sigmoid()
+
         if paddings:
-            self._bos = nn.Parameter(torch.randn(1, 1, word_dim), requires_grad = True)
-            self._eos = nn.Parameter(torch.randn(1, 1, word_dim), requires_grad = True)
+            self._bos = nn.Parameter(torch.randn(1, 1, model_dim), requires_grad = True)
+            self._eos = nn.Parameter(torch.randn(1, 1, model_dim), requires_grad = True)
         self._paddings = paddings
-        self._word_dim = word_dim
-        self._avg_subwords = avg_subwords
+        self._word_dim = model_dim
+        self._subword_proc = subword_proc
         # self._xlnet_model.train()
 
     @property
@@ -52,7 +63,7 @@ class XLNetLeaves(nn.Module):
         squeeze_params = dict(offset  = offset,
                               out_len = word_idx.shape[1],
                               get_rid_of_last_k = 1)
-
+                              
         with torch.no_grad():
             xl_hidden = self._xlnet_model(xl_ids)[0]
             xl_hidden = self._xlnet_dp(xl_hidden)
@@ -61,19 +72,32 @@ class XLNetLeaves(nn.Module):
         def transform_dim(xl_hidden):
             word_hidden = self._to_word_emb(xl_hidden)
             if self._is_linear:
-                word_hidden = self._activation(word_hidden)
+                if self._subword_proc == S_SGT:
+                    word_gate = self._gate_act(word_hidden[:, :, 0, None])
+                    word_hidden = self._activation(word_hidden[:, :, 1:])
+                    word_hidden = word_gate * word_hidden
+                else:
+                    word_hidden = self._activation(word_hidden)
             else:
                 word_hidden = word_hidden[0]
+                if self._subword_proc == S_SGT:
+                    lw_gate = word_hidden[:, :,  0, None]
+                    rw_gate = word_hidden[:, :, -1, None]
+                    word_gate = torch.cat([lw_gate, rw_gate], dim = 2)
+                    word_gate = self._rnn_word_gate(word_gate)
+                    word_gate = self._gate_act(word_gate)
+                    word_hidden = word_gate * word_hidden[:, :, 1:-1]
             return word_hidden
 
-        if self._avg_subwords:
-            word_hidden = transform_dim(xl_hidden)
-            xl_base, xl_cumu = squeeze_left(word_hidden, xl_start, as_existence = False, **squeeze_params)
-            xl_cumu[xl_cumu < 1] = 1 # prevent 0
-            xl_base = xl_base / xl_cumu
-        else:
+        if self._subword_proc == S_LFT:
             xl_hidden, _ = squeeze_left(xl_hidden, xl_start, as_existence = True, **squeeze_params)
             xl_base = transform_dim(xl_hidden) # use left most sub-word to save precious time!
+        else:
+            word_hidden = transform_dim(xl_hidden)
+            xl_base, xl_cumu = squeeze_left(word_hidden, xl_start, as_existence = False, **squeeze_params)
+            if self._subword_proc == S_AVG:
+                xl_cumu[xl_cumu < 1] = 1 # prevent 0
+                xl_base = xl_base / xl_cumu
         
         if self._paddings: # will overwrite [cls][sep]
             bos, eos = self._paddings['word']
@@ -97,7 +121,7 @@ class XLNetPennTree(nn.Module):
         super().__init__()
 
         self._emb_layer = emb_layer = XLNetLeaves(paddings = paddings, **embed_layer)
-        self._base_model = BasePennTree(emb_layer.embedding_dim, **base_config)
+        self._base_model = BaseRnnTree(emb_layer.embedding_dim, **base_config)
         self._paddings = paddings
 
     def forward(self,

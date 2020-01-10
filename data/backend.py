@@ -4,17 +4,71 @@ from data.io import TreeSpecs, get_fasttext, encapsulate_vocabs
 from data.delta import xtype_to_logits, logits_to_xtype
 from collections import defaultdict, namedtuple
 from utils.param_ops import HParams
-from utils.types import NIL, UNK, BOS, EOS
+from utils.types import NIL, UNK, BOS, EOS, M_TRAIN
 
 BatchSpec = namedtuple('BatchSpec', 'size, iter')
 
-class BaseReader:
+class _BaseReader:
+    def __init__(self,
+                 vocab_dir,
+                 i2vs, v2is,
+                 paddings,
+                 **to_model):
+        self._vocab_dir = vocab_dir
+        self._i2vs = HParams(i2vs)
+        self._v2is = v2is
+        self._paddings = paddings
+        to_model.update({f'num_{k}s':v[0] for k,v in v2is.items()})
+        to_model['paddings'] = paddings
+        self._to_model = to_model
+        self._device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+        
+    def dir_join(self, fname):
+        return join(self._vocab_dir, fname)
+
+    @property
+    def i2vs(self):
+        return self._i2vs
+
+    @property
+    def v2is(self):
+        return self._v2is
+
+    @property
+    def paddings(self):
+        return self._paddings
+
+    @property
+    def device(self):
+        return self._device
+
+    def get_to_model(self, name):
+        return self._to_model[name]
+
+    def __str__(self):
+        s = 'BaseReader Specs:\n'
+        for f, v in self._i2vs._nested.items():
+            s += f'  vocab of {f}: {len(v)} tokens with'
+            if f in self._paddings:
+                bos, eos = self._paddings[f]
+                s += f' {v[bos]}({bos}) & {v[eos]}({eos})'
+                if f == 'label':
+                    bos, eos = self._paddings['xtype']
+                    rox = logits_to_xtype(bos)
+                    lox = logits_to_xtype(eos)
+                    s += f' | {rox}({bos}) & {lox}({eos})\n'
+                else:
+                    s += '\n'
+            else:
+                s += f' {v[0]}(0)\n'
+        return s
+
+class WordBaseReader(_BaseReader):
     def __init__(self,
                  vocab_dir,
                  vocab_size,
                  load_nil,
                  i2vs, oovs):
-        self._vocab_dir = vocab_dir
         self._info = pickle_load(join(vocab_dir, 'info.pkl'))
         weights = get_fasttext(join(vocab_dir, 'word.vec'))
         paddings = {}
@@ -53,10 +107,6 @@ class BaseReader:
                 paddings['xtype'] = (xtype_to_logits('>s', False), xtype_to_logits('<s', False))
 
         i2vs, v2is = encapsulate_vocabs(i2vs, oovs)
-        to_model = {f'num_{k}s':v[0] for k,v in v2is.items()}
-        to_model['initial_weights'] = weights
-        to_model['paddings'] = paddings
-        self._to_model = to_model
 
         if 'label' not in i2vs:
             assert 'label' not in v2is
@@ -66,55 +116,24 @@ class BaseReader:
         if paddings:
             assert all(x in paddings for x in ('word', 'tag'))
             assert all(len(x) == 2 for x in paddings.values())
-
-        self._i2vs = HParams(i2vs)
-        self._v2is = v2is
-        self._paddings = paddings
-        self._device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-        
-    def dir_join(self, fname):
-        return join(self._vocab_dir, fname)
+        super().__init__(vocab_dir, i2vs, v2is, paddings, initial_weights = weights)
 
     @property
     def info(self):
         return self._info
 
-    @property
-    def i2vs(self):
-        return self._i2vs
-
-    @property
-    def v2is(self):
-        return self._v2is
-
-    @property
-    def paddings(self):
-        return self._paddings
-
-    @property
-    def device(self):
-        return self._device
-
-    def get_to_model(self, name):
-        return self._to_model[name]
-
-    def __str__(self):
-        s = 'BaseReader Specs:\n'
-        for f, v in self._i2vs._nested.items():
-            s += f'  vocab of {f}: {len(v)} tokens with'
-            if f in self._paddings:
-                bos, eos = self._paddings[f]
-                s += f' {v[bos]}({bos}) & {v[eos]}({eos})'
-                if f == 'label':
-                    bos, eos = self._paddings['xtype']
-                    rox = logits_to_xtype(bos)
-                    lox = logits_to_xtype(eos)
-                    s += f' | {rox}({bos}) & {lox}({eos})\n'
-                else:
-                    s += '\n'
-            else:
-                s += f' {v[0]}(0)\n'
-        return s
+class CharBaseReader(_BaseReader):
+    def __init__(self,
+                 vocab_dir,
+                 load_nil,
+                 i2vs):
+        paddings = {}
+        if not load_nil:
+            i2v = i2vs['char'] = i2vs['char'][1:] + [BOS, EOS]
+            num = len(i2v)
+            paddings['char'] = (num-2, num-1)
+        i2vs, v2is = encapsulate_vocabs(i2vs, {})
+        super().__init__(vocab_dir, i2vs, v2is, paddings)
 
 import torch
 from torch.utils.data import Dataset, DataLoader
@@ -276,15 +295,16 @@ class LengthOrderedDataset(Dataset):
         elif self._mode == M_BKT:
             idx = self.__take_bkt_buffer(idx)
 
-        sample = self.at_idx(idx, factor)
-        sample['length'] = self._lengths[idx]
+        length = self._lengths[idx]
+        sample = self.at_idx(idx, factor, length)
         sample = tuple(sample[h] for h in self._heads)
         if self._extra_text_helper is not None:
             self._extra_text_helper.buffer(idx)
+        
         return sample
 
 
-    def at_idx(self, idx, factor):
+    def at_idx(self, idx, factor, length):
         raise NotImplementedError()
 
     def _collate_fn(self, batch):
@@ -309,3 +329,17 @@ class LengthOrderedDataset(Dataset):
                 self._bkt_next_bucket = None
 
         return field_columns
+
+
+def post_batch(mode, len_sort_ds, sort_by_length, bucket_length, batch_size):
+    if mode != M_TRAIN:
+        len_sort_ds.plain_mode()
+    elif sort_by_length:
+        if bucket_length > 0:
+            len_sort_ds.increasing_mode(bucket_length)
+        else:
+            len_sort_ds.plain_mode()
+    else:
+        len_sort_ds.bucketed_mode(bucket_length)
+    di = DataLoader(len_sort_ds, batch_size = batch_size, collate_fn = len_sort_ds.collate_fn, shuffle = mode == M_TRAIN)#, num_workers = 1) # no way to get more!
+    return BatchSpec(len(len_sort_ds), di)

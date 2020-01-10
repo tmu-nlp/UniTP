@@ -8,8 +8,8 @@ def _wait(lfile):
     while isfile(lfile):
         with open(lfile) as fr:
             s = fr.readlines()
-        print(f'Other instance is writing at {s[0]}, waiting...')
-        sleep(1)
+        print(f"'{lfile}' was locked at {s[0]}, waiting...")
+        sleep(2)
 
 def _block(lfile):
     with open(lfile, 'w') as fw:

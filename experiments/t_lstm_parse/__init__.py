@@ -3,7 +3,7 @@ from data.penn_types import C_ABSTRACT, parsing_config, select_and_split_corpus
 from utils.types import M_TRAIN, M_DEVEL, M_TEST
 from utils.param_ops import HParams, get_sole_key
 
-from experiments.t_lstm_parse.model import LstmPennTree, lstm_penn_tree_config
+from experiments.t_lstm_parse.model import PennRnnTree, lstm_penn_tree_config
 from experiments.t_lstm_parse.operator import PennOperator
 
 require_source_path = False
@@ -47,7 +47,7 @@ def get_configs(recorder = None):
 
     task_params = {pname: reader.get_to_model(pname) for pname in ('initial_weights', 'num_words', 'num_tags', 'num_labels', 'paddings')}
 
-    model = LstmPennTree(**model_config, **task_params)
+    model = PennRnnTree(**model_config, **task_params)
     model.to(reader.device)
     return  PennOperator(model, get_datasets, recorder, reader.i2vs, recorder.evalb)
         

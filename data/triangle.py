@@ -52,13 +52,14 @@ class TriangularDataset(LengthOrderedDataset):
         self._columns = columns
         self._paddings_device = paddings, device
 
-    def at_idx(self, idx, factor):
+    def at_idx(self, idx, factor, length):
         sample = {}
         for field, column in self._columns.items():
             if field in fields:
                 sample[field]    = column[idx]
             elif field[1] == factor:
                 sample[field[0]] = column[idx]
+        sample['length'] = length
         return sample
 
     def _collate_fn(self, batch):

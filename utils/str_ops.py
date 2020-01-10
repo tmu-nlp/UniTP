@@ -1,5 +1,52 @@
 from collections import defaultdict
 
+def write_ptr(base, ptr, src, overwrite, as_unit):
+    if isinstance(base, list):
+        if as_unit:
+            src = [src]
+            length = 1
+        else:
+            src = list(src)
+            src.reverse()
+            length = len(src)
+        while src:
+            base.insert(ptr, src.pop())
+            if overwrite: # same as base[ptr] = src.pop()
+                base.pop(ptr + length)
+        return
+    if as_unit:
+        src = base.__class__((src,))
+        length = 1
+    else:
+        length = len(src)
+    if overwrite:
+        suffix = src + base[ptr + length:]
+    else: # insert
+        suffix = src + base[ptr]
+    return base[:ptr] + suffix
+
+def delete_ptr(base, ptr, length):
+    if isinstance(base, list):
+        for _ in range(length):
+            base.pop(ptr)
+        return
+    return base[:ptr] + base[ptr + length:]
+
+def swap_ptr(base, low, high, length):
+    if low > high:
+        low, high = high, low
+    length = min(length, high - low)
+    if isinstance(base, list):
+        for i_ in range(length):
+            high_val = base.pop(high + i_)
+            low_val  = base.pop(low  + i_)
+            base.insert(low  + i_, high_val)
+            base.insert(high + i_, low_val)
+        return
+    low_end  = low  + length
+    high_end = high + length
+    return base[:low] + base[high:high_end] + base[low_end:high] + base[low:low_end] + base[high_end:]
+
 def histo_count(cnt, num_bin = None, bin_size = None, sep = '\n'):
     if bin_size is None:
         max_cnt = max(cnt.keys())

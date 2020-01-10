@@ -4,9 +4,9 @@ import numpy as np
 from data.io import BOS, EOS, load_vocabs, get_fasttext, TreeBatch
 from data.delta import ROB, LOE, xtype_to_logits, LogitX
 from data.backend import tf_vocabs_joint, tf_load_dataset, filter_and_shuffle
-from data.backend import bucket_and_batch, BaseReader, word_batch_seq
+from data.backend import bucket_and_batch, WordBaseReader, word_batch_seq
 
-class StanReader(BaseReader):
+class StanReader(WordBaseReader):
     def __init__(self,
                  vocab_dir,
                  categorical_syn,

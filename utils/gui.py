@@ -1,6 +1,6 @@
 from tkinter import Tk, TOP, BOTH, X, Y, N, W, E, S, N, LEFT, RIGHT, END, YES, NO, SUNKEN, ALL, VERTICAL, HORIZONTAL, BOTTOM, CENTER
-from tkinter import Text, Canvas, Listbox, Scale, Checkbutton, Label, Entry, Scrollbar, Frame, Button
-from tkinter import IntVar, BooleanVar, DoubleVar, StringVar
+from tkinter import Text, Canvas, Listbox, Scale, Checkbutton, Label, Entry, Scrollbar, Frame, Button, Spinbox
+from tkinter import BooleanVar, StringVar# , IntVar, DoubleVar
 from tkinter import Toplevel, TclError, filedialog, messagebox
 from utils.param_ops import less_kwargs, more_kwargs
 # from tkinter.ttk import Frame, Label, Entry, Button #- old fashion
@@ -28,8 +28,17 @@ def __entry(panel, value, callback, gui_kwargs):
     char_width = less_kwargs(gui_kwargs, 'char_width', None)
     prompt_str = less_kwargs(gui_kwargs, 'prompt_str', str(value) + "  ")
     var = StringVar(panel)
+    common_args = dict(textvariable = var, width = char_width, justify = CENTER)
+    if isinstance(value, tuple):
+        value, start, end, inc = value
+        gui = Spinbox(panel, from_ = start, to = end, increment = inc, **common_args)
+        def spin_click(*event):
+            callback(None) # ???
+        # gui.bind('<Button-1>', lambda *e: callback(None))
+        var.trace('w', spin_click)
+    else:
+        gui = Entry(panel, **common_args)
     var.set(value) # even no initial value?
-    gui = Entry(panel, textvariable = var, width = char_width, justify = CENTER)
     default_color = gui.cget('highlightbackground')
     gui.bind('<KeyRelease>', callback)
     # gui.var = var # delete ?

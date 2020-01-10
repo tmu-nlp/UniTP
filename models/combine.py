@@ -13,24 +13,33 @@ class Add(nn.Module):
         super().__init__()
 
     def forward(self, rightwards, embeddings, existences):
-        lw_ext = (existences & ~rightwards)[:,  1:]
-        rw_ext = (existences &  rightwards)[:, :-1]
-        new_jnt = lw_ext & rw_ext
-        new_ext = lw_ext | rw_ext
-        lw_relay = lw_ext & ~rw_ext
-        rw_relay = ~lw_ext & rw_ext
+        if rightwards is None:
+            lw_emb = embeddings[:,  1:]
+            rw_emb = embeddings[:, :-1]
+            lw_ext = existences[:,  1:]
+            rw_ext = existences[:, :-1]
+        else:
+            lw_ext = (existences & ~rightwards)[:,  1:]
+            rw_ext = (existences &  rightwards)[:, :-1]
+            lw_relay = lw_ext & ~rw_ext
+            rw_relay = ~lw_ext & rw_ext
 
-        right = rightwards.type(embeddings.dtype)
-        # right.unsqueeze_(-1)
-        lw_emb = embeddings[:,  1:] * (1 - right)[:,  1:]
-        rw_emb = embeddings[:, :-1] *      right [:, :-1]
+            right = rightwards.type(embeddings.dtype)
+            # right.unsqueeze_(-1)
+            lw_emb = embeddings[:,  1:] * (1 - right)[:,  1:]
+            rw_emb = embeddings[:, :-1] *      right [:, :-1]
+
         add_emb = lw_emb + rw_emb
         cmp_emb = self.compose(lw_emb, rw_emb)
+        new_jnt = lw_ext & rw_ext
+        new_ext = lw_ext | rw_ext
         if cmp_emb is None:
             new_emb = add_emb
         else:
             new_emb = torch.where(new_jnt, cmp_emb, add_emb)
 
+        if rightwards is None:
+            return new_ext, new_emb
         return new_ext, new_jnt, lw_relay, rw_relay, new_emb
 
     def compose(self, lw_emb, rw_emb):
