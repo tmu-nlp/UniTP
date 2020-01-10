@@ -366,7 +366,7 @@ if desktop:
         return font_name, font_size
 
     def _ratio(x):
-        x = float(x)
+        x = float(x) if '.' in x else int(x)
         assert x > 0, 'should be positive'
         return x
 
@@ -395,7 +395,7 @@ if desktop:
         assert isinstance(curve(0), float), 'should return a float number'
         return curve
 
-    BoolList = namedtuple('BoolList', 'delta_shape, show_errors, show_paddings, show_nil, dark_background, inverse_brightness, absolute_coord, show_color, absolute_color, statistics')
+    BoolList = namedtuple('BoolList', 'delta_shape, show_errors, show_paddings, show_nil, dark_background, inverse_brightness, absolute_coord, show_color, statistics')
     CombList = namedtuple('CombList', 'curve, dash, gauss, picker, spotlight')
     DynamicSettings = namedtuple('DynamicSettings', BoolList._fields + tuple('apply_' + f for f in CombList._fields) + CombList._fields)
     NumbList = namedtuple('NumbList', 'font, pc_x, pc_y, line_width, word_width, word_height, xy_ratio, histo_width, scatter_width')
@@ -470,10 +470,10 @@ if desktop:
         def __init__(self,
                      root,
                      fpath,
-                     initial_bools = BoolList(True, False, False, False, False, True, False, True, True, False),
-                     initial_numbs = NumbList('System 15', (1, 1, 9, 1), (2, 1, 9, 1), (3, 1, 10, 1), (80, 60, 200, 5), (22, 12, 99, 2), (0.9, 0.5, 2, 0.1), (60, 50, 120, 10), (60, 50, 120, 10)),
+                     initial_bools = BoolList(True, False, False, False, False, True, False, True, False),
+                     initial_numbs = NumbList('System 15', (1, 1, 9, 1), (2, 1, 9, 1), (4, 2, 10, 2), (80, 60, 200, 5), (22, 12, 99, 2), (0.9, 0.5, 2, 0.1), (60, 50, 120, 10), (60, 50, 120, 10)),
                      initial_panel = PanelList(False, False),
-                     initial_combs = CombList((True, 'x ** 0.5'), (False, (0.5, 0.1, 0.9, 0.1)), (True, (0.04, 0.01, 0.2, 0.01)), (True, (0.5, 0.1, 0.9, 0.1)), (False, (200, 100, 500, 100)))):
+                     initial_combs = CombList((True, 'x ** 0.5'), (False, (0.5, 0.1, 0.9, 0.1)), (True, (0.04, 0.01, 0.2, 0.01)), (True, (0.2, 0.1, 0.9, 0.1)), (False, (200, 100, 500, 100)))):
             vocabs = fpath.join('vocabs.pkl')
             if isfile(vocabs):
                 self._vocabs = HParams(pickle_load(vocabs))
@@ -509,12 +509,12 @@ if desktop:
             ckb_panel.pack(side = TOP, fill = X, **pack_kwargs)
             etr_panel.pack(side = TOP, fill = X, **pack_kwargs) # expand means to pad
             self._last_bools = initial_bools
-            self._last_numbs = initial_numbs # tuple will be overwrote
+            self._last_numbs = NumbList(*(x[0] if isinstance(x, tuple) else x for x in initial_numbs))
 
             comb_panel = Frame(control_panel)
             self._checkboxes_entries = make_namedtuple_gui(make_checkbox_entry, comb_panel, initial_combs, (self._change_bool, self._change_string), (2, 1, 1, 1, 1))
             comb_panel.pack(side = TOP, fill = X, **pack_kwargs)
-            self._last_combs = initial_combs
+            self._last_combs = CombList(*((x[0], x[1][0]) if isinstance(x[1], tuple) else x for x in initial_combs))
             
             view_panel = Frame(control_panel)
             self._panels = make_namedtuple_gui(make_checkbox, view_panel, initial_panel, self.__update_viewer, **intr_kwargs)
@@ -707,6 +707,9 @@ if desktop:
             # self.winfo_toplevel().bind(key, self._navi)
             if char == 'w':
                 self._checkboxes.statistics.ckb.invoke()
+                sub_state = 'normal' if self._last_bools.statistics else 'disable'
+                self._checkboxes_entries.gauss.ckb.configure(state = sub_state)
+                self._checkboxes_entries.gauss.etr.configure(state = sub_state)
             elif char == 'n':
                 self._checkboxes.show_nil.ckb.invoke()
             elif char == 'b':
@@ -1125,7 +1128,7 @@ if desktop:
     #  effect:      b             s,b   <-   s,b        s               s
     # dark_background, inverse_brightness, delta_shape, show_errors, statistics, show_paddings, show_nil, absolute_coord, show_color
     #        sb                 b              sb            b              s?              sb            s           s            b
-    fields = ', num_word, half_word_width, half_word_height, line_dx, line_dy, canvas_width, canvas_height, stat_font, stat_pad_left, stat_pad_between, stat_pad_right'
+    fields = ', num_word, half_word_width, half_word_height, line_dx, line_dy, deco_dx, deco_dy, canvas_width, canvas_height, stat_font, stat_pad_left, stat_pad_between, stat_pad_right'
     FrameGeometry = namedtuple('FrameGeometry', ','.join(NumbList._fields) + fields)
     BoardConfig = namedtuple('BoardConfig', DynamicSettings._fields + FrameGeometry._fields)
 
@@ -1152,10 +1155,12 @@ if desktop:
             half_word_height = static_settings.word_height >> 1
             line_dx = half_word_width - static_settings.word_height / static_settings.xy_ratio
             line_dy = line_dx * static_settings.xy_ratio
+            deco_dx = static_settings.line_width / np.sqrt(1 + static_settings.xy_ratio ** 2) / 2
+            deco_dy = deco_dx * static_settings.xy_ratio
             canvas_width  = num_word * static_settings.word_width
             canvas_height = (num_word + 2) * (static_settings.word_height + line_dy) # +2 for word and tag layer
             stat_paddings = (28, 10, 22)
-            bcfg = num_word, half_word_width, half_word_height, line_dx, line_dy, canvas_width, canvas_height, ('helvetica', 10)
+            bcfg = num_word, half_word_width, half_word_height, line_dx, line_dy, deco_dx, deco_dy, canvas_width, canvas_height, ('helvetica', 10)
             self._frame_geometry = FrameGeometry(*(static_settings + bcfg + stat_paddings))
             self._conf = BoardConfig(*(dynamic_settings + self._frame_geometry))
             self._last_show_paddings = dynamic_settings.show_paddings
@@ -1589,8 +1594,8 @@ if desktop:
             hcp = _histo  (offy = bottom_offy, stat = stat.word, offset_length = bottom_offset_length, height = bottom_height).items()
             for (i, it), (j, ip) in zip(sci, hcp):
                 ip = ip + histo_offset, bottom_offy, bottom_height
-                scatter_coord_item  [('p', i)] = it # redirect to word instead (no tag update)
-                histo_coord_position[('p', j)] = ip
+                scatter_coord_item  [('w', i)] = it
+                histo_coord_position[('w', j)] = ip
             offy += incre_y * 2 # skip .tag
             for l, (plabel_layer, layer_phrase_energy) in enumerate(zip(label_layers, reversed(stat.phrase))): # TODO: not match, historic bug
                 if self._conf.show_paddings or l < length: # watch out for not showing and len <= 2
@@ -1622,10 +1627,15 @@ if desktop:
             tag_label_line_bo = 2 * level_unit                                # word lines tag lines
             w_p_s = self._conf.word_height, level_unit, level_unit + self._conf.word_height # word >--> tag >--> label
             line_width = self._conf.line_width
+            r = line_width // 2
+            decorate = isinstance(line_width, int) and line_width % 2 == 0
+            deco_dx = 0 if decorate else self._conf.deco_dx
+            deco_dy = 0 if decorate else self._conf.deco_dy
             font_name, font_size = self._conf.font
             round_int = lambda x: int(round(x))
             if self._conf.delta_shape:
                 line_dy = self._conf.line_dy
+                deco_dy = - deco_dy
                 word_center      = self._conf.canvas_height - word_center
                 tag_label_center   = self._conf.canvas_height - tag_label_center
                 tag_label_line_bo  = self._conf.canvas_height - tag_label_line_bo
@@ -1638,7 +1648,7 @@ if desktop:
                 center_x = (i + 0.5) * self._conf.word_width
                 left_x   = center_x - self._conf.half_word_width
                 if self._conf.delta_shape:
-                    wbox = (left_x, w_p_s[1]       )
+                    wbox = (left_x, w_p_s[1]         )
                     pbox = (left_x, tag_label_line_bo)
                 else:
                     wbox = (left_x, 0       )
@@ -1664,25 +1674,46 @@ if desktop:
                                              width = line_width,
                                              fill = word_color,
                                              tags = ('elems', 'line'))
-                    board_item_coord[wbox] = (node, line), ('w', i)
+                    if apply_dash or not decorate:
+                        elems = node, line
+                    else:
+                        sdot = board.create_oval(center_x - r, w_p_s[0] - r,
+                                                center_x + r, w_p_s[0] + r,
+                                                fill = word_color, outline = '', tags = ('elems', 'dot'))
+                        edot = board.create_oval(center_x - r, w_p_s[1] - r,
+                                                center_x + r, w_p_s[1] + r,
+                                                fill = word_color, outline = '', tags = ('elems', 'dot'))
+                        elems = node, line, sdot, edot
+                    board_item_coord[wbox] = elems, ('w', i)
                     tp = head.tag[i]
                     pp = data.tag[i]
                     tag_color = to_color(data.tag_score if apply_dash else stat.tag[i])
-                    elems = [board.create_text(center_x, tag_label_center,
-                                               fill = tag_color, font = (font_name, font_size if apply_dash else round_int(font_size * data.tag_score[i])),
-                                               text = f'{vocabs.tag[pp]}' if not self._conf.show_errors or pp == tp else f'{vocabs.tag[pp]}({vocabs.tag[tp]})',
-                                               tags = ('elems', 'node'))]
-                    elems.append(board.create_line(center_x,  w_p_s[2],
-                                                   center_x,  tag_label_line_bo,
-                                                   width = line_width,
-                                                   fill = tag_color,
-                                                   tags = ('elems', 'line')))
+                    node = board.create_text(center_x, tag_label_center,
+                                             fill = tag_color, font = (font_name, font_size if apply_dash else round_int(font_size * data.tag_score[i])),
+                                             text = f'{vocabs.tag[pp]}' if not self._conf.show_errors or pp == tp else f'{vocabs.tag[pp]}({vocabs.tag[tp]})',
+                                             tags = ('elems', 'node'))
+                    line = board.create_line(center_x,  w_p_s[2],
+                                             center_x,  tag_label_line_bo,
+                                             width = line_width,
+                                             fill = tag_color,
+                                             tags = ('elems', 'line'))
                     if pp != tp and self._conf.show_errors:
-                        elems.append(board.create_rectangle(*board.bbox(elems[0]),
-                                                            outline = 'red',
-                                                            dash = (1, 2),
-                                                            tags = ('elems', 'err')))
-                    board_item_coord[pbox] = elems, ('p', i)
+                        err = board.create_rectangle(*board.bbox(node),
+                                                     outline = 'red',
+                                                     dash = (1, 2),
+                                                     tags = ('elems', 'err'))
+                        elems = node, line, err
+                    else:
+                        elems = node, line
+                    if not apply_dash and decorate:
+                        sdot = board.create_oval(center_x - r, w_p_s[2] - r,
+                                                 center_x + r, w_p_s[2] + r,
+                                                 fill = tag_color, outline = '', tags = ('elems', 'dot'))
+                        edot = board.create_oval(center_x - r, tag_label_line_bo - r,
+                                                 center_x + r, tag_label_line_bo + r,
+                                                 fill = tag_color, outline = '', tags = ('elems', 'dot'))
+                        elems = elems + (sdot, edot)
+                    board_item_coord[pbox] = elems, (0, i)
 
             if vocabs.tag: # in both meanning: label and pol cate
                 nil = vocabs.label.index(NIL)
@@ -1761,23 +1792,39 @@ if desktop:
                             dash_ = (dash_, 1)
 
                         elems.append(board.create_line(center_x, line_y, to_x, tag_label_line_bo,
-                                                    width = width, fill = color, dash = dash_,
-                                                    tags = ('elems', 'line')))
+                                                       width = width, fill = color, dash = dash_,
+                                                       tags = ('elems', 'line')))
                     else:
                         right_score = split_score[l][p]
                         left_score  = 1 - right_score
-                        to_left_x  = center_x - line_dx * left_score
-                        to_right_x = center_x + line_dx * right_score
+                        offset_right_x = line_dx * right_score
+                        offset_left_x  = line_dx * left_score
+                        to_left_x  = center_x - offset_left_x
+                        to_right_x = center_x + offset_right_x
                         to_left_y  = line_y - line_dy * left_score
                         to_right_y = line_y - line_dy * right_score
-                        elems.append(board.create_line(center_x, line_y, to_right_x, to_right_y,
-                                                        width = line_width, fill = mpc_color,
-                                                        tags = ('elems', 'r_line')))
-                        elems.append(board.create_line(center_x, line_y, to_left_x, to_left_y,
-                                                        width = line_width, fill = mpc_color,
-                                                        tags = ('elems', 'l_line')))
-                        if pr:
-                            board.tag_raise(elems[-2])
+                        if offset_right_x > 0.5:
+                            elems.append(board.create_line(center_x   - deco_dx,     line_y - deco_dy,
+                                                           to_right_x + deco_dx, to_right_y + deco_dy,
+                                                           width = line_width, fill = mpc_color,
+                                                           tags = ('elems', 'r_line')))
+                        if offset_left_x > 0.5:
+                            elems.append(board.create_line(center_x  + deco_dx,    line_y - deco_dy,
+                                                           to_left_x - deco_dx, to_left_y + deco_dy,
+                                                           width = line_width, fill = mpc_color,
+                                                           tags = ('elems', 'l_line')))
+                        if decorate:
+                            if offset_right_x > 0.5:
+                                elems.append(board.create_oval(to_right_x - r, to_right_y - r,
+                                                               to_right_x + r, to_right_y + r,
+                                                               fill = mpc_color, outline = '', tags = ('elems', 'r_dot')))
+                            if offset_left_x > 0.5:
+                                elems.append(board.create_oval(to_left_x - r, to_left_y - r,
+                                                               to_left_x + r, to_left_y + r,
+                                                               fill = mpc_color, outline = '', tags = ('elems', 'l_dot')))
+                            elems.append(board.create_oval(center_x - r, line_y - r,
+                                                           center_x + r, line_y + r,
+                                                           fill = mpc_color, outline = '', tags = ('elems', 'dot')))
 
             if self._spotlight_subjects:
                 self._spotlight_subjects = (board_item_coord, self._conf.word_width, level_unit) + self._spotlight_subjects[-3:]
