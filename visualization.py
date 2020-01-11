@@ -12,8 +12,8 @@ from nltk.tree import Tree
 from utils.math_ops import isqrt
 from utils.pickle_io import pickle_load, pickle_dump
 
-IOHead = namedtuple('IOHead', 'offset, length, word, tag, label, right, tree,')
-IOData = namedtuple('IOData', 'offset, length, word, tag, label, right, tree, mpc_word, mpc_phrase, warning, scores, tag_score, label_score, split_score, summary')
+IOHead = namedtuple('IOHead', 'offset, length, word, tag, label, right, tree, segment, seg_length')
+IOData = namedtuple('IOData', 'offset, length, word, tag, label, right, tree, segment, seg_length, mpc_word, mpc_phrase, warning, scores, tag_score, label_score, split_score, summary')
 
 inf_none_gen = (None for _ in count())
 
@@ -169,6 +169,7 @@ def set_head(fpath, batch_id, size,
         tag = inf_none_gen
 
     if trapezoid_info is None:
+        segment = seg_length = None
         func_args = zip(offset, length, word, tag, label, right)
     else:
         segment, seg_length = trapezoid_info
@@ -200,11 +201,10 @@ def set_head(fpath, batch_id, size,
                 print(tree, file = fw)
                 print(tree, file = fh)
 
-        if trapezoid_info is None:
-            assert isfile(join(fpath, vfname))
-            fname = join(fpath, f'head.{batch_id}_{size}.pkl')
-            head  = IOHead(offset, length, word, old_tag, label, right, trees)
-            pickle_dump(fname, head)
+        assert isfile(join(fpath, vfname))
+        fname = join(fpath, f'head.{batch_id}_{size}.pkl')
+        head  = IOHead(offset, length, word, old_tag, label, right, trees, segment, seg_length)
+        pickle_dump(fname, head)
         return ftrees.keys()
 
 from utils.shell_io import parseval, rpt_summary
@@ -223,6 +223,7 @@ def set_data(fpath, batch_id, size, epoch,
     trees = []
     batch_warnings = []
     if trapezoid_info is None:
+        segment = seg_length = None
         func_args = zip(offset, length, word, tag, label, right)
     else:
         segment, seg_length = trapezoid_info
@@ -249,13 +250,13 @@ def set_data(fpath, batch_id, size, epoch,
         proc = parseval(evalb, fhead, fdata)
         idv, smy = rpt_summary(proc.stdout.decode(), True, True)
 
-        if trapezoid_info is None:
-            fhead = f'head.{batch_id}_{size}.pkl'
-            assert isfile(join(fpath, fhead)), f"Need a head '{fhead}'"
-            fdata = join(fpath, f'data.{batch_id}_{epoch}.pkl')
-            data = IOData(offset, length, word, tag, label, right, trees, mpc_word, mpc_phrase,
-                        batch_warnings, idv, tag_score, label_score, split_score, smy)
-            pickle_dump(fdata, data)
+        fhead = f'head.{batch_id}_{size}.pkl'
+        assert isfile(join(fpath, fhead)), f"Need a head '{fhead}'"
+        fdata = join(fpath, f'data.{batch_id}_{epoch}.pkl')
+        data = IOData(offset, length, word, tag, label, right, trees,
+                      segment, seg_length, mpc_word, mpc_phrase,
+                      batch_warnings, idv, tag_score, label_score, split_score, smy)
+        pickle_dump(fdata, data)
 
         fname = join(fpath, 'summary.pkl')
         if isfile(fname):
@@ -395,7 +396,7 @@ if desktop:
         assert isinstance(curve(0), float), 'should return a float number'
         return curve
 
-    BoolList = namedtuple('BoolList', 'delta_shape, show_errors, show_paddings, show_nil, dark_background, inverse_brightness, absolute_coord, show_color, statistics')
+    BoolList = namedtuple('BoolList', 'delta_shape, show_errors, show_paddings, show_nil, dark_background, inverse_brightness, align_coord, show_color, statistics')
     CombList = namedtuple('CombList', 'curve, dash, gauss, picker, spotlight')
     DynamicSettings = namedtuple('DynamicSettings', BoolList._fields + tuple('apply_' + f for f in CombList._fields) + CombList._fields)
     NumbList = namedtuple('NumbList', 'font, pc_x, pc_y, line_width, word_width, word_height, xy_ratio, histo_width, scatter_width')
@@ -673,7 +674,7 @@ if desktop:
                                 batch = []
                                 for i, sample in enumerate(zip(*sample_gen)):
                                     sample = IOData(*sample, inf_none_gen)
-                                    stat = SentenceEnergy(sample.mpc_word, sample.mpc_phrase)
+                                    stat = SentenceEnergy(sample.mpc_word, sample.mpc_phrase, num_word, sample.offset, sample.length)
                                     batch.append((sample, stat))
                                 self._sent_cache[fname_time] = batch, columns[-1]
 
@@ -717,7 +718,7 @@ if desktop:
             elif char == 'e':
                 self._checkboxes.show_errors.ckb.invoke()
             elif char == '|':
-                self._checkboxes.absolute_coord.ckb.invoke()
+                self._checkboxes.align_coord.ckb.invoke()
             # elif char == 'v':
             #     self._checkboxes.hard_split.ckb.invoke()
             #     if self._last_bools.apply_dash:
@@ -852,9 +853,9 @@ if desktop:
         def _calc_batch(self):
             pass
 
-    def to_circle(xy, xy_mean = None):
-        if xy_mean is not None:
-            xy = xy - xy_mean
+    def to_circle(xy, xy_orig = None):
+        if xy_orig is not None:
+            xy = xy - xy_orig
         x, y = (xy[:, i] for i in (0,1))
         reg_angle = np.arctan2(y, x) / np.pi
         reg_angle += 1
@@ -882,58 +883,67 @@ if desktop:
     class LayerMPCStat:
         def __init__(self, mpc):
             self._global_data = mpc
-            _min = np.min(mpc, 0)
-            _max = np.max(mpc, 0)
-            if (_min == _max).all():
-                self._local_min_max = np.zeros_like(_min), np.ones_like(_max)
-            else:
-                self._local_min_max = _min, _max
-            self._xy_dims = None
+            self._xy_dims     = None
+
+        def _without_paddings(self, offset_length):
+            return filter_data_coord(self._global_data, offset_length, None)
 
         def histo_data(self, num_backle, global_xmax = None, offset_length = None, filtered = None):
+            x, coord = filter_data_coord(self._global_data[:, 0], offset_length, filtered)
             if global_xmax is None:
-                xmax = self._local_min_max[1][0]
+                xmin = np.min(x)
+                xmax = np.max(x)
             else:
+                xmin = 0
                 xmax = global_xmax
+            if xmin == xmax:
+                xmin -= 0.1
+                xmax += 0.1
 
-            x = self._global_data[:, 0] / xmax # new memory, not in-place
-            x, coord = filter_data_coord(x, offset_length, filtered)
+            x = x - xmin # new memory, not in-place
+            x /= xmax - xmin # in range [0, 1]
             x //= (1 / num_backle) # bin_width is float, even for floordiv
             collapsed_x = Counter(x)
-            x /= num_backle
-            coord       = zip(coord, x)
             cnt_max     = collapsed_x.most_common(1)[0][1]
+            x /= num_backle # break cnt into [0, 1] for x coord
+            coord       = zip(coord, x)
             xy          = tuple((bint/num_backle, cnt/cnt_max) for bint, cnt in collapsed_x.items())
-            return xy, xmax, cnt_max, coord
+            return xy, xmin, xmax, coord
 
         def scatter_data(self, xy_min_max = None, offset_length = None, filtered = None):
+            xy, coord = filter_data_coord(self._global_data[:, self._xy_dims], offset_length, filtered)
             if xy_min_max is None:
-                xmin = self._local_min_max[0][self._xy_dims]
-                xmax = self._local_min_max[1][self._xy_dims]
+                xmin = np.min(xy, 0)
+                xmax = np.max(xy, 0)
             else:
                 xmin, xmax = xy_min_max
 
-            xy = self._global_data[:, self._xy_dims] - xmin
-            xy /= xmax - xmin
-            xy, coord = filter_data_coord(xy, offset_length, filtered)
+            g_orig = np.zeros_like(xmin)
+            invalid = g_orig < xmin
+            xmin = np.where(invalid, g_orig, xmin)
+            invalid = g_orig > xmax
+            xmax = np.where(invalid, g_orig, xmax)
 
-            if self._global_pc_mean is None:
-                local_pca_mean = - xmin
-            else:
-                local_pca_mean = self._global_pc_mean - xmin
-            local_pca_mean /= xmax - xmin
-            return xy, xmin, xmax, local_pca_mean, coord
+            if np.all(xmin == xmax):
+                xmin -= 0.1
+                xmax += 0.1
+
+            xy = xy - xmin
+            xy /= xmax - xmin
+            g_orig -= xmin
+            g_orig /= xmax - xmin
+
+            return xy, xmin, xmax, g_orig, coord
             # print('xy', xy.shape[0])
             # print('seq_len', seq_len if seq_len else 'None')
             # print('filtered', f'{sum(filtered)} in {len(filtered)}' if filtered else 'None')
             # print('coord', coord)
 
-        def colorify(self, m_max, pc_mean, xy_dims):
+        def colorify(self, m_max, xy_dims):
             self._xy_dims = xy_dims
             self._global_m_max = m_max
-            self._global_pc_mean = pc_mean
             ene = np.expand_dims(self._global_data[:, 0], 1) / m_max
-            ori, sature_max = to_circle(self._global_data[:, xy_dims], pc_mean)
+            ori, sature_max = to_circle(self._global_data[:, xy_dims])
             self._render = np.concatenate([ene, ori], axis = 1)
             return sature_max
 
@@ -948,7 +958,7 @@ if desktop:
             return self._global_data.shape[0]
 
     class SentenceEnergy:
-        def __init__(self, mpc_word, mpc_phrase):
+        def __init__(self, mpc_word, mpc_phrase, size, offset, length):
             mpc_all = mpc_phrase
             stats = phrase = tuple(LayerMPCStat(l) for l in triangle_to_layers(mpc_phrase))
             if mpc_word is not None:
@@ -958,28 +968,65 @@ if desktop:
             else:
                 word = None
 
-            self._min = np.min(mpc_all, 0)
-            self._max = np.max(mpc_all, 0)
+            self._min_all = xmax = np.min(mpc_all, 0)
+            self._max_all = xmin = np.max(mpc_all, 0)
+            for i, stat in enumerate(stats):
+                if i == 0:
+                    lo = offset, length
+                else:
+                    _len = i + length - size # pitari without +1
+                    if _len <= 0:
+                        continue
+                    lo = offset, _len
+                x, _ = stat._without_paddings(lo)
+                _max = np.max(x, 0)
+                x = x[x[:, 0] > 0]
+                _min = np.min(x, 0)
+                invalid = _min < xmin
+                xmin = np.where(invalid, _min, xmin)
+                invalid = _max > xmax
+                xmax = np.where(invalid, _max, xmax)
+            self._min_val = xmin
+            self._max_val = xmax
+
             self._stats  = stats
             self._word   = word
             self._phrase = phrase
             self._xy_dim = None
+            self._cache  = {}
 
-        def histo_max(self):
-            return self._max[0]
+        def histo_max(self, with_padding):
+            if with_padding:
+                return self._max_all[0]
+            return self._max_val[0]
 
-        def scatter_min_max(self):
-            return self._min[self._xy_dim], self._max[self._xy_dim]
+        def scatter_min_max(self, with_nil, with_padding):
+            if with_nil:
+                _min = self._min_all[self._xy_dim]
+            else:
+                _min = self._min_val[self._xy_dim]
+            if with_padding:
+                _max = self._max_all[self._xy_dim]
+            else:
+                _max = self._max_val[self._xy_dim]
+            return _min, _max
 
-        def make(self, xy_dims):
+        def make(self, show_paddings, *xy_dims):
+            key = xy_dims, show_paddings
+            self._xy_dim = xy_dims = np.asarray(xy_dims)
+            if key in self._cache:
+                self._word, self._phrase = self._cache[key]
+                return
+
+            _max = self._max_all if show_paddings else self._max_val
             sature_max = 0
             for stat in self._stats :
-                sature_max = max(sature_max, stat.colorify(self._max[0], None, xy_dims))
+                sature_max = max(sature_max, stat.colorify(_max[0], xy_dims))
 
-            self._xy_dim = xy_dims
             if self._word:
                 self._word = self._word.seal(sature_max)
             self._phrase = tuple(s.seal(sature_max) for s in self._phrase)
+            self._cache[key] = self._word, self._phrase
 
         @property
         def word(self):
@@ -995,36 +1042,18 @@ if desktop:
         def phrase(self):
             return self._phrase
 
-    def make_histogram(stat_board, offx, offy, width, height,
-                       stat, offset_length, histo_max,
-                       half_word_height,
-                       stat_font,
-                       stat_color,
-                       filtered = None,
-                       distance = None):
-        xy, xmax, _, coord_x = stat.histo_data(width, histo_max, offset_length, filtered)
-        if half_word_height:
-            stat_board.create_text(offx + width, offy + height + half_word_height,
-                                    text = '%.2f' % xmax if xmax > 0.01 else '<.01' % xmax, 
-                                    fill = stat_color, anchor = E, font = stat_font)
-        # base line
-        stat_board.create_line(offx,         offy + height,
-                               offx + width, offy + height,
-                               fill = stat_color)# does not work, width = 0.5)
-        if distance and distance > 0:
-            m = sum(y for _, y in xy) * 1.25
-            z = sqrt(2* pi* distance)
-            a = (2 * distance ** 2)
-            for i in range(width):
-                x = i / width
-                y = sum(yj / z * exp(-((x - xj) ** 2 ) / a) for xj, yj in xy) / m
-                stat_board.create_line(offx + i, offy + height - y * height,
-                                       offx + i, offy + height, fill = stat_color)
-        else:
-            for x, y in xy:
-                stat_board.create_line(offx + x * width, offy + height - y * height,
-                                       offx + x * width, offy + height, fill = stat_color)
-        return {c:x * width for c, x in coord_x}
+    def disp(x):
+        if x >= 1:
+            return str(x)[:3]
+        if x <= -1:
+            return str(x)[:4]
+        if x >= 0.01:
+            return str(x)[1:4]
+        if x <= -0.01:
+            return '-' + str(x)[2:5]
+        if x == 0:
+            return '0'
+        return '+0' if x > 0 else '-0'
 
     def make_color(mutable_x,
                    show_color = False,
@@ -1056,6 +1085,46 @@ if desktop:
                 return x[2:]
         return '#' + ''.join(channel(x) for x in hsv_to_rgb(h, s, v))
 
+    def make_histogram(stat_board, offx, offy, width, height,
+                       stat, offset_length, histo_max,
+                       half_word_height,
+                       stat_font,
+                       stat_color,
+                       xlab,
+                       filtered = None,
+                       distance = None):
+        xy, xmin, xmax, coord_x = stat.histo_data(width, histo_max, offset_length, filtered)
+        if half_word_height and stat_font and xlab:
+            stat_board.create_text(offx, offy + height + half_word_height,
+                                   text = disp(xmin),
+                                   fill = stat_color, anchor = W, font = stat_font)
+            stat_board.create_text(offx + width, offy + height + half_word_height,
+                                   text = disp(xmax),
+                                   fill = stat_color, anchor = E, font = stat_font)
+        # base line
+        stat_board.create_line(offx,         offy + height,
+                               offx + width, offy + height,
+                               fill = stat_color)# does not work, width = 0.5)
+        if distance and distance > 0:
+            m = 0
+            z = sqrt(2* pi* distance)
+            a = (2 * distance ** 2)
+            data = []
+            for i in range(width):
+                x = i / width
+                y = sum(yj / z * exp(-((x - xj) ** 2 ) / a) for xj, yj in xy)
+                if y > m: m = y
+                data.append((i, y))
+            for i, y in data:
+                y /= m
+                stat_board.create_line(offx + i, offy + height - y * height,
+                                       offx + i, offy + height, fill = stat_color)
+        else:
+            for x, y in xy:
+                stat_board.create_line(offx + x * width, offy + height - y * height,
+                                       offx + x * width, offy + height, fill = stat_color)
+        return {c:x * width for c, x in coord_x}
+
     def make_scatter(stat_board, offx, offy, width, height, r,
                      stat, offset_length, scatter_min_max,
                      stat_color,
@@ -1063,6 +1132,7 @@ if desktop:
                      stat_font,
                      to_color,
                      background,
+                     xlab, ylab, clab,
                      filtered = None):
         # globals().update({k:v for k,v in zip(BoardConfig._fields, config)})
         # stat_board.create_line(offx, offy, offx, offy + height, fill = stat_color)
@@ -1078,57 +1148,56 @@ if desktop:
         #             stat_board.create_line(offx + i,     offy + height - j,
         #                                    offx + i + 1, offy + height - j, fill = make_color(z))
 
-        xy, xy_min, xy_max, xy_mean, coord = stat.scatter_data(scatter_min_max, offset_length, filtered)
+        xy, xy_min, xy_max, xy_orig, coord = stat.scatter_data(scatter_min_max, offset_length, filtered)
             
-        if half_word_height:
-            p = lambda i: ('-0' if i < 0 else '+0') if abs(i) < 0.01 else ('%.1f' % i)
-            xmin, ymin = (p(i) for i in xy_min)
-            xmax, ymax = (p(i) for i in xy_max)
-            stat_board.create_text(offx, offy + height + half_word_height,
-                                    text = xmin, fill = stat_color,
-                                    font = stat_font, anchor = W)
-            stat_board.create_text(offx + width, offy + height + half_word_height,
-                                    text = xmax, fill = stat_color,
-                                    font = stat_font, anchor = E)
-            stat_board.create_text(offx - half_word_height * 1.3, offy,
-                                    text = ymax, fill = stat_color,
-                                    font = stat_font)#, angle = 90)
-            stat_board.create_text(offx - half_word_height * 1.3, offy + height,
-                                    text = ymin, fill = stat_color,
-                                    font = stat_font)
+        if half_word_height and stat_font and (xlab or ylab or clab):
+            xmin, ymin = (disp(i) for i in xy_min)
+            xmax, ymax = (disp(i) for i in xy_max)
+            if xlab:
+                stat_board.create_text(offx, offy + height + half_word_height,
+                                        text = xmin, fill = stat_color,
+                                        font = stat_font, anchor = W)
+                stat_board.create_text(offx + width, offy + height + half_word_height,
+                                        text = xmax, fill = stat_color,
+                                        font = stat_font, anchor = E)
+            if ylab:
+                stat_board.create_text(offx - half_word_height * 1.3, offy,
+                                        text = ymax, fill = stat_color,
+                                        font = stat_font)#, angle = 90)
+                stat_board.create_text(offx - half_word_height * 1.3, offy + height,
+                                        text = ymin, fill = stat_color,
+                                        font = stat_font)
+            if clab:
+                stat_board.create_text(offx - half_word_height * 1.3, offy + height / 2,
+                                        text = f'{len(xy)}•', fill = 'SpringGreen3',
+                                        font = stat_font)#, anchor = E)
 
-        stat_board.create_rectangle(offx - 1,         offy - 1,
-                                    offx + width + 1, offy + height + 1,
-                                    fill = background, outline = '')
-        x, y = xy_mean
-        lx = x * width
-        ly = x * height
-        stat_board.create_line(offx + lx - 4, offy + height - ly,
-                               offx + lx + 4, offy + height - ly, fill = 'red')
-        stat_board.create_line(offx + lx, offy + height - ly + 4,
-                               offx + lx, offy + height - ly - 4, fill = 'red')
+        stat_board.create_rectangle(offx,         offy,
+                                    offx + width, offy + height,
+                                    fill = background, outline = background)
+        x, y = xy_orig
+        lx = offx + x * width
+        ly = offy + height - y * height
+        stat_board.create_line(lx - 4, ly,
+                               lx + 4, ly, fill = 'red')
+        stat_board.create_line(lx, ly - 4,
+                               lx, ly + 4, fill = 'red')
 
         scatter_coord_item = {}
         for c, (x, y) in zip(coord, xy):
             x *= width
             y *= height
-            # if x == 0 or x == 1 or y == 0 or y == 1:
-            #     stat_board.create_rectangle(offx + x - 1, offy + height - y + 1,
-            #                                 offx + x + 1, offy + height - y - 1, fill = stat_color)
-            # else:
-            
             item = stat_board.create_oval(offx + x - r, offy + height - y - r,
                                           offx + x + r, offy + height - y + r,
                                           fill = to_color(stat[c]), outline = '')
-                                        #   width = 3)
             scatter_coord_item[c] = item
         return scatter_coord_item
 
     # NumbList: 'word_width, word_height, xy_ratio, histo_width, scatter_width'
     #  effect:      b             s,b   <-   s,b        s               s
-    # dark_background, inverse_brightness, delta_shape, show_errors, statistics, show_paddings, show_nil, absolute_coord, show_color
+    # dark_background, inverse_brightness, delta_shape, show_errors, statistics, show_paddings, show_nil, align_coord, show_color
     #        sb                 b              sb            b              s?              sb            s           s            b
-    fields = ', num_word, half_word_width, half_word_height, line_dx, line_dy, deco_dx, deco_dy, canvas_width, canvas_height, stat_font, stat_pad_left, stat_pad_between, stat_pad_right'
+    fields = ', num_word, half_word_width, half_word_height, line_dx, line_dy, deco_dx, deco_dy, upper_padding, canvas_width, canvas_height, stat_font, stat_pad_left, stat_pad_between, stat_pad_right'
     FrameGeometry = namedtuple('FrameGeometry', ','.join(NumbList._fields) + fields)
     BoardConfig = namedtuple('BoardConfig', DynamicSettings._fields + FrameGeometry._fields)
 
@@ -1157,10 +1226,11 @@ if desktop:
             line_dy = line_dx * static_settings.xy_ratio
             deco_dx = static_settings.line_width / np.sqrt(1 + static_settings.xy_ratio ** 2) / 2
             deco_dy = deco_dx * static_settings.xy_ratio
+            upper_padding = max(half_word_height, static_settings.line_width / 2)
             canvas_width  = num_word * static_settings.word_width
-            canvas_height = (num_word + 2) * (static_settings.word_height + line_dy) # +2 for word and tag layer
+            canvas_height = (num_word + 2) * (static_settings.word_height + line_dy) + upper_padding # +2 for word and tag layer
             stat_paddings = (28, 10, 22)
-            bcfg = num_word, half_word_width, half_word_height, line_dx, line_dy, deco_dx, deco_dy, canvas_width, canvas_height, ('helvetica', 10)
+            bcfg = num_word, half_word_width, half_word_height, line_dx, line_dy, deco_dx, deco_dy, upper_padding, canvas_width, canvas_height, ('helvetica', 10)
             self._frame_geometry = FrameGeometry(*(static_settings + bcfg + stat_paddings))
             self._conf = BoardConfig(*(dynamic_settings + self._frame_geometry))
             self._last_show_paddings = dynamic_settings.show_paddings
@@ -1301,7 +1371,7 @@ if desktop:
                 b.configure(background = bg_color)
 
             data, stat = self._data[tid]
-            stat.make(np.asarray([self._conf.pc_x, self._conf.pc_y]))
+            stat.make(self._conf.show_paddings, self._conf.pc_x, self._conf.pc_y)
             label_layers = self.__draw_board(data, stat, fg_color, to_color)
             if self._conf.statistics:
                 self.__draw_stat_board(label_layers, data.offset, data.length, stat, stat_fg, stat_bg, to_color)
@@ -1463,10 +1533,10 @@ if desktop:
                         items, positions, reflection = self._spotlight_objects
                         for i in reflection:
                             stat_board.delete(i)
-                        x,y,x1,y_ = stat_board.bbox(items[coord])
-                        stat_ref = stat_board.create_oval(x-1,y-1,x1+1,y_+1, fill = 'red', outline = '')
-                        x, y, h = positions[coord]
-                        histo_ref = stat_board.create_line(x,y-2,x,y+h+2, fill = 'red')
+                        x,y,x_,y_ = stat_board.bbox(items[coord])
+                        stat_ref = stat_board.create_oval(x-1,y-1,x_+1,y_+1, fill = 'red', outline = '')
+                        x,y,h = positions[coord]
+                        histo_ref = stat_board.create_line(x,y,x,y+h, fill = 'red')
                         self._spotlight_objects = items, positions, (stat_ref, histo_ref)
                     break
                 else:
@@ -1547,33 +1617,31 @@ if desktop:
             if self._conf.delta_shape:
                 offy = self._conf.canvas_height - incre_y
                 incre_y = -incre_y
+                bottom_offy = offy + incre_y
             else:
-                offy = 0
+                bottom_offy = offy = self._conf.upper_padding
 
             scatter_width = self._conf.scatter_width
             histo_width   = self._conf.histo_width
-            # skip NCCP_tf if data.energy.tag
             bottom_height = 2 * line_dy + self._conf.word_height
-            bottom_offy   = offy + incre_y
             pad_left      = self._conf.stat_pad_left
             histo_offset = pad_left + scatter_width + self._conf.stat_pad_between
             def level_tag(offy, tag):
                 if self._conf.delta_shape:
                     offy = offy - incre_y - self._conf.half_word_height
                 else:
-                    offy += self._conf.half_word_height  
+                    offy += self._conf.half_word_height - self._conf.upper_padding
                 stat_board.create_text(histo_offset + histo_width + self._conf.stat_pad_right, offy, text = tag, fill = 'deep sky blue', anchor = E)
 
             _scatter = partial(make_scatter,
                                stat_board       = stat_board,
                                offx             = pad_left,
                                width            = scatter_width,
-                               height           = line_dy,
                                r                = self._conf.line_width / 2,
-                               scatter_min_max  = stat.scatter_min_max() if self._conf.absolute_coord else None,
+                               scatter_min_max  = stat.scatter_min_max(self._conf.show_nil, self._conf.show_paddings) if self._conf.align_coord else None,
                                stat_color       = fg_color,
-                               half_word_height = self._conf.half_word_height,
                                stat_font        = self._conf.stat_font,
+                               half_word_height = self._conf.half_word_height,
                                background       = bg_color,
                                to_color         = to_color)
             
@@ -1581,17 +1649,22 @@ if desktop:
                              stat_board       = stat_board,
                              offx             = histo_offset,
                              width            = histo_width,
-                             height           = line_dy,
-                             histo_max        = stat.histo_max() if self._conf.absolute_coord else None,
+                             histo_max        = stat.histo_max(self._conf.show_paddings) if self._conf.align_coord else None,
                              stat_color       = fg_color,
-                             half_word_height = self._conf.half_word_height,
                              stat_font        = self._conf.stat_font,
+                             half_word_height = self._conf.half_word_height,
                              distance = self._conf.gauss if self._conf.apply_gauss else None)
             bottom_offset_length = None if self._conf.show_paddings else (offset, length)
             level_tag(offy, tag = 'W')
 
-            sci = _scatter(offy = bottom_offy, stat = stat.word, offset_length = bottom_offset_length, height = bottom_height).items()
-            hcp = _histo  (offy = bottom_offy, stat = stat.word, offset_length = bottom_offset_length, height = bottom_height).items()
+            if self._conf.align_coord:
+                height = line_dy + self._conf.word_height * 0.75
+                xlab = False
+            else:
+                height = line_dy
+                xlab = True
+            sci = _scatter(offy = bottom_offy, stat = stat.word, offset_length = bottom_offset_length, height = bottom_height, xlab = True, ylab = True, clab = not xlab).items()
+            hcp = _histo  (offy = bottom_offy, stat = stat.word, offset_length = bottom_offset_length, height = bottom_height, xlab = True).items()
             for (i, it), (j, ip) in zip(sci, hcp):
                 ip = ip + histo_offset, bottom_offy, bottom_height
                 scatter_coord_item  [('w', i)] = it
@@ -1602,11 +1675,11 @@ if desktop:
                     cond_level_len  = None if self._conf.show_paddings else (offset, length - l)
                     cond_nil_filter = None if self._conf.show_nil else [s != nil for s in plabel_layer] # interesting! tuple is not a good filter here, list is proper!
                     level_tag(offy, str(l))
-                    sci = _scatter(offy = offy, stat = layer_phrase_energy, offset_length = cond_level_len, filtered = cond_nil_filter).items()
-                    hcp = _histo  (offy = offy, stat = layer_phrase_energy, offset_length = cond_level_len, filtered = cond_nil_filter).items()
+                    sci = _scatter(offy = offy, stat = layer_phrase_energy, offset_length = cond_level_len, filtered = cond_nil_filter, height = height, xlab = xlab, ylab = xlab, clab = not xlab).items()
+                    hcp = _histo  (offy = offy, stat = layer_phrase_energy, offset_length = cond_level_len, filtered = cond_nil_filter, height = height, xlab = xlab).items()
                     for (i, it), (j, ip) in zip(sci, hcp):
                         scatter_coord_item  [(l, j)] = it
-                        histo_coord_position[(l, i)] = ip + histo_offset, offy, line_dy
+                        histo_coord_position[(l, i)] = ip + histo_offset, offy, height
                 offy += incre_y
             self._spotlight_objects = scatter_coord_item, histo_coord_position, tuple()
 
@@ -1636,7 +1709,7 @@ if desktop:
             if self._conf.delta_shape:
                 line_dy = self._conf.line_dy
                 deco_dy = - deco_dy
-                word_center      = self._conf.canvas_height - word_center
+                word_center        = self._conf.canvas_height - word_center
                 tag_label_center   = self._conf.canvas_height - tag_label_center
                 tag_label_line_bo  = self._conf.canvas_height - tag_label_line_bo
                 w_p_s = tuple(self._conf.canvas_height - b for b in w_p_s)

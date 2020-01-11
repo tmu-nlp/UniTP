@@ -2,6 +2,7 @@ from utils.types import M_TRAIN, M_DEVEL, M_TEST
 from numpy.random import choice
 from tqdm import tqdm
 from time import time
+from datetime import timedelta
 from torch import nn, no_grad
 from utils.recorder import Recorder, timestamp
 class Operator:
@@ -18,6 +19,7 @@ class Operator:
         self._recorder = recorder
         self._i2vs = i2vs
         self._optimizer = None
+        self._current_scores = None
         self._train_materials = None
         self._validate_materials = None
         self._test_materials = self.get_materials(M_TEST)
@@ -43,70 +45,83 @@ class Operator:
         ds_specs = self._train_materials
         ds_freqs = {dn: ds.size       for dn, ds in ds_specs.items()}
         ds_iters = {dn: iter(ds.iter) for dn, ds in ds_specs.items()}
-        with tqdm(total = sum(ds_freqs.values())) as qbar:
+        with tqdm(total = sum(ds_freqs.values()), desc = '🔥') as qbar:
             while sum(ds_freqs.values()):
+                # prepare datasets for joint tasks
                 total = sum(ds_freqs.values())
                 ds_names, ds_probs = zip(*((dn, df/total) for dn, df in ds_freqs.items()))
                 ds_name = choice(ds_names, p = ds_probs)
                 batch = next(ds_iters[ds_name])
+
                 # with torch.autograd.set_detect_anomaly(True):
                 self._schedule(epoch_cnt + qbar.n / qbar.total, wander_ratio)
                 num_samples, seq_len = self._step(M_TRAIN, ds_name, batch) # neural core
+
+                # display
                 qbar.update(num_samples)
-                qbar.desc = f'E-{epoch_cnt}/{100*wander_ratio:.0f}% Batch({num_samples}, {seq_len})'
+                qbar.desc = f'[{epoch_cnt}] 🔥{100*wander_ratio:.0f}% :{num_samples}×{seq_len}'
                 ds_freqs[ds_name] -= num_samples
                 self._global_step += 1
-                yield qbar.n / qbar.total
-        self._recorder.log(f'{epoch_cnt}. epoch - {time() - self._epoch_start:.0f} sec. from start')
+
+                updated_wander_ratio = yield qbar.n / qbar.total
+                if updated_wander_ratio is not None:
+                    wander_ratio = updated_wander_ratio
         # next epoch
 
     def validate_betterment(self, epoch, falling):
         ds_total, ds_names, ds_iters = self._validate_materials
-        with tqdm(total = ds_total) as qbar:
-            desc = ''
+        epoch_stamp = timestamp(epoch, '')
+        with tqdm(total = ds_total, desc = f'#🎃{epoch:.1f}') as qbar:
+            ds_desc = []
+            ds_logg = []
             for ds_name, ds_iter in zip(ds_names, ds_iters):
-                vis = self._before_validation(ds_name, timestamp(epoch, ''))
-                if vis: vis._before() # TODO: mpc
+                self._before_validation(ds_name, epoch_stamp)
                 start, cnt = time(), 0
                 for batch_id, batch in enumerate(ds_iter):
                     with no_grad():
-                        num_samples, _ = self._step(M_DEVEL, ds_names, batch, extra = (vis, batch_id))
+                        num_samples, _ = self._step(M_DEVEL, ds_names, batch, batch_id = batch_id)
                     cnt += num_samples
                     qbar.update(num_samples)
-                    qbar.desc = f'V-{epoch:.1f}'
-                speed = cnt / (time() - start)
-                if vis: desc += vis._after() + f' in {speed:.2f} s/s.; '
-                self._after_validation(vis)
-            qbar.desc = desc[:-2] + '.'
-            self._recorder.log(timestamp(epoch, 'V') + '  ' + desc[:-2])
-        return self._recorder.check_betterment(epoch, falling, self._global_step, self._model, self._optimizer, self._key())
+                desc, logg = self._after_validation(cnt / (time() - start))
+                ds_desc.append(desc)
+                ds_logg.append(logg)
+            qbar.total = None
+            from_start = timedelta(seconds = int(time() - self._epoch_start))
+            qbar.desc = f'[{epoch_stamp}] 🎃 {from_start} ' + ' '.join(ds_desc)
+            ds_logg   = ' '.join(ds_logg)
+            self._recorder.log(timestamp(epoch, 'Validation ') + ' - ' + ds_logg + f' ({from_start} from start)', end = '.')
+        return self._recorder.check_betterment(epoch, falling, self._global_step, self._model, self._optimizer, self.current_scores('key'))
 
     def test_model(self, epoch = None):
         ds_total, ds_names, ds_iters = self._test_materials
         if epoch is None:
             epoch = self._recorder.initial_or_restore(self._model, restore_from_best_validation = True)
-        with tqdm(total = ds_total) as qbar:
-            desc = ''
+        epoch_stamp = timestamp(epoch, '')
+        with tqdm(total = ds_total, desc = f'#🔮{epoch:.1f}') as qbar:
+            ds_desc = []
+            ds_logg = []
             for ds_name, ds_iter in zip(ds_names, ds_iters):
-                vis = self._before_validation(ds_name, timestamp(epoch, ''), use_test_set = True)
-                if vis: vis._before() # TODO: mpc
+                self._before_validation(ds_name, epoch_stamp, use_test_set = True)
                 start, cnt = time(), 0
                 for batch_id, batch in enumerate(ds_iter):
                     with no_grad():
-                        num_samples, _ = self._step(M_TEST, ds_names, batch, extra = (vis, batch_id))
+                        num_samples, _ = self._step(M_TEST, ds_names, batch, batch_id = batch_id)
                     cnt += num_samples
                     qbar.update(num_samples)
-                    qbar.desc = f'T-{epoch:.1f}'
-                speed = cnt / (time() - start)
-                if vis: desc += vis._after() + f' in {speed:.2f} s/s.; '
-                self._after_validation(vis)
-            qbar.desc = desc[:-2] + '.'
-        return self._scores()
+                desc, logg = self._after_validation(cnt / (time() - start))
+                ds_desc.append(desc)
+                ds_logg.append(logg)
+            qbar.total = None
+            from_start = timedelta(seconds = int(time() - self._epoch_start))
+            qbar.desc = f'[{epoch_stamp}] 🔮 {from_start} ' + ' '.join(ds_desc)
+            ds_logg = '\n'.join(ds_logg)
+            self._recorder.log(timestamp(epoch, 'Test ') + ' - ' + ds_logg + f' ({from_start} from start)')
+        return self.current_scores()
 
     def _schedule(self, epoch, wander_ratio):
         pass
 
-    def _step(self, mode, ds_name, batch, flush = True, extra = None):
+    def _step(self, mode, ds_name, batch, flush = True, batch_id = None):
         raise NotImplementedError()
 
     def _build_optimizer(self):
@@ -118,11 +133,17 @@ class Operator:
     def _after_validation(self, ds_name):
         raise NotImplementedError()
 
-    def _key(self):
-        raise NotImplementedError()
+    def set_scores(self, scores):
+        assert 'key' in scores
+        self._current_scores = scores
 
-    def _scores(self):
-        raise NotImplementedError()
+    def current_scores(self, *keys):
+        _n = len(keys)
+        if _n == 0:
+            return self._current_scores
+        elif _n == 1:
+            return self._current_scores[keys[0]]
+        return {key:self._current_scores for key in keys}
 
     @property
     def recorder(self):

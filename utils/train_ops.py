@@ -18,14 +18,16 @@ def train(train_params, operator):
     # TODO: set fine_validation_at_nth_wander to
     for epoch_cnt in range(epoch_cnt, train_params.max_epoch):
         nth_validation = 1 if fine_validation else train_params.fine_validation_each_nth_epoch
-        epoch = epoch_cnt + nth_validation / validation_each_nth_epoch
-        for percentage in operator.train_step(epoch_cnt, nth_wander / train_params.stop_at_nth_wander):
+        train_step = operator.train_step(epoch_cnt, nth_wander / train_params.stop_at_nth_wander)
+        for percentage in train_step:
             if percentage >= (nth_validation / validation_each_nth_epoch):
-                if operator.validate_betterment(epoch,
-                                                nth_wander == train_params.fine_validation_at_nth_wander):
+                epoch = epoch_cnt + nth_validation / validation_each_nth_epoch
+                if operator.validate_betterment(epoch, nth_wander == train_params.fine_validation_at_nth_wander):
                     nth_wander = 0
                 else:
                     nth_wander += 1
+                if percentage < 1:
+                    train_step.send(nth_wander / train_params.stop_at_nth_wander)
                 if nth_wander > train_params.fine_validation_at_nth_wander:
                     fine_validation = True
                     if nth_wander > train_params.stop_at_nth_wander:

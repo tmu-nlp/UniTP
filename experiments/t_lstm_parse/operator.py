@@ -22,10 +22,9 @@ class PennOperator(Operator):
     def _build_optimizer(self):
         self._loss_weights_of_tag_label_orient = 0.3, 0.1, 0.6
         self._writer = SummaryWriter(self.recorder.create_join('train'))
-        self._current_scores = None
         self._last_wander_ratio = 0
         self._base_lr = 0.001
-        self._lr_discount_rate = 0.001
+        # self._lr_discount_rate = 0.0001
         # for params in self._model.parameters():
         #     if len(params.shape) > 1:
         #         nn.init.xavier_uniform_(params)
@@ -37,30 +36,30 @@ class PennOperator(Operator):
         if wander_ratio < wander_threshold:
             learning_rate = self._base_lr * (1 - exp(- epoch))
         else:
-            lr_discount = self._base_lr * self._lr_discount_rate
-            if abs(self._last_wander_ratio - wander_ratio) > 1e-10: # change
-                self._last_wander_ratio = wander_ratio
-                if self._base_lr > lr_discount + 1e-10:
-                    self._base_lr -= lr_discount
-                else:
-                    self._base_lr *= self._lr_discount_rate
+            # lr_discount = self._base_lr * self._lr_discount_rate
+            # if abs(self._last_wander_ratio - wander_ratio) > 1e-10: # change
+            #     self._last_wander_ratio = wander_ratio
+            #     if self._base_lr > lr_discount + 1e-10:
+            #         self._base_lr -= lr_discount
+            #     else:
+            #         self._base_lr *= self._lr_discount_rate
 
             # if epoch > lr_half_life:
             #     base_lr *= 
             linear_dec = (1 - (wander_ratio - wander_threshold) / (1 - wander_threshold + 1e-20))
             learning_rate = self._base_lr * linear_dec
 
-        lr_half_life = 40
-        if epoch > lr_half_life:
-            learning_rate *= exp(-(epoch - lr_half_life) / lr_half_life) # fine decline
-        learning_rate += 1e-20
+        # lr_half_life = 60
+        # if epoch > lr_half_life:
+        #     learning_rate *= exp(-(epoch - lr_half_life) / lr_half_life) # fine decline
+        # learning_rate += 1e-20
         
         self._writer.add_scalar('Batch/Learning_Rate', learning_rate, self.global_step)
         self._writer.add_scalar('Batch/Epoch', epoch, self.global_step)
         for opg in self.optimizer.param_groups:
             opg['lr'] = learning_rate
 
-    def _step(self, mode, ds_name, batch, flush = True, extra = None):
+    def _step(self, mode, ds_name, batch, flush = True, batch_id = None):
         # assert ds_name == C_ABSTRACT
         if mode == M_TRAIN and flush:
             self.optimizer.zero_grad()
@@ -126,7 +125,7 @@ class PennOperator(Operator):
             if 'segment' in batch:
                 self._writer.add_scalar('Batch/Height', len(batch['segment']), gs)
         else:
-            vis, batch_id = extra
+            vis = self._vis
             mpc_word = mpc_label = None
             if vis.save_tensors:
                 if hasattr(self._model._input_layer, 'pca'):
@@ -157,12 +156,10 @@ class PennOperator(Operator):
             b_data = b_logits + b_mpcs + b_scores
             if trapezoid_info is not None:
                 trapezoid_info = (batch['segment'], batch['seg_length']) + trapezoid_info
-            vis._process(batch_id, b_size + b_head + b_data, trapezoid_info)
+            vis.process(batch_id, b_size + b_head + b_data, trapezoid_info)
         return batch_size, batch_len
 
     def _before_validation(self, ds_name, epoch, use_test_set = False, final_test = True):
-        def set_scores(scores):
-            self._current_scores = scores
         devel_bins, test_bins = self._mode_length_bins
         if use_test_set:
             if final_test:
@@ -172,11 +169,21 @@ class PennOperator(Operator):
             save_tensors = True
             length_bins = test_bins
             scores_of_bins = True
+            def set_scores(scores, speed):
+                scores[ 'key' ] = scores.get('F1', 0)
+                self.set_scores(scores)
         else:
             folder = 'vis_devel'
             length_bins = devel_bins
             save_tensors = is_bin_times(int(float(epoch)) - 1)
             scores_of_bins = False
+            def set_scores(scores, speed):
+                scores['Speed'] = float(f'{speed:.1f}')
+                scores[ 'key' ] = scores.get('F1', 0)
+                self.set_scores(scores)
+                if 'F1' in scores:
+                    self._writer.add_scalar('Evalb/F1',    scores['F1'], self.global_step)
+                    self._writer.add_scalar('Evalb/SamplePerSec', speed, self.global_step)
 
         self._model.eval()
         pvis = PennTrainVis(epoch,
@@ -188,24 +195,20 @@ class PennOperator(Operator):
                             save_tensors,
                             length_bins,
                             scores_of_bins)
+        pvis.before()
         length_bins = pvis.length_bins
         if length_bins is not None:
             if use_test_set:
                 self._mode_length_bins = devel_bins, length_bins # change test
             else:
                 self._mode_length_bins = length_bins, test_bins # change devel
-        return pvis
+        self._vis = pvis
 
-    def _after_validation(self, vis):
+    def _after_validation(self, speed):
+        msg = self._vis.after(speed)
+        self._vis = None
         self._model.train()
-        # vis.wait()
-
-    def _key(self):
-        return self._current_scores['key']
-
-    def _scores(self):
-        return self._current_scores
-    
+        return msg
 
 # from utils.vis import Vis
 from utils.file_io import join, isfile, listdir, remove
@@ -242,7 +245,7 @@ class PennTrainVis:#(Vis):
         if self._head_tree: self._head_tree.close()
         if self._data_tree: self._data_tree.close()
 
-    def _before(self):
+    def before(self):
         # overwrite
         htree, dtree = self._fnames
         if set_vocab(self._work_dir, self._i2vs._nested):
@@ -259,7 +262,7 @@ class PennTrainVis:#(Vis):
     def length_bins(self):
         return self._length_bins
 
-    def _process(self, batch_id, batch, trapezoid_info):
+    def process(self, batch_id, batch, trapezoid_info):
         # process batch to instances, compress
         # if head is in batch, save it
         # else check head.emm.pkl
@@ -295,7 +298,7 @@ class PennTrainVis:#(Vis):
                  d_trapezoid_info if trapezoid_info else None,
                  self._i2vs, self._data_tree, self._logger, self._evalb, bin_width)
 
-    def _after(self):
+    def after(self, speed):
         # call evalb to data.emm.rpt return the results, and time counted
         # provide key value in results
         if self._head_tree:
@@ -305,7 +308,7 @@ class PennTrainVis:#(Vis):
         scores = rpt_summary(proc.stdout.decode(), False, True)
         errors = proc.stderr.decode()
         num_errors = sum(len(x) for x in errors.split('\n') if len(x))
-        if num_errors > 10:
+        if num_errors > 30:
             self._logger(f'  {num_errors} errors from evalb')
         elif num_errors:
             self._logger(errors, end = '')
@@ -323,6 +326,6 @@ class PennTrainVis:#(Vis):
                     remove(fhead)
                     remove(fdata)
 
-        scores['key'] = scores.get('F1', 0)
-        self._set_scores(scores)
-        return ', '.join(f'{k}: {v}' for k,v in scores.items())
+        self._set_scores(scores, speed)
+        desc = f'Evalb({scores["LP"]:.2f}/{scores["LR"]:.2f}/{scores["F1"]:.2f})'
+        return desc, f'N: {scores["N"]} {desc} @{speed:.2f}sps.'

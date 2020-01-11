@@ -143,7 +143,7 @@ class TrapezoidDataset(LengthOrderedDataset):
                         keeper.update_factored(factored, words)
                         keepers.append(keeper)
                         qbar.update(1)
-                qbar.desc = f'{len(lengths)} TreesKeepers'
+                qbar.desc = f'TreesKeepers'
             except KeyboardInterrupt as ex:
                 with DelayedKeyboardInterrupt(ignore = True):
                     for x in works:

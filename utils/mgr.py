@@ -29,7 +29,7 @@ def check_train(train_str):
     train['fine_validation_at_nth_wander'] = int(match.group(1)) if match else 3
 
     match = re.match(r'/(\d+)', train_str)
-    train['fine_validation_each_nth_epoch'] = int(match.group(1)) if match else 5
+    train['fine_validation_each_nth_epoch'] = int(match.group(1)) if match else 4
 
     match = re.match(r'\|(\d+)', train_str)
     train['stop_at_nth_wander'] = int(match.group(1)) if match else 50

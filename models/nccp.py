@@ -14,14 +14,14 @@ def valid_codebook(name):
         return bar >= 0
     return False
     
-logit_type = BaseType('affine', default_set = ('affine', 'codebook'), validator = valid_codebook)
+logit_type = BaseType('affine', default_set = ('affine', 'linear', 'codebook'), validator = valid_codebook)
 multi_class = dict(hidden_dim = hidden_dim,
                    activation = activation_type,
                    logit_type = logit_type,
                    drop_out   = frac_4)
 
 from models.backend import stem_config
-penn_tree_config = dict(orient_layer = stem_config,
+penn_tree_config = dict(orient_layer    = stem_config,
                         tag_label_layer = multi_class)
 from models.utils import GaussianCodebook
 from models.loss import cross_entropy, height_mask as make_
@@ -43,8 +43,8 @@ class BaseRnnTree(nn.Module):
         self._dp_layer = nn.Dropout(tag_label_layer['drop_out'])
 
         logit_type = tag_label_layer['logit_type']
-        if logit_type == 'affine':
-            Net = nn.Linear
+        if logit_type in ('affine', 'linear'):
+            Net = lambda i_size, o_size: nn.Linear(i_size, o_size, bias = logit_type == 'affine')
             argmax = True
             self._score = nn.Softmax(dim = 2)
             self._activation = activation()

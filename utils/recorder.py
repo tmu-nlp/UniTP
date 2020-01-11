@@ -139,7 +139,60 @@ class Recorder:
             print('Total:', total, **self._print_args)
         else:
             checkpoint = torch.load(model_fname)
-            model.load_state_dict(checkpoint['model_state_dict'])
+            try:
+                model.load_state_dict(checkpoint['model_state_dict'])
+            except:
+                model_old_dict = checkpoint['model_state_dict']
+                model_new_dict = model.state_dict()
+                new_keys = tuple(model_new_dict)
+                from utils.shell_io import red, green
+                for old_key in tuple(model_old_dict):
+                    if old_key in new_keys:
+                        continue
+                    new_candidates = {}
+                    old_segs = old_key.split('.')
+                    old_segs.reverse()
+                    for new_key in new_keys:
+                        new_segs = new_key.split('.')
+                        new_segs.reverse()
+                        match_depth = 0
+                        for ns, os in zip(new_segs, old_segs):
+                            if ns == os:
+                                match_depth += 1
+                        if match_depth > 1:
+                            new_candidates[new_key] = match_depth
+                    new_candidates = sorted(new_candidates, key = new_candidates.get, reverse = True)
+                    if len(new_candidates) == 1:
+                        new_key = new_candidates[0]
+                        more = len(new_key) - len(old_key)
+                        prompt = red('Rename ')
+                        if more > 0:
+                            prompt += ' ' * more
+                            prompt += old_key
+                            prompt += green('\n    as ')
+                        else:
+                            more = 0 - more
+                            prompt += old_key
+                            prompt += green('\n    as ')
+                            prompt += ' ' * more
+                        prompt += new_key
+                        print(prompt)
+                    else:
+                        prompt = f'Change {old_key} into:\n'
+                        for i, k in enumerate(new_candidates):
+                            prompt += f'{i}) {k}\n'
+                        new_key = input(prompt)
+                        if new_key == 'q':
+                            exit()
+                        new_key = int(new_key)
+                        assert new_key in range(len(new_candidates))
+                        new_key = new_candidates[new_key]
+                    change_key(model_old_dict, old_key, new_key)
+                model.load_state_dict(checkpoint['model_state_dict'])
+                decision = input(f'Save change to {model_fname}? [Y]')
+                if decision == 'Y':
+                    torch.save(checkpoint, model_fname)
+
             if optimizer is not None:
                 optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
             epoch, global_step, fine_validation = checkpoint['status']
@@ -174,10 +227,12 @@ class Recorder:
                 weakest_model = min(results, key = lambda x: results[x])
                 remove(join(self._model_dir, weakest_model))
                 results.pop(weakest_model)
-                print('Replace worst model', weakest_model, 'with a', 'new best' if betterment else 'better', 'model', model_fname, **self._print_args)
+                print(' Replace worst model', weakest_model, 'with a', 'new best' if betterment else 'better', 'model', model_fname, **self._print_args)
             else:
-                print('A new', 'best' if betterment else 'better', 'model', model_fname, **self._print_args)
+                print(' A new', 'best' if betterment else 'better', 'model', model_fname, **self._print_args)
             save_yaml(specs, *self._sv_file_lock, wait_lock = False)
+        else:
+            print(**self._print_args)
         return betterment
 
     def register_test_scores(self, scores):
