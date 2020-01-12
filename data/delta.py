@@ -214,7 +214,7 @@ def explain_warnings(warnings, label_layers, tag_layer):
     return info
 
 templates = ['pos and pos_in_syn not consistent',
-             'left/rightmost child directs away', # 1,2
+             'left/rightmost child directs away', # 1,2 not okay
              'child goes through <nil>s', # 3,4
              'tag changes during relay', # 5,6
              'discard non-<nil> parent',
@@ -227,16 +227,16 @@ def explain_one_error(err):
 
 def sumup_warnings(warnings):
     cnt = defaultdict(int)
-    for w, c in Counter(warnings[:, 2]).items():
-        if w <= 0: # pos warning and errors
-            i = w
-        elif w < 7:
-            i = (w - 1) // 2 + 1
-        else:
-            i = w - 3
-        cnt[i] += c
-    for w, c in cnt.items():
-        yield templates[w], c
+    for wtype, wcnt in Counter(warnings[:, 2]).items():
+        if wtype <= 0: # without left or right attribute
+            i = wtype
+        elif wtype < 7: # left or right
+            i = (wtype - 1) // 2 + 1
+        else: # without again
+            i = wtype - 3
+        cnt[i] += wcnt
+    for wtype, wcnt in cnt.items():
+        yield templates[wtype], wcnt
 
 import numpy as np
 def warning_level(warnings):
@@ -244,6 +244,8 @@ def warning_level(warnings):
         warnings = warnings[:, 2]
     if len(warnings) == 0:
         return 0
+    if 1 in warnings or 2 in warnings:
+        return -2
     if -1 in warnings or -2 in warnings:
         return -1
     if 3 in warnings or 4 in warnings: # go through <nil>
@@ -252,9 +254,9 @@ def warning_level(warnings):
         return 2
     return 1 # 0,5,6,8: pos/pos_in_syn, tag change, top is subtree
 
-def get_tree_from_triangle(word_layer, tag_layer, label_layers, right_layers, pos_in_syn = '#'):
+def get_tree_from_triangle(word_layer, tag_layer, label_layers, right_layers, pos_in_syn = '#', _sub = '_'):
     def _phrase(t): # -> list
-        return t[:] if t.label()[0] == '_' else [t]
+        return t[:] if t.label()[0] == _sub else [t]
 
     warnings   = []
     last_layer = []
@@ -267,7 +269,9 @@ def get_tree_from_triangle(word_layer, tag_layer, label_layers, right_layers, po
         for i, (w, p, s) in enumerate(zip(word_layer, tag_layer, label_layers[0])):
             w = {'(': '-LRB-', ')': '-RRB-'}.get(w, w)
             tagged_leaf = Tree(p, [w])
-            if s[0] == pos_in_syn:
+            if s[0] == _sub:
+                tree = tagged_leaf
+            elif s[0] == pos_in_syn:
                 s = s[1:]
                 if s == p:
                     tree = tagged_leaf
@@ -275,8 +279,8 @@ def get_tree_from_triangle(word_layer, tag_layer, label_layers, right_layers, po
                     tree = Tree(s, [tagged_leaf])
                     warnings.append((-1, i, 0))
             elif '+' in s:
-                segs = s.split('+')
                 tree = tagged_leaf
+                segs = s.split('+')
                 while segs:
                     tree = Tree(segs.pop(), [tree])
             else:
@@ -311,17 +315,19 @@ def get_tree_from_triangle(word_layer, tag_layer, label_layers, right_layers, po
                     skipped_none += 1
 
             if i == leftmost and not lcrward: # left most shall be restrictly not nil and rightwards
-                warnings.append((layer_cnt, i, 1))
-                if r_child is None:
-                    this_layer.append(l_child)
-                else:
-                    this_layer.append(Tree(l_child.label(), ([l_child] if l_child.height() == 2 else l_child[:]) + _phrase(r_child)))
+                raise ValueError((layer_cnt, i, 1), last_layer, warnings)
+                # warnings.append((layer_cnt, i, 1))
+                # if r_child is None:
+                #     this_layer.append(l_child)
+                # else:
+                #     this_layer.append(Tree(l_child.label(), ([l_child] if l_child.height() == 2 else l_child[:]) + _phrase(r_child)))
             elif i == rightmost and not rclward: # counterpart
-                warnings.append((layer_cnt, i, 2))
-                if l_child is None:
-                    this_layer.append(r_child)
-                else:
-                    this_layer.append(Tree(r_child.label(), _phrase(l_child) + ([r_child] if r_child.height() == 2 else r_child[:])))
+                raise ValueError((layer_cnt, i, 2), last_layer, warnings)
+                # warnings.append((layer_cnt, i, 2))
+                # if l_child is None:
+                #     this_layer.append(r_child)
+                # else:
+                #     this_layer.append(Tree(r_child.label(), _phrase(l_child) + ([r_child] if r_child.height() == 2 else r_child[:])))
             elif p == NIL: # phrase boundary -> nil
                 if layer_cnt and left_relay and right_relay:
                     raise ValueError((layer_cnt, i, -2), last_layer, warnings)
@@ -343,7 +349,7 @@ def get_tree_from_triangle(word_layer, tag_layer, label_layers, right_layers, po
                 else:
                     this_layer.append(Tree(p, _phrase(l_child) + _phrase(r_child) ))
             elif right_relay:
-                if not p.startswith(r_child.label()) and r_child.height() > 2: # should we keep the label?
+                if p[0] != _sub and not p.startswith(r_child.label()) and r_child.height() > 2: # should we keep the label?
                     # if r_child.label().startswith('_') or p.startswith('_'):
                     # if : # maybe not, less warning and more accurate
                     #     print('protect', r_child, p)
@@ -353,7 +359,7 @@ def get_tree_from_triangle(word_layer, tag_layer, label_layers, right_layers, po
                     warnings.append((layer_cnt, i, 5))
                 this_layer.append(r_child)
             elif left_relay:
-                if not p.startswith(l_child.label()) and l_child.height() > 2:
+                if p[0] != _sub and not p.startswith(l_child.label()) and l_child.height() > 2:
                     # if : # maybe not, less warning and more accurate
                     #     print('protect', l_child, p)
                     #     l_child = Tree(p, l_child)
@@ -367,12 +373,12 @@ def get_tree_from_triangle(word_layer, tag_layer, label_layers, right_layers, po
         if len(word_layer) != sum(len(t.leaves()) for t in this_layer if t):
             raise ValueError((layer_cnt, -1, -1), last_layer, warnings)
         last_layer = this_layer
-    p = last_layer[0]
-    i = p.label()
-    if i.startswith('_'):
+    root = last_layer[0]
+    root_label = root.label()
+    if root_label[0] == _sub:
         warnings.append((layer_cnt, 0, 8))
-        p.set_label(i[1:])
-    return p, warnings
+        # root.set_label('S' if root_label == '_SUB' else i[root_label:])
+    return root, warnings
 
 def explore_unary(func, unary, *args):
     if unary.height() > 2:

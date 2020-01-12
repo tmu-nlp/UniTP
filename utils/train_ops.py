@@ -30,7 +30,7 @@ def train(train_params, operator):
                     train_step.send(nth_wander / train_params.stop_at_nth_wander)
                 if nth_wander > train_params.fine_validation_at_nth_wander:
                     fine_validation = True
-                    if nth_wander > train_params.stop_at_nth_wander:
+                    if nth_wander >= train_params.stop_at_nth_wander:
                         return operator.test_model()
                 if train_params.test_with_validation:
                     operator.test_model(epoch = epoch)

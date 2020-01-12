@@ -9,20 +9,20 @@ xlnt_leaves_config = dict(contextual   = contextual_type,
                           num_layers   = num_ctx_layer,
                           drop_out     = frac_4,
                           rnn_drop_out = frac_2,
-                          model_dim    = word_dim,
                           activation   = activation_type,
                           subword_proc = subword_proc)
 xlnet_penn_tree_config = penn_tree_config.copy()
-xlnet_penn_tree_config['embed_layer'] = xlnt_leaves_config
+xlnet_penn_tree_config['input_layer'] = xlnt_leaves_config
+xlnet_penn_tree_config['model_dim']   = word_dim
 
 from models.utils import squeeze_left
 class XLNetLeaves(nn.Module):
     def __init__(self,
+                 model_dim,
                  contextual,
                  num_layers,
                  drop_out,
                  rnn_drop_out,
-                 model_dim,
                  activation,
                  paddings,
                  subword_proc):
@@ -113,32 +113,29 @@ class XLNetLeaves(nn.Module):
             xl_base = xl_base * non_nil # in-place fails at FloatTensor
         return None, xl_base # just dynamic
 
-class XLNetPennTree(nn.Module):
+class XLNetPennTree(BaseRnnTree):
     def __init__(self,
+                 model_dim,
                  paddings,
-                 embed_layer,
+                 input_layer,
                  **base_config):
-        super().__init__()
-
-        self._emb_layer = emb_layer = XLNetLeaves(paddings = paddings, **embed_layer)
-        self._base_model = BaseRnnTree(emb_layer.embedding_dim, **base_config)
-        self._paddings = paddings
+        super().__init__(model_dim, **base_config)
+        self._input_layer = XLNetLeaves(model_dim, paddings = paddings, **input_layer)
+        self._paddings    = paddings
 
     def forward(self,
                 word_idx,
                 offset, xl_ids, xl_start, **kw_args):
         batch_size, batch_len = word_idx.shape
-
-        static, dynamic = self._emb_layer(word_idx, offset, xl_ids, xl_start)
+        static, dynamic = self._input_layer(word_idx, offset, xl_ids, xl_start)
 
         if self._paddings:
             bottom_existence = torch.ones(batch_size, batch_len,
-                                          dtype = torch.bool,
+                                          dtype  = torch.bool,
                                           device = word_idx.device)
         else:
             bottom_existence = word_idx > 0
-        base_returns = self._base_model(dynamic, bottom_existence, **kw_args)
-
+        base_returns = super().forward(dynamic, bottom_existence, **kw_args)
         return (batch_size, batch_len, static, dynamic) + base_returns
 
 model_key_name = 'xlnet-base-cased'

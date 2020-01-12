@@ -5,6 +5,8 @@ from time import time
 from datetime import timedelta
 from torch import nn, no_grad
 from utils.recorder import Recorder, timestamp
+from utils.emoji import get_train_validation_pair
+
 class Operator:
     '''An (abstract) Operator operate a customized nn.Module for training, validation and testing.
     To operator, it feeds the model with multi-tasking batch from the customized get_datasets function,
@@ -33,19 +35,20 @@ class Operator:
 
     def train_initials(self):
         assert self._train_materials is None
+        train_icon, devel_icon = get_train_validation_pair()
         self._optimizer = self._build_optimizer()
-        self._train_materials = self._get_datasets(M_TRAIN)
-        self._validate_materials = self.get_materials(M_DEVEL)
+        self._train_materials = self._get_datasets(M_TRAIN), train_icon
+        self._validate_materials = self.get_materials(M_DEVEL), devel_icon
         (epoch, global_step, fine_validation) = self._recorder.initial_or_restore(self._model)
         self._global_step = global_step
         self._epoch_start = time()
         return epoch, fine_validation
 
     def train_step(self, epoch_cnt, wander_ratio):
-        ds_specs = self._train_materials
+        ds_specs, train_icon = self._train_materials
         ds_freqs = {dn: ds.size       for dn, ds in ds_specs.items()}
         ds_iters = {dn: iter(ds.iter) for dn, ds in ds_specs.items()}
-        with tqdm(total = sum(ds_freqs.values()), desc = '🔥') as qbar:
+        with tqdm(total = sum(ds_freqs.values()), desc = train_icon) as qbar:
             while sum(ds_freqs.values()):
                 # prepare datasets for joint tasks
                 total = sum(ds_freqs.values())
@@ -59,7 +62,7 @@ class Operator:
 
                 # display
                 qbar.update(num_samples)
-                qbar.desc = f'[{epoch_cnt}] 🔥{100*wander_ratio:.0f}% :{num_samples}×{seq_len}'
+                qbar.desc = f'[{epoch_cnt}] {train_icon}{100*wander_ratio:.0f}% :{num_samples}×{seq_len}'
                 ds_freqs[ds_name] -= num_samples
                 self._global_step += 1
 
@@ -69,9 +72,9 @@ class Operator:
         # next epoch
 
     def validate_betterment(self, epoch, falling):
-        ds_total, ds_names, ds_iters = self._validate_materials
+        (ds_total, ds_names, ds_iters), devel_icon = self._validate_materials
         epoch_stamp = timestamp(epoch, '')
-        with tqdm(total = ds_total, desc = f'#🎃{epoch:.1f}') as qbar:
+        with tqdm(total = ds_total, desc = f'#{devel_icon}{epoch:.1f}') as qbar:
             ds_desc = []
             ds_logg = []
             for ds_name, ds_iter in zip(ds_names, ds_iters):
@@ -87,7 +90,7 @@ class Operator:
                 ds_logg.append(logg)
             qbar.total = None
             from_start = timedelta(seconds = int(time() - self._epoch_start))
-            qbar.desc = f'[{epoch_stamp}] 🎃 {from_start} ' + ' '.join(ds_desc)
+            qbar.desc = f'[{epoch_stamp}] {devel_icon} {from_start} ' + ' '.join(ds_desc)
             ds_logg   = ' '.join(ds_logg)
             self._recorder.log(timestamp(epoch, 'Validation ') + ' - ' + ds_logg + f' ({from_start} from start)', end = '.')
         return self._recorder.check_betterment(epoch, falling, self._global_step, self._model, self._optimizer, self.current_scores('key'))

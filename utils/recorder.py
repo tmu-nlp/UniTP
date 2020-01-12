@@ -199,7 +199,7 @@ class Recorder:
             self._key = checkpoint['key']
             
             print(f"Model restored from", model_fname, **self._print_args)
-            print(f'Model Restored at {epoch}, scoring {self._key:.2f}', file = stderr)
+            print(f'Model Restored at {epoch:.2f}, scoring {self._key:.2f}', file = stderr)
             if restore_from_best_validation:
                 return epoch
             epoch = int(epoch)

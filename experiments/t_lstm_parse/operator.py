@@ -306,12 +306,14 @@ class PennTrainVis:#(Vis):
         self._data_tree.close()
         proc = parseval(self._evalb, *self._fnames)
         scores = rpt_summary(proc.stdout.decode(), False, True)
-        errors = proc.stderr.decode()
-        num_errors = sum(len(x) for x in errors.split('\n') if len(x))
-        if num_errors > 30:
+        errors = proc.stderr.decode().split('\n')
+        assert errors.pop() == ''
+        num_errors = len(errors)
+        if num_errors:
             self._logger(f'  {num_errors} errors from evalb')
-        elif num_errors:
-            self._logger(errors, end = '')
+            if num_errors < 10:
+                for e, error in enumerate(errors):
+                    self._logger(f'    {e}. ' + error)
         self._head_tree = self._data_tree = None
 
         if self._length_bins is not None and self._scores_of_bins:
