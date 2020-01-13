@@ -267,22 +267,25 @@ class Recorder:
                         status['locking'].append(instance_path) # avoid ongoing experiments
                     else:
                         instance_folders.append((instance, exp_name, fx, instance_path))
-
                 else:
                     status['other'].append(instance_path)
 
-        for instance, exp_name, folder, fpath in instance_folders:
-            ap_zeros = name_len - len(instance)
-            if ap_zeros:
-                _instance = '0' * ap_zeros + instance
+        instance_folders.sort(key = lambda x: x[0])
+        for _cnt, (instance, exp_name, folder, fpath) in enumerate(instance_folders):
+            _instance = str(_cnt)
+            ap_zeros  = name_len - len(_instance)
+            _instance = '0' * ap_zeros + _instance
+            modify = instance != _instance
+            if modify:
                 new_folder = f'{_instance}.{exp_name}' if exp_name else _instance
                 new_fpath = join(task_path, new_folder)
                 change_key(instance_status, instance, _instance)
                 rename(fpath, new_fpath)
-                fpath = new_fpath + ' <- ' + folder
+                fpath = new_fpath + '\t<- ' + folder
                 instance = _instance
                 modifed = True
-            status['unlocked'].append(f'({instance_status[instance]["key"]})\t {fpath}')
+            key = instance_status[instance].get('key', '?????')
+            status['unlocked'].append(f'({key})\t {fpath}')
 
         unlock()
         if modifed:

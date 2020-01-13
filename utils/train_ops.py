@@ -27,7 +27,7 @@ def train(train_params, operator):
                 else:
                     nth_wander += 1
                 if percentage < 1:
-                    train_step.send(nth_wander / train_params.stop_at_nth_wander)
+                    train_step.send(nth_wander / train_params.stop_at_nth_wander) # schedule
                 if nth_wander > train_params.fine_validation_at_nth_wander:
                     fine_validation = True
                     if nth_wander >= train_params.stop_at_nth_wander:
@@ -36,7 +36,4 @@ def train(train_params, operator):
                     operator.test_model(epoch = epoch)
                 nth_validation += 1
         nth_validation = validation_each_nth_epoch + 1
-
-    # print('== Settings ==', file = sys.stderr)
-    # print(dict_print(nt_params),   file = sys.stderr)
-    # print(dict_print(data_config), file = sys.stderr)
+    return operator.test_model()

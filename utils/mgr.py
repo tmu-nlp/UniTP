@@ -15,11 +15,11 @@ def check_select(select):
         corp_name = None
     return select, corp_name, exp_name
 
-def check_resume_and_instances(instance):
-    resume  = instance and instance[0] == 'r'
-    exp_ids = instance[1:] if resume else instance
+def check_instances_operation(instance):
+    op_code = instance and instance[0].isalpha() and instance[0]
+    exp_ids = instance[1:] if op_code else instance
     exp_ids = strange_to(exp_ids, str) if exp_ids else [exp_ids]
-    return resume, exp_ids
+    return op_code, exp_ids
 
 import re
 def check_train(train_str):

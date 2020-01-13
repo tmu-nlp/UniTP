@@ -286,11 +286,12 @@ class Manager:
         ready_paths, ready_tasks, status = self.check_task_settings()
         assert ready_tasks, 'No experiments ready :('
 
-        from utils.mgr import check_select, check_resume_and_instances, check_train
+        from utils.mgr import check_select, check_instances_operation, check_train
         from utils.recorder import Recorder
         from utils.train_ops import train
         task, corp_name, name = check_select(args.select)
-        resume, exp_ids = check_resume_and_instances(args.instance)
+        op_code, exp_ids = check_instances_operation(args.instance)
+        assert op_code in (None, 'r', 'd'), f'Unknown operation {op_code}, neither [r]esume or [d]elete'
         
         module = self._exp_modules[task]
         task_spec = ready_tasks[task]
@@ -304,7 +305,8 @@ class Manager:
                             name,
                             evalb = status['tool']['evalb'])
 
-        if resume or None in exp_ids:
+        train_or_resume_training = op_code == 'r' or None in exp_ids
+        if train_or_resume_training:
             train_params = check_train(args.train)
         
         if None in exp_ids: # train new
@@ -326,7 +328,11 @@ class Manager:
         for exp_id in exp_ids:
             recorder = diff_recorder(task_spec) if exp_id is None else diff_recorder(exp_id)
             print(recorder.create_join())
-            if exp_id is None or resume:
+            if op_code == 'd' and input('Remove recorder ? [Y or any key]').lower() != 'Y':
+                recorder.delete_all()
+                continue
+
+            if train_or_resume_training:
                 try:
                     operator = module.get_configs(recorder)
                     recorder.register_test_scores(train(train_params, operator))
@@ -335,8 +341,8 @@ class Manager:
                     if not isinstance(e, KeyboardInterrupt):
                         import traceback
                         traceback.print_exc()
-                        
                     print(e, file = sys.stderr)
+
                     if input('Remove recorder ? [Any key or n]').lower() != 'n':
                         recorder.delete_all()
             else:

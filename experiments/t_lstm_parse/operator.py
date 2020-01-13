@@ -305,18 +305,23 @@ class PennTrainVis:#(Vis):
             self._head_tree.close()
         self._data_tree.close()
         proc = parseval(self._evalb, *self._fnames)
-        scores = rpt_summary(proc.stdout.decode(), False, True)
+        report = proc.stdout.decode()
+        scores = rpt_summary(report, False, True)
         errors = proc.stderr.decode().split('\n')
         assert errors.pop() == ''
         num_errors = len(errors)
+        fname = None
         if num_errors:
             self._logger(f'  {num_errors} errors from evalb')
             if num_errors < 10:
                 for e, error in enumerate(errors):
                     self._logger(f'    {e}. ' + error)
+                fname = f'data.{self.epoch}.rpt'
+
         self._head_tree = self._data_tree = None
 
         if self._length_bins is not None and self._scores_of_bins:
+            fname = f'data.{self.epoch}.rpt'
             with open(join(self._work_dir, f'{self.epoch}.scores'), 'w') as fw:
                 fw.write('wbin,num,lp,lr,f1,ta\n')
                 for wbin in self._length_bins:
@@ -328,6 +333,17 @@ class PennTrainVis:#(Vis):
                     remove(fhead)
                     remove(fdata)
 
+        if fname:
+            with open(join(self._work_dir, fname), 'w') as fw:
+                fw.write(report)
+            self._logger(f'  Go check {fname} for details.')
+
         self._set_scores(scores, speed)
         desc = f'Evalb({scores["LP"]:.2f}/{scores["LR"]:.2f}/{scores["F1"]:.2f})'
         return desc, f'N: {scores["N"]} {desc} @{speed:.2f}sps.'
+
+# an example of Unmatched Length from evalb
+# head
+# (S (S (VP (VBG CLUBBING) (NP (DT A) (NN FAN)))) (VP (VBD was) (RB n't) (NP (NP (DT the) (NNP Baltimore) (NNP Orioles) (POS ')) (NN fault))) (. .))
+# (S (NP (NP (JJ CLUBBING) (NNP A)) ('' FAN)) (VP (VBD was) (PP (RB n't) (NP     (DT the) (NNP Baltimore) (NNS Orioles) (POS ') (NN fault)))) (. .))
+# data
