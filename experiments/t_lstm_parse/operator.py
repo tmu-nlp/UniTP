@@ -125,7 +125,7 @@ class PennOperator(Operator):
             if 'segment' in batch:
                 self._writer.add_scalar('Batch/Height', len(batch['segment']), gs)
         else:
-            vis = self._vis
+            vis, _ = self._vis_mode
             mpc_word = mpc_label = None
             if vis.save_tensors:
                 if hasattr(self._model._input_layer, 'pca'):
@@ -154,9 +154,12 @@ class PennOperator(Operator):
             b_head = b_head + (gold_orients,)
             b_logits = (tags.type(torch.uint8), labels.type(torch.uint8), orients)
             b_data = b_logits + b_mpcs + b_scores
+            tensors = b_size + b_head + b_data
+            tensors = tuple(x.cpu().numpy() if isinstance(x, torch.Tensor) else x for x in tensors)
             if trapezoid_info is not None:
-                trapezoid_info = (batch['segment'], batch['seg_length']) + trapezoid_info
-            vis.process(batch_id, b_size + b_head + b_data, trapezoid_info)
+                d_seg, d_seg_len = trapezoid_info
+                trapezoid_info = batch['segment'], batch['seg_length'], d_seg, d_seg_len.cpu().numpy()
+            vis.process(batch_id, tensors, trapezoid_info)
         return batch_size, batch_len
 
     def _before_validation(self, ds_name, epoch, use_test_set = False, final_test = True):
@@ -169,60 +172,56 @@ class PennOperator(Operator):
             save_tensors = True
             length_bins = test_bins
             scores_of_bins = True
-            def set_scores(scores, speed):
-                scores[ 'key' ] = scores.get('F1', 0)
-                self.set_scores(scores)
         else:
             folder = 'vis_devel'
             length_bins = devel_bins
             save_tensors = is_bin_times(int(float(epoch)) - 1)
             scores_of_bins = False
-            def set_scores(scores, speed):
-                scores['Speed'] = float(f'{speed:.1f}')
-                scores[ 'key' ] = scores.get('F1', 0)
-                self.set_scores(scores)
-                if 'F1' in scores:
-                    self._writer.add_scalar('Evalb/F1',    scores['F1'], self.global_step)
-                    self._writer.add_scalar('Evalb/SamplePerSec', speed, self.global_step)
 
         self._model.eval()
-        pvis = PennTrainVis(epoch,
-                            self.recorder.create_join(folder),
-                            self._evalb,
-                            self.i2vs,
-                            self.recorder.log,
-                            set_scores,
-                            save_tensors,
-                            length_bins,
-                            scores_of_bins)
-        pvis.before()
-        length_bins = pvis.length_bins
+        vis = PennVis(epoch,
+                      self.recorder.create_join(folder),
+                      self._evalb,
+                      self.i2vs,
+                      self.recorder.log,
+                      save_tensors,
+                      length_bins,
+                      scores_of_bins)
+        vis = VisRunner(vis, async_ = True) # wrapper
+        vis.before()
+        length_bins = vis.length_bins
         if length_bins is not None:
             if use_test_set:
                 self._mode_length_bins = devel_bins, length_bins # change test
             else:
                 self._mode_length_bins = length_bins, test_bins # change devel
-        self._vis = pvis
+        self._vis_mode = vis, use_test_set
 
     def _after_validation(self, speed):
-        msg = self._vis.after(speed)
-        self._vis = None
+        vis, use_test_set = self._vis_mode
+        scores, desc, logg = vis.after()
+        logg += ' @{speed:.2f}sps.'
+        scores['speed'] = float(f'{speed:.1f}')
+        scores[ 'key' ] = scores.get('F1', 0)
+        if not use_test_set:
+            self._writer.add_scalar('Evalb/F1', scores.get('F1', 0), self.global_step)
+            self._writer.add_scalar('Evalb/SamplePerSec', speed,     self.global_step)
+        self._vis_mode = None
         self._model.train()
-        return msg
+        return scores, desc, logg
 
-# from utils.vis import Vis
+from utils.vis import BaseVis, VisRunner
 from utils.file_io import join, isfile, listdir, remove
 from utils.pickle_io import pickle_dump
 from utils.param_ops import HParams
 from utils.shell_io import parseval, rpt_summary
 from visualization import set_vocab, set_head, set_data
-class PennTrainVis:#(Vis):
-    def __init__(self, epoch, work_dir, evalb, i2vs, logger, set_scores,
+class PennVis(BaseVis):
+    def __init__(self, epoch, work_dir, evalb, i2vs, logger,
                  save_tensors   = True,
                  length_bins    = None,
                  scores_of_bins = False):
-        # super().__init__(epoch)
-        self.epoch = epoch
+        super().__init__(epoch)
         self._work_dir = work_dir
         self._evalb = evalb
         self._i2vs = i2vs
@@ -232,21 +231,15 @@ class PennTrainVis:#(Vis):
         self._fnames = htree, dtree
         self._head_tree = None
         self._data_tree = None
-        self._set_scores = set_scores
-        self._save_tensors = save_tensors
-        self._length_bins = length_bins
         self._scores_of_bins = scores_of_bins
-
-    @property
-    def save_tensors(self):
-        return self._save_tensors
+        self.register_property('save_tensors', save_tensors)
+        self.register_property('length_bins',  length_bins)
 
     def __del__(self):
         if self._head_tree: self._head_tree.close()
         if self._data_tree: self._data_tree.close()
 
-    def before(self):
-        # overwrite
+    def _before(self):
         htree, dtree = self._fnames
         if set_vocab(self._work_dir, self._i2vs._nested):
             # for fname in listdir(self._work_dir):
@@ -255,38 +248,34 @@ class PennTrainVis:#(Vis):
             #         remove(fname)
             #     if fname.startswith('data.'):
             self._head_tree = open(htree, 'w')
-            self._length_bins = set()
+            self.register_property('length_bins', set())
         self._data_tree = open(dtree, 'w')
 
-    @property
-    def length_bins(self):
-        return self._length_bins
-
-    def process(self, batch_id, batch, trapezoid_info):
+    def _process(self, batch_id, batch, trapezoid_info):
         # process batch to instances, compress
         # if head is in batch, save it
         # else check head.emm.pkl
         # make data.emmb.tree & concatenate to data.emm.tree
         # make data.emm.rpt
-        batch = (x.cpu().numpy() if isinstance(x, torch.Tensor) else x for x in batch)
         (size, h_offset, h_length, h_word, h_tag, h_label, h_right, 
          d_tag, d_label, d_right, mpc_word, mpc_label,
          tag_score, label_score, split_score) = batch
+        d_trapezoid_info = None
         if trapezoid_info:
             segment, seg_length, d_segment, d_seg_length = trapezoid_info
             trapezoid_info = segment, seg_length
-            d_trapezoid_info = d_segment, d_seg_length.cpu().numpy()
+            d_trapezoid_info = d_segment, d_seg_length
             
-        fpath = self._work_dir if self._save_tensors else None
+        fpath = self._work_dir if self.save_tensors else None
         if self._head_tree:
             bins = set_head(fpath, batch_id,
                             size, h_offset, h_length, h_word, h_tag, h_label, h_right,
                             trapezoid_info,
                             self._i2vs, self._head_tree)
             if fpath:
-                self._length_bins |= bins
+                self.length_bins |= bins
         
-        if self._length_bins is not None and self._scores_of_bins:
+        if self.length_bins is not None and self._scores_of_bins:
             bin_width = 10
         else:
             bin_width = None
@@ -295,10 +284,10 @@ class PennTrainVis:#(Vis):
                  h_offset, h_length, h_word, d_tag, d_label, d_right,
                  mpc_word, mpc_label,
                  tag_score, label_score, split_score,
-                 d_trapezoid_info if trapezoid_info else None,
+                 d_trapezoid_info,
                  self._i2vs, self._data_tree, self._logger, self._evalb, bin_width)
 
-    def after(self, speed):
+    def _after(self):
         # call evalb to data.emm.rpt return the results, and time counted
         # provide key value in results
         if self._head_tree:
@@ -320,11 +309,11 @@ class PennTrainVis:#(Vis):
 
         self._head_tree = self._data_tree = None
 
-        if self._length_bins is not None and self._scores_of_bins:
+        if self.length_bins is not None and self._scores_of_bins:
             fname = f'data.{self.epoch}.rpt'
             with open(join(self._work_dir, f'{self.epoch}.scores'), 'w') as fw:
                 fw.write('wbin,num,lp,lr,f1,ta\n')
-                for wbin in self._length_bins:
+                for wbin in self.length_bins:
                     fhead = join(self._work_dir, f'head.bin_{wbin}.tree')
                     fdata = join(self._work_dir, f'data.bin_{wbin}.tree')
                     proc = parseval(self._evalb, fhead, fdata)
@@ -338,9 +327,8 @@ class PennTrainVis:#(Vis):
                 fw.write(report)
             self._logger(f'  Go check {fname} for details.')
 
-        self._set_scores(scores, speed)
         desc = f'Evalb({scores["LP"]:.2f}/{scores["LR"]:.2f}/{scores["F1"]:.2f})'
-        return desc, f'N: {scores["N"]} {desc} @{speed:.2f}sps.'
+        return scores, desc, f'N: {scores["N"]} {desc}'
 
 # an example of Unmatched Length from evalb
 # head

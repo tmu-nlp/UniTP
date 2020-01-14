@@ -134,7 +134,7 @@ class TrapezoidDataset(LengthOrderedDataset):
             try:
                 while any(x.is_alive() for x in works):
                     if q.empty():
-                        sleep(0.01)
+                        sleep(0.00001)
                     else:
                         words, length, tree_str, factored = q.get()
                         text.append(words)

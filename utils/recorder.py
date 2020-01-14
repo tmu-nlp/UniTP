@@ -145,7 +145,7 @@ class Recorder:
                 model_old_dict = checkpoint['model_state_dict']
                 model_new_dict = model.state_dict()
                 new_keys = tuple(model_new_dict)
-                from utils.shell_io import red, green
+                from utils.shell_io import byte_style
                 for old_key in tuple(model_old_dict):
                     if old_key in new_keys:
                         continue
@@ -165,15 +165,15 @@ class Recorder:
                     if len(new_candidates) == 1:
                         new_key = new_candidates[0]
                         more = len(new_key) - len(old_key)
-                        prompt = red('Rename ')
+                        prompt = byte_style('Rename ', '1') # red
                         if more > 0:
                             prompt += ' ' * more
                             prompt += old_key
-                            prompt += green('\n    as ')
+                            prompt += byte_style('\n    as ', '2') # green
                         else:
                             more = 0 - more
                             prompt += old_key
-                            prompt += green('\n    as ')
+                            prompt += byte_style('\n    as ', '2') # green
                             prompt += ' ' * more
                         prompt += new_key
                         print(prompt)

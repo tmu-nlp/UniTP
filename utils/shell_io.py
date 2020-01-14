@@ -1,16 +1,23 @@
 from subprocess import run, PIPE, Popen
 from os.path import join
 
-C_RED = '\033[31m' # Red Text
-C_GREEN = '\033[32m' # Green Text
-C_YELLOW = '\033[33m' # Yellow Text
-C_BLUE = '\033[34m' # Blue Text
-C_END = '\033[m' # reset to the defaults
+def byte_style(content, fg_color = '7', bg_color = '0', bold = False, dim = False, negative = False, underlined = False, blink = False):
+    prefix = '\033['
+    if not (bold or dim or negative or underlined or blink):
+        prefix += '0;'
+    if bold:
+        prefix += '1;'
+    if dim:
+        prefix += '2;'
+    if negative:
+        prefix += '3;'
+    if underlined:
+        prefix += '4;'
+    if blink:
+        prefix += '5;'
 
-red    = lambda x: C_RED + x + C_END
-green  = lambda x: C_GREEN + x + C_END
-yellow = lambda x: C_YELLOW + x + C_END
-blue   = lambda x: C_BLUE + x + C_END
+    prefix += f'3{fg_color};4{bg_color}m'
+    return prefix + content + '\033[0;37;40m'
 
 def call_fasttext(fasttext, wfile, vfile, ft_bin, ft_lower): # TODO: async
     # import pdb; pdb.set_trace()
