@@ -73,54 +73,47 @@ class Operator:
     def validate_betterment(self, epoch, falling):
         (ds_total, ds_names, ds_iters), devel_icon = self._validate_materials
         epoch_stamp = timestamp(epoch, '')
-        with tqdm(total = ds_total, desc = f'#{devel_icon}{epoch:.1f}') as qbar:
-            ds_desc = []
-            ds_logg = []
-            for ds_name, ds_iter in zip(ds_names, ds_iters):
-                self._before_validation(ds_name, epoch_stamp)
-                start, cnt = time(), 0
-                for batch_id, batch in enumerate(ds_iter):
-                    with no_grad():
-                        num_samples, _ = self._step(M_DEVEL, ds_names, batch, batch_id = batch_id)
-                    cnt += num_samples
-                    qbar.update(num_samples)
-                scores, desc, logg = self._after_validation(cnt / (time() - start))
-                ds_desc.append(desc)
-                ds_logg.append(logg)
-            qbar.total = None
-            from_start = timedelta(seconds = int(time() - self._epoch_start))
-            qbar.desc = f'[{epoch_stamp}] {devel_icon} {from_start} ' + ' '.join(ds_desc)
-            ds_logg   = ' '.join(ds_logg)
-            self._recorder.log(timestamp(epoch, 'Validation ') + ' - ' + ds_logg + f' ({from_start} from start)', end = '.')
+        scores, ds_logg, from_start = self.validation_or_test(M_DEVEL, ds_total, ds_names, ds_iters, devel_icon, epoch_stamp)
+        self._recorder.log(timestamp(epoch, 'Validation ') + f' - {ds_logg} ({from_start} from start)', end = '.')
         return self._recorder.check_betterment(epoch, falling, self._global_step, self._model, self._optimizer, scores['key'])
 
     def test_model(self, epoch = None):
         ds_total, ds_names, ds_iters = self._test_materials
         model_test = epoch is None
         if model_test:
-            epoch = self._recorder.initial_or_restore(self._model, restore_from_best_validation = True)
+            prefix = 'Test ' # final label
+            epoch  = self._recorder.initial_or_restore(self._model, restore_from_best_validation = True)
+        else:
+            prefix = '   ⌙→ Test ' # match length of validation
         epoch_stamp = timestamp(epoch, '')
-        with tqdm(total = ds_total, desc = f'#🔮{epoch:.1f}') as qbar:
-            ds_desc = []
-            ds_logg = []
+        scores, ds_logg, from_start = self.validation_or_test(M_TEST, ds_total, ds_names, ds_iters, '🔮', epoch_stamp)
+        self._recorder.log(timestamp(epoch, prefix) + f' - {ds_logg} ({from_start} from start).')
+        return scores
+
+    def validation_or_test(self, mode, ds_total, ds_names, ds_iters, icon, epoch_stamp):
+        ds_desc   = []
+        ds_logg   = []
+        ds_scores = []
+        test_mode = mode == M_TEST
+        with tqdm(total = ds_total, desc = f'#{icon}{epoch_stamp}') as qbar:
             for ds_name, ds_iter in zip(ds_names, ds_iters):
-                self._before_validation(ds_name, epoch_stamp, use_test_set = True)
+                self._before_validation(ds_name, epoch_stamp, use_test_set = test_mode)
                 start, cnt = time(), 0
                 for batch_id, batch in enumerate(ds_iter):
                     with no_grad():
-                        num_samples, _ = self._step(M_TEST, ds_names, batch, batch_id = batch_id)
+                        num_samples, _ = self._step(mode, ds_names, batch, batch_id = batch_id)
                     cnt += num_samples
                     qbar.update(num_samples)
-                scores, desc, logg = self._after_validation(cnt / (time() - start))
-                ds_desc.append(desc)
-                ds_logg.append(logg)
+                scores, desc, logg = self._after_validation(ds_name, cnt, time() - start) # evalb time is excluded
+                ds_desc  .append(desc)
+                ds_logg  .append(logg)
+                ds_scores.append(scores)
             qbar.total = None
             from_start = timedelta(seconds = int(time() - self._epoch_start))
-            qbar.desc = f'[{epoch_stamp}] 🔮 {from_start} ' + ' '.join(ds_desc)
+            qbar.desc = f'[{epoch_stamp}] {icon} {from_start} ' + ' '.join(ds_desc)
             ds_logg = '\n'.join(ds_logg)
-            prefix  = 'Test ' if model_test else '   ⌙→ Test '
-            self._recorder.log(timestamp(epoch, prefix) + ' - ' + ds_logg + f' ({from_start} from start)')
-        return scores
+        scores = {n:s for n, s in zip(ds_names, ds_scores)} if len(ds_scores) > 1 else ds_scores[0]
+        return scores, ds_logg, from_start
 
     def _schedule(self, epoch, wander_ratio):
         pass
@@ -134,7 +127,7 @@ class Operator:
     def _before_validation(self, ds_name, epoch, use_test_set = False):
         raise NotImplementedError()
 
-    def _after_validation(self, ds_name):
+    def _after_validation(self, ds_name, count, seconds):
         raise NotImplementedError()
 
     @property

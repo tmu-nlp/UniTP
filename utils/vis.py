@@ -1,5 +1,5 @@
 from multiprocessing import Process, Queue
-from time import sleep
+from time import sleep, time
 
 class VisWorker(Process): # designed for decoding batch
     def __init__(self, vis, in_q, out_q):
@@ -9,6 +9,7 @@ class VisWorker(Process): # designed for decoding batch
     def run(self):
         vis, in_q, out_q = self._vio
         vis._before()
+        proc_time = 0
         while True:
             if in_q.empty():
                 sleep(0.00001)
@@ -17,10 +18,10 @@ class VisWorker(Process): # designed for decoding batch
             if inp is None:
                 break
             args, kw_args = inp
+            start      = time()
             vis._process(*args, **kw_args)
-        args, kw_args = in_q.get()
-        outs = vis._after(*args, **kw_args)
-        out_q.put((outs, vis._attrs))
+            proc_time += time() - start
+        out_q.put((vis._after(), vis._attrs, proc_time))
 
 class BaseVis:
     def __init__(self, epoch):
@@ -33,7 +34,7 @@ class BaseVis:
     def _process(self, *args, **kw_args):
         raise NotImplementedError()
 
-    def _after(self, *args, **kw_args):
+    def _after(self):
         raise NotImplementedError()
 
     @property
@@ -58,6 +59,7 @@ class VisRunner:
             self._async = worker, iq, oq
             worker.start()
         else:
+            self._timer = 0
             self._vis._before()
 
     def process(self, *args, **kw_args):
@@ -65,18 +67,28 @@ class VisRunner:
             _, iq, _ = self._async
             iq.put((args, kw_args))
         else:
+            start = time()
             self._vis._process(*args, **kw_args)
+            self._timer += time() - start
 
-    def after(self, *args, **kw_args):
+    def after(self):
         if self._async:
             worker, iq, oq = self._async
-            iq.put(None) # end while loop
-            iq.put((args, kw_args)) # call _after
+            iq.put(None) # end while loop | _after
             worker.join()
-            out, attrs = oq.get()
+            out, attrs, proc_time = oq.get()
+            self._timer = proc_time
             self._vis._attrs.update(attrs)
             return out
-        return self._vis._after(*args, **kw_args)
+        return self._vis._after()
+
+    @property
+    def proc_time(self):
+        return self._timer
+
+    @property
+    def is_async(self):
+        return isinstance(self._async, tuple)
 
     def __getattr__(self, attr_name):
         return getattr(self._vis, attr_name)

@@ -386,6 +386,9 @@ if desktop:
         assert 0 < x < 10, 'should be in [1, 9]'
         return x
 
+    def _offset(x):
+        return int(x)
+
     def _curve(x):
         x = x.strip()
         assert 'x' in x, 'should contain variable x'
@@ -399,8 +402,8 @@ if desktop:
     BoolList = namedtuple('BoolList', 'delta_shape, show_errors, show_paddings, show_nil, dark_background, inverse_brightness, align_coord, show_color, statistics')
     CombList = namedtuple('CombList', 'curve, dash, gauss, picker, spotlight')
     DynamicSettings = namedtuple('DynamicSettings', BoolList._fields + tuple('apply_' + f for f in CombList._fields) + CombList._fields)
-    NumbList = namedtuple('NumbList', 'font, pc_x, pc_y, line_width, word_width, word_height, xy_ratio, histo_width, scatter_width')
-    numb_types = NumbList(_font, _dim, _dim, _ratio, _size, _size, _ratio, _size, _size)
+    NumbList = namedtuple('NumbList', 'font, pc_x, pc_y, line_width, offset_x, offset_y, word_width, word_height, xy_ratio, histo_width, scatter_width')
+    numb_types = NumbList(_font, _dim, _dim, _ratio, _offset, _offset, _size, _size, _ratio, _size, _size)
     comb_types = CombList(_curve, _frac, _ratio, _ratio, _ratio)
     PanelList = namedtuple('PanelList', 'hide_listboxes, detach_viewer')
     navi_directions = '⇤↑o↓⇥'
@@ -472,7 +475,7 @@ if desktop:
                      root,
                      fpath,
                      initial_bools = BoolList(True, False, False, False, False, True, False, True, False),
-                     initial_numbs = NumbList('System 15', (1, 1, 9, 1), (2, 1, 9, 1), (4, 2, 10, 2), (80, 60, 200, 5), (22, 12, 99, 2), (0.9, 0.5, 2, 0.1), (60, 50, 120, 10), (60, 50, 120, 10)),
+                     initial_numbs = NumbList('System 15', (1, 1, 9, 1), (2, 1, 9, 1), (4, 2, 10, 2), (0, -200, 200, 10), (0, -200, 200, 10), (80, 60, 200, 5), (22, 12, 99, 2), (0.9, 0.5, 2, 0.1), (60, 50, 120, 10), (60, 50, 120, 10)),
                      initial_panel = PanelList(False, False),
                      initial_combs = CombList((True, 'x ** 0.5'), (False, (0.5, 0.1, 0.9, 0.1)), (True, (0.04, 0.01, 0.2, 0.01)), (True, (0.2, 0.1, 0.9, 0.1)), (False, (200, 100, 500, 100)))):
             vocabs = fpath.join('vocabs.pkl')
@@ -687,7 +690,7 @@ if desktop:
 
         def _change_bool(self):
             if self._viewer.ready():
-                self._viewer.minor_change(self.dynamic_settings(), self.static_settings(0, 1, 2, 3))
+                self._viewer.minor_change(self.dynamic_settings(), self.static_settings(0, 1, 2, 3, 4, 5))
 
         def _change_string(self, event):
             if any(not hasattr(self, attr) for attr in '_entries _panels _checkboxes_entries _checkboxes'.split()):
@@ -695,10 +698,10 @@ if desktop:
             if event is None or event.char in ('\r', '\uf700', '\uf701'):
                 ss = self.static_settings()
                 ss_changed = NumbList(*(t != l for t, l in zip(ss, self._last_numbs)))
-                if any(ss_changed[4:]): # font and PCs will not cause resize
+                if any(ss_changed[6:]): # font and PCs will not cause resize
                     self.__update_viewer(force_resize = True)
                 elif self._viewer.ready():
-                    self._viewer.minor_change(self.dynamic_settings(), ss[:4])
+                    self._viewer.minor_change(self.dynamic_settings(), ss[:6])
                 self._last_numbs = ss
                 if event and event.char == '\r':
                     self._control_panel.focus()
@@ -1396,10 +1399,13 @@ if desktop:
             xpad = xpad[1] - xpad[0]
             ypad = ypad[1] - ypad[0]
             l_pad = (head.offset / num_word)
-            ratio = 1 - l_pad * (num_word - head.length)
+            ratio = 1 - (num_word - head.length) / num_word - l_pad
             r_pad = ratio - xpad
             c_pad = 0.5 - xpad / 2 if show_paddings else (l_pad + r_pad) / 2
             o_pad = ratio / 2
+
+            print(f'current view ({ox * 100:.0f}, {oy * 100:.0f}, {xpad * 100:.0f}, {ypad * 100:.0f})')
+            print(f'sent l_pad:{l_pad * 100:.0f} ratio: {ratio * 100:.0f}, r_pad: {r_pad * 100:.0f}')
 
             if self._conf.delta_shape:
                 navi_left   = (0        if show_paddings else l_pad, 1 - ypad)
@@ -1428,13 +1434,14 @@ if desktop:
                     if navi_char == '↑':
                         dy = -dy
                     dy /= self._conf.canvas_height # %
-                nx = clip(navi_left[0], ox + dx, navi_right[0])
-                ny = clip(navi_top[1], oy + dy, navi_bottom[1])
+                nx = clip(navi_left[0], ox + dx, navi_right [0])
+                ny = clip(navi_top [1], oy + dy, navi_bottom[1])
             else:
                 nx, ny = {'⇤': navi_left, '⇥': navi_right, '↑': navi_top, '↓': navi_bottom, 'o': navi_center}[navi_char]
 
             if nx == ox and ny == oy:
                 return
+            print(f'next view ({nx * 100:.0f}, {ny * 100:.0f})')
                 
             def smoothen(ox, nx):
                 x = np.linspace(ox, nx, num_frame)
@@ -1473,12 +1480,11 @@ if desktop:
                 w = self._conf.canvas_width
                 h = self._conf.canvas_height
             else:
-                n = self._conf.num_word - self._head.length + 2
-                l = self._conf.word_height + self._conf.line_dy
+                x = self._conf.word_width * self._head.offset
+                w = self._conf.word_width * self._head.length
 
-                x = self._conf.word_width
-                w = self._conf.canvas_width - (n * x)
-                n -= 1 # for tag layer
+                n = self._conf.num_word - self._head.length # for word and tag layers
+                l = self._conf.word_height + self._conf.line_dy
                 if self._conf.delta_shape:
                     y = n * l
                     h = self._conf.canvas_height - y
@@ -1694,11 +1700,11 @@ if desktop:
 
             line_dx = self._conf.line_dx
             line_dy = -self._conf.line_dy
-            word_center     = self._conf.half_word_height                   # >--- word ---<
-            level_unit      = self._conf.word_height + self._conf.line_dy   # word lines
-            tag_label_center  = word_center + level_unit                      # >--- tag label ---<
-            tag_label_line_bo = 2 * level_unit                                # word lines tag lines
-            w_p_s = self._conf.word_height, level_unit, level_unit + self._conf.word_height # word >--> tag >--> label
+            word_center     = self._conf.half_word_height + self._conf.offset_y    # >--- word ---<
+            level_unit      = self._conf.word_height + self._conf.line_dy            # word lines
+            tag_label_center  = word_center + level_unit                        # >--- tag label ---<
+            tag_label_line_bo = 2 * level_unit            + self._conf.offset_y # word lines tag lines
+            w_p_s = self._conf.word_height + self._conf.offset_y, level_unit + self._conf.offset_y, level_unit + self._conf.word_height + self._conf.offset_y # word >--> tag >--> label
             line_width = self._conf.line_width
             r = line_width // 2
             decorate = isinstance(line_width, int) and line_width % 2 == 0
@@ -1718,7 +1724,7 @@ if desktop:
                 if not self._conf.show_paddings and not (head.offset <= i < head.offset + head.length):
                     continue
 
-                center_x = (i + 0.5) * self._conf.word_width
+                center_x = (i + 0.5) * self._conf.word_width + self._conf.offset_x
                 left_x   = center_x - self._conf.half_word_width
                 if self._conf.delta_shape:
                     wbox = (left_x, w_p_s[1]         )
@@ -1807,18 +1813,18 @@ if desktop:
             for l, layers in enumerate(zip(plabel, tlabel, pright, tright)): # , data.energy.left, data.energy.right
                 last_line_bo = tag_label_line_bo
                 if self._conf.delta_shape:
-                    tag_label_center = tag_label_line_bo - self._conf.half_word_height # >--- label ---<
-                    line_y         = tag_label_line_bo - self._conf.word_height
+                    tag_label_center = tag_label_line_bo - self._conf.half_word_height
+                    line_y           = tag_label_line_bo - self._conf.word_height
                     tag_label_line_bo -= level_unit
                 else:
                     tag_label_center = tag_label_line_bo + self._conf.half_word_height
-                    line_y         = tag_label_line_bo + self._conf.word_height
+                    line_y           = tag_label_line_bo + self._conf.word_height
                     tag_label_line_bo += level_unit
 
                 for p, (ps, ts, pr, tr) in enumerate(zip(*layers)):
                     if not self._conf.show_paddings and not (head.offset <= p < head.offset + head.length - l) or not self._conf.show_nil and ps == nil: # not use ts because of spotlight
                         continue
-                    center_x = (l/2 + p + .5) * self._conf.word_width
+                    center_x = (l/2 + p + .5) * self._conf.word_width + self._conf.offset_x
                     left_x   = center_x - self._conf.half_word_width
                     sbox = (left_x, tag_label_line_bo) if self._conf.delta_shape else (left_x, last_line_bo)
                     lid = self._conf.num_word - l - 1

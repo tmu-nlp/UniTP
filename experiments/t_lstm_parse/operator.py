@@ -125,7 +125,7 @@ class PennOperator(Operator):
             if 'segment' in batch:
                 self._writer.add_scalar('Batch/Height', len(batch['segment']), gs)
         else:
-            vis, _ = self._vis_mode
+            vis, _, _ = self._vis_mode
             mpc_word = mpc_label = None
             if vis.save_tensors:
                 if hasattr(self._model._input_layer, 'pca'):
@@ -195,17 +195,23 @@ class PennOperator(Operator):
                 self._mode_length_bins = devel_bins, length_bins # change test
             else:
                 self._mode_length_bins = length_bins, test_bins # change devel
-        self._vis_mode = vis, use_test_set
+        self._vis_mode = vis, use_test_set, final_test
 
-    def _after_validation(self, speed):
-        vis, use_test_set = self._vis_mode
+    def _after_validation(self, ds_name, count, seconds):
+        vis, use_test_set, final_test = self._vis_mode
         scores, desc, logg = vis.after()
-        logg += ' @{speed:.2f}sps.'
-        scores['speed'] = float(f'{speed:.1f}')
+        speed = float(f'{count / seconds:.1f}')
+        if vis.is_async:
+            rate = vis.proc_time / seconds
+        else:
+            rate = vis.proc_time / (seconds - vis.proc_time)
+        logg += f' @{speed}sps. (sym:nn {rate:.2f})'
+        scores['speed'] = speed
         scores[ 'key' ] = scores.get('F1', 0)
-        if not use_test_set:
-            self._writer.add_scalar('Evalb/F1', scores.get('F1', 0), self.global_step)
-            self._writer.add_scalar('Evalb/SamplePerSec', speed,     self.global_step)
+        if not final_test:
+            mode = 'TestSet' if use_test_set else 'DevelSet'
+            self._writer.add_scalar(f'{mode}/F1', scores.get('F1', 0), self.global_step)
+            self._writer.add_scalar(f'{mode}/SamplePerSec', speed,     self.global_step)
         self._vis_mode = None
         self._model.train()
         return scores, desc, logg
