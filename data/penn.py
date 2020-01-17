@@ -57,10 +57,10 @@ class PennReader(WordBaseReader):
                            extra_text_helper = extra_text_helper)
 
         if not load_label or trapezoid_specs is None:
-            from data.triangle import TriangularDataset
+            from data.triangle.dataset import TriangularDataset
             len_sort_ds = TriangularDataset(self.dir_join, mode, **common_args)
         else:
-            from data.trapezoid import TrapezoidDataset
+            from data.trapezoid.dataset import TrapezoidDataset
             tree_reader, get_fnames, _, data_splits, trapezoid_height = trapezoid_specs
             len_sort_ds = TrapezoidDataset(trapezoid_height, tree_reader, get_fnames, data_splits[mode], **common_args)
         return post_batch(mode, len_sort_ds, sort_by_length, bucket_length, batch_size)

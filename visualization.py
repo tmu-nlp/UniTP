@@ -5,8 +5,6 @@ from collections import namedtuple, Counter, defaultdict
 from itertools import count
 from os.path import join, isfile, getsize, expanduser, basename
 from os import listdir, remove
-from data.delta import s_index, t_index, NIL
-from data.delta import get_tree_from_triangle, explain_warnings, explain_one_error
 import sys, pdb
 from nltk.tree import Tree
 from utils.math_ops import isqrt
@@ -16,140 +14,6 @@ IOHead = namedtuple('IOHead', 'offset, length, word, tag, label, right, tree, se
 IOData = namedtuple('IOData', 'offset, length, word, tag, label, right, tree, segment, seg_length, mpc_word, mpc_phrase, warning, scores, tag_score, label_score, split_score, summary')
 
 inf_none_gen = (None for _ in count())
-
-def triangle_to_layers(data, *size_offset_length_vocab):
-    if size_offset_length_vocab:
-        size, offset, length, vocab = size_offset_length_vocab
-    else:
-        length, offset = t_index(len(data))
-        assert offset == 0
-        size = length
-        vocab = None
-
-    pad_len = size - length
-    layers = []
-    for level in range(size):
-        seq_len = level - pad_len
-        if seq_len < 0:
-            continue
-        start = s_index(level) + offset
-        end   = start + seq_len + 1
-        layer = data[start:end]
-        if vocab:
-            layer = tuple(vocab(x) for x in layer)
-        layers.append(layer)
-    return layers
-
-def trapezoid_to_layers(data, segments, seg_length, vocab = None, offset = 0):
-    layers  = []
-    l_end   = len(data)
-    seg_len = list(zip(segments, seg_length))
-    while seg_len:
-        size, seq_len = seg_len.pop()
-        l_start = l_end - size + offset
-        layer = data[l_start:l_start + seq_len]
-        if vocab:
-            layer = tuple(vocab(x) for x in layer)
-        layers.append(layer)
-        if seq_len == 1: break
-        l_end -= size
-    return layers
-
-def __before_to_tree_(offset, length, words, tags, labels, rights, segments, seg_lengths, vocabs):
-    word_layer, tag_layer, label_vocab = __before_to_seq(offset, length, words, tags, labels, vocabs)
-    label_layers = trapezoid_to_layers(labels, segments, seg_lengths, label_vocab)
-    right_layers = trapezoid_to_layers(rights, segments, seg_lengths,        None)
-    return word_layer, tag_layer, label_layers, right_layers
-
-def __before_to_seq(offset, length, words, tags, labels, vocabs):
-    word_layer      = tuple(vocabs.word[w] for w in words[offset:offset+length])
-    if tags is not None: # label_mode
-        tag_layer   = tuple(vocabs.tag[t]  for t in tags [offset:offset+length])
-        label_vocab = vocabs.label.__getitem__
-    else:
-        tag_layer = None
-        label_vocab = lambda x: NIL if x < 0 else vocabs.label[x]
-    return word_layer, tag_layer, label_vocab
-
-def __before_to_tree(offset, length, words, tags, labels, rights, vocabs):
-    size = len(words)
-    word_layer, tag_layer, label_vocab = __before_to_seq(offset, length, words, tags, labels, vocabs)
-    label_layers = triangle_to_layers(labels, size, offset, length, label_vocab)
-    right_layers = triangle_to_layers(rights, size, offset, length,        None)
-    label_layers.reverse()
-    right_layers.reverse()
-    return word_layer, tag_layer, label_layers, right_layers
-
-def head_to_tree_(offset, length, words, tags, labels, rights, seg_lengths, segments, vocabs):
-    args = __before_to_tree_(offset, length, words, tags, labels, rights, segments, seg_lengths, vocabs)
-    tree, warn = get_tree_from_triangle(*args)
-    assert len(warn) == 0
-    return tree
-
-def head_to_tree(offset, length, words, tags, labels, rights, vocabs):
-    tree, warn = get_tree_from_triangle(*__before_to_tree(offset, length, words, tags, labels, rights, vocabs))
-    assert len(warn) == 0
-    return tree
-
-def data_to_tree_(offset, length, words, tags, labels, rights, seg_lengths, segments, vocabs,
-                  return_warnings = False,
-                  on_warning      = None,
-                  on_error        = None,
-                  error_prefix    = ''):
-    return __after_to_tree(*__before_to_tree_(offset, length, words, tags, labels, rights, segments, seg_lengths, vocabs),
-                           return_warnings,
-                           on_warning,
-                           on_error,
-                           error_prefix)
-
-# demands:
-# 1. want to know whether there are warnings or errors and a safe results (e.g. individual visualization, calc whole scores)
-# 2. suppress all the warnings and error (output to stderr), just get a safe result
-# [4: 261], [5: 197], [7: 12], [3: 19], [2: 3], [9: 3], [6: 11]/2415/56683； relay
-# [4: 598], [5: 998], [7: 12], [3: 19], [2: 3], [9: 3], [6: 11]/2415/56683： keep
-def data_to_tree(offset, length, words, tags, labels, rights, vocabs,
-                 return_warnings = False,
-                 on_warning      = None,
-                 on_error        = None,
-                 error_prefix    = ''):
-    return __after_to_tree(*__before_to_tree(offset, length, words, tags, labels, rights, vocabs),
-                           return_warnings,
-                           on_warning,
-                           on_error,
-                           error_prefix)
-
-def __after_to_tree(word_layer, tag_layer, label_layers, right_layers,
-                    return_warnings = False,
-                    on_warning      = None,
-                    on_error        = None,
-                    error_prefix    = ''):
-    try:
-        tree, warnings = get_tree_from_triangle(word_layer, tag_layer, label_layers, right_layers)
-    except ValueError as e:
-        error, last_layer, warnings = e.args
-        if callable(on_error):
-            on_error(error_prefix, explain_one_error(error))
-        tree = Tree('S', [x for x in last_layer if x]) # Trust the model: TODO report failure rate
-        warnings.append(error)
-    if warnings and callable(on_warning) and tag_layer is not None:
-        on_warning(explain_warnings(warnings, label_layers, tag_layer))
-    if return_warnings: # [:, 2] > 8 is error
-        warnings = np.asarray(warnings, dtype = np.int8)
-        warnings.shape = (-1, 3)
-        return tree, warnings
-    return tree
-
-# def convert_batch(h, d, num_word, vocabs, fh, fd):
-
-#     for i, l in enumerate(h.len):
-#         if fh is not None:
-#             tree = head_to_tree(h.word[i], h.tag[i], h.label[i], l, h.left[i], vocabs)
-#             print(' '.join(str(tree).split()), file = fh)
-#         tree, warnings = data_to_tree(h.word[i], d.tag[i], _label(i), l, _left(i), vocabs, return_warnings = True)
-#         if fd is not None:
-#             print(' '.join(str(tree).split()), file = fd)
-#         yield i, l, warnings
-
 def set_vocab(fpath, vocabs, model_vocab_size = None, fname = 'vocabs.pkl'):
     assert isinstance(vocabs, dict)
     fname = join(fpath, fname)
@@ -159,6 +23,10 @@ def set_vocab(fpath, vocabs, model_vocab_size = None, fname = 'vocabs.pkl'):
     return True
 
 from contextlib import ExitStack
+from data.triangle import head_to_tree as tri_h2t
+from data.triangle import data_to_tree as tri_d2t
+from data.trapezoid import head_to_tree as tra_h2t
+from data.trapezoid import data_to_tree as tra_d2t
 def set_head(fpath, batch_id, size,
              offset, length, word, tag, label, right,
              trapezoid_info,
@@ -171,22 +39,22 @@ def set_head(fpath, batch_id, size,
     if trapezoid_info is None:
         segment = seg_length = None
         func_args = zip(offset, length, word, tag, label, right)
+        func_args = ((*args, vocabs) for args in func_args)
+        head_to_tree = tri_h2t
     else:
         segment, seg_length = trapezoid_info
         func_args = zip(offset, length, word, tag, label, right, seg_length)
+        func_args = ((*args, segment, vocabs) for args in func_args)
+        head_to_tree = tra_h2t
 
     trees = []
     for args in func_args:
-        if trapezoid_info is None:
-            tree = str(head_to_tree(*args, vocabs))
-        else:
-            tree = str(head_to_tree_(*args, segment, vocabs))
+        tree = str(head_to_tree(*args))
         tree = ' '.join(tree.split())
         print(tree, file = fhtree)
         trees.append(tree)
 
     if fpath:
-
         ftrees = {}
         fhead = join(fpath, f'head.{batch_id}.tree')
 
@@ -225,15 +93,17 @@ def set_data(fpath, batch_id, size, epoch,
     if trapezoid_info is None:
         segment = seg_length = None
         func_args = zip(offset, length, word, tag, label, right)
+        func_args = ((*args, vocabs) for args in func_args)
+        data_to_tree = tri_d2t
     else:
         segment, seg_length = trapezoid_info
         func_args = zip(offset, length, word, tag, label, right, seg_length)
+        func_args = ((*args, segment, vocabs) for args in func_args)
+        data_to_tree = tra_d2t
+
     for i, args in enumerate(func_args):
         tree_kwargs['error_prefix'] = error_prefix + f']-{i} len={args[1]}'
-        if trapezoid_info is None:
-            tree, warnings = data_to_tree(*args, vocabs, **tree_kwargs)
-        else:
-            tree, warnings = data_to_tree_(*args, segment, vocabs, **tree_kwargs)
+        tree, warnings = data_to_tree(*args, **tree_kwargs)
         tree = str(tree)
         tree = ' '.join(tree.split())
         trees.append(tree)
@@ -402,7 +272,7 @@ if desktop:
     BoolList = namedtuple('BoolList', 'delta_shape, show_errors, show_paddings, show_nil, dark_background, inverse_brightness, align_coord, show_color, statistics')
     CombList = namedtuple('CombList', 'curve, dash, gauss, picker, spotlight')
     DynamicSettings = namedtuple('DynamicSettings', BoolList._fields + tuple('apply_' + f for f in CombList._fields) + CombList._fields)
-    NumbList = namedtuple('NumbList', 'font, pc_x, pc_y, line_width, offset_x, offset_y, word_width, word_height, xy_ratio, histo_width, scatter_width')
+    NumbList = namedtuple('NumbList', 'font, pc_x, pc_y, line_width, offset_x, offset_y, word_width, word_height, yx_ratio, histo_width, scatter_width')
     numb_types = NumbList(_font, _dim, _dim, _ratio, _offset, _offset, _size, _size, _ratio, _size, _size)
     comb_types = CombList(_curve, _frac, _ratio, _ratio, _ratio)
     PanelList = namedtuple('PanelList', 'hide_listboxes, detach_viewer')
@@ -415,10 +285,12 @@ if desktop:
     from time import time, sleep
     from math import exp, sqrt, pi
     from functools import partial
-    from data.delta import warning_level
+    from data.delta import warning_level, NIL
     from utils.param_ops import more_kwargs, HParams
     from utils.file_io import path_folder
     from concurrent.futures import ProcessPoolExecutor
+    from data.triangle import triangle_to_layers
+    from data.trapezoid import trapezoid_to_layers, inflate
     # from multiprocessing import Pool
 
     class PathWrapper:
@@ -477,7 +349,7 @@ if desktop:
                      initial_bools = BoolList(True, False, False, False, False, True, False, True, False),
                      initial_numbs = NumbList('System 15', (1, 1, 9, 1), (2, 1, 9, 1), (4, 2, 10, 2), (0, -200, 200, 10), (0, -200, 200, 10), (80, 60, 200, 5), (22, 12, 99, 2), (0.9, 0.5, 2, 0.1), (60, 50, 120, 10), (60, 50, 120, 10)),
                      initial_panel = PanelList(False, False),
-                     initial_combs = CombList((True, 'x ** 0.5'), (False, (0.5, 0.1, 0.9, 0.1)), (True, (0.04, 0.01, 0.2, 0.01)), (True, (0.2, 0.1, 0.9, 0.1)), (False, (200, 100, 500, 100)))):
+                     initial_combs = CombList((True, 'x ** 0.5'), (False, (0.5, 0.1, 0.9, 0.1)), (True, (0.04, 0.01, 0.34, 0.01)), (True, (0.2, 0.1, 0.9, 0.1)), (False, (200, 100, 500, 100)))):
             vocabs = fpath.join('vocabs.pkl')
             if isfile(vocabs):
                 self._vocabs = HParams(pickle_load(vocabs))
@@ -666,20 +538,66 @@ if desktop:
                         #     mark += " ◌•▴⨯"[warning_level(warning_cnt)]
                         mark += '\t'
                         sentbox.insert(END, mark + ' '.join(self._vocabs.word[idx] for idx in words[offset:offset + length]))
-                    self._selected = bid, num_word, head
 
-                    prefix, suffix = f'data.{bid}_', '.pkl'
-                    for fname_time in fpath.listdir():
-                        if fname_time.startswith(prefix) and fname_time.endswith(suffix):
-                            if fname_time not in self._sent_cache:
-                                columns = pickle_load(fpath.join(fname_time))
-                                sample_gen = (inf_none_gen if x is None else x for x in columns[:-1])
-                                batch = []
-                                for i, sample in enumerate(zip(*sample_gen)):
-                                    sample = IOData(*sample, inf_none_gen)
-                                    stat = SentenceEnergy(sample.mpc_word, sample.mpc_phrase, num_word, sample.offset, sample.length)
-                                    batch.append((sample, stat))
-                                self._sent_cache[fname_time] = batch, columns[-1]
+                    head_ = []
+                    if head.segment is None:
+                        sample_gen = (inf_none_gen if h is None else h for h in head)
+                        for sample in zip(*sample_gen):
+                            values = []
+                            for field, value in zip(IOHead._fields, sample):
+                                if value is not None and field in ('label', 'right'):
+                                    value = triangle_to_layers(value) 
+                                values.append(value)
+                            head_.append(IOHead(*values))
+
+                        prefix, suffix = f'data.{bid}_', '.pkl'
+                        for fname_time in fpath.listdir():
+                            if fname_time.startswith(prefix) and fname_time.endswith(suffix):
+                                if fname_time not in self._sent_cache:
+                                    data       = pickle_load(fpath.join(fname_time))
+                                    sample_gen = (inf_none_gen if x is None else x for x in data[:-1])
+                                    data_      = []
+                                    for sample in zip(*sample_gen):
+                                        values = []
+                                        for field, value in zip(IOData._fields, sample):
+                                            if value is not None and field in ('label', 'right', 'label_score', 'split_score'):
+                                                value = triangle_to_layers(value)
+                                            values.append(value)
+                                        sample = IOData(*values, inf_none_gen)
+                                        stat = SentenceEnergy(num_word, sample.mpc_word, sample.mpc_phrase,
+                                                              sample.offset, sample.length, None, None)
+                                        data_.append((sample, stat))
+                                    self._sent_cache[fname_time] = data_, data[-1]
+                    else:
+                        sample_gen = (inf_none_gen if h is None or f == 'segment' else h for f,h in zip(IOHead._fields, head))
+                        for sample in zip(*sample_gen):
+                            values = dict(zip(IOHead._fields, sample))
+                            for field in ('label', 'right'):
+                                values[field] = inflate(trapezoid_to_layers(values[field], head.segment, values['seg_length']))
+                            values['segment'] = head.segment
+                            head_.append(IOHead(**values))
+
+                        prefix, suffix = f'data.{bid}_', '.pkl'
+                        for fname_time in fpath.listdir():
+                            if fname_time.startswith(prefix) and fname_time.endswith(suffix):
+                                if fname_time not in self._sent_cache:
+                                    data       = pickle_load(fpath.join(fname_time))
+                                    sample_gen = (inf_none_gen if d is None or f in ('segment', 'summary') else d for f,d in zip(IOData._fields, data))
+                                    data_      = []
+                                    for sample in zip(*sample_gen):
+                                        values = dict(zip(IOData._fields, sample))
+                                        for field in ('label', 'right', 'label_score', 'split_score'):
+                                            # if values[field]:
+                                            values[field] = inflate(trapezoid_to_layers(values[field], data.segment, values['seg_length']))
+                                        values['segment'] = data.segment
+                                        sample = IOData(**values)
+                                        stat = SentenceEnergy(num_word, sample.mpc_word, sample.mpc_phrase,
+                                                              sample.offset, sample.length,
+                                                              sample.segment, sample.seg_length)
+                                        data_.append((sample, stat))
+                                    self._sent_cache[fname_time] = data_, data[-1]
+                    self._selected = bid, num_word, head_
+
 
                 elif event.widget is sentbox:
                     bid, num_word, head = self._selected[:3]
@@ -887,11 +805,16 @@ if desktop:
         def __init__(self, mpc):
             self._global_data = mpc
             self._xy_dims     = None
+            self._histo_cache = {}
+            self._scatt_cache = {}
 
         def _without_paddings(self, offset_length):
             return filter_data_coord(self._global_data, offset_length, None)
 
-        def histo_data(self, num_backle, global_xmax = None, offset_length = None, filtered = None):
+        def histo_data(self, width, gaussian, distance_or_bin_width, global_xmax = None, offset_length = None, filtered = None):
+            key = width, gaussian, distance_or_bin_width, global_xmax is None, offset_length is None, filtered is None
+            if key in self._histo_cache:
+                return self._histo_cache[key]
             x, coord = filter_data_coord(self._global_data[:, 0], offset_length, filtered)
             if global_xmax is None:
                 xmin = np.min(x)
@@ -905,15 +828,35 @@ if desktop:
 
             x = x - xmin # new memory, not in-place
             x /= xmax - xmin # in range [0, 1]
-            x //= (1 / num_backle) # bin_width is float, even for floordiv
-            collapsed_x = Counter(x)
-            cnt_max     = collapsed_x.most_common(1)[0][1]
-            x /= num_backle # break cnt into [0, 1] for x coord
-            coord       = zip(coord, x)
-            xy          = tuple((bint/num_backle, cnt/cnt_max) for bint, cnt in collapsed_x.items())
-            return xy, xmin, xmax, coord
+            if gaussian:
+                a = (2 * distance_or_bin_width ** 2)
+                yi = np.empty([width])
+                for i in range(width):
+                    xi = i / width
+                    dx = (xi - x) ** 2
+                    yi[i] = np.sum(1 * np.exp(-dx / a))
+                yi /= np.max(yi)
+                xy = tuple(zip(range(width), yi))
+            else:
+                num_backle = width // distance_or_bin_width
+                tick = 1 / num_backle
+                tock = num_backle + 1
+                x //= tick # bin_width is float, even for floordiv
+                x /= tock # discrete x for coord [0, 1), leave 1 for final
+                x += 0.5 / tock
+                collapsed_x = Counter(x * width)
+                ymax = max(collapsed_x.values()) if collapsed_x else 1
+                xy = tuple((x, y/ymax) for x, y in collapsed_x.items())
+            # for old_key in self._histo_cache:
+            #     if old_key[1] == gaussian:
+            #         self._histo_cache.pop(old_key)
+            self._histo_cache[key] = cached = xy, xmin, xmax, tuple(zip(coord, x))
+            return cached
 
         def scatter_data(self, xy_min_max = None, offset_length = None, filtered = None):
+            key = xy_min_max is None, offset_length is None, filtered is None
+            if key in self._scatt_cache:
+                return self._scatt_cache[key]
             xy, coord = filter_data_coord(self._global_data[:, self._xy_dims], offset_length, filtered)
             if xy_min_max is None:
                 xmin = np.min(xy, 0)
@@ -935,8 +878,8 @@ if desktop:
             xy /= xmax - xmin
             g_orig -= xmin
             g_orig /= xmax - xmin
-
-            return xy, xmin, xmax, g_orig, coord
+            self._scatt_cache[key] = cached = xy, xmin, xmax, g_orig, tuple(coord)
+            return cached
             # print('xy', xy.shape[0])
             # print('seq_len', seq_len if seq_len else 'None')
             # print('filtered', f'{sum(filtered)} in {len(filtered)}' if filtered else 'None')
@@ -961,11 +904,15 @@ if desktop:
             return self._global_data.shape[0]
 
     class SentenceEnergy:
-        def __init__(self, mpc_word, mpc_phrase, size, offset, length):
+        def __init__(self, size, mpc_word, mpc_phrase, offset, length, segment, seg_length):
             mpc_all = mpc_phrase
-            stats = phrase = tuple(LayerMPCStat(l) for l in triangle_to_layers(mpc_phrase))
+            if segment is None:
+                stats = phrase = tuple(LayerMPCStat(l) for l in triangle_to_layers(mpc_phrase))
+            else:
+                layers = inflate(trapezoid_to_layers(mpc_phrase, segment, seg_length))
+                stats = phrase = tuple(l if l is None else LayerMPCStat(l) for l in layers)
             if mpc_word is not None:
-                mpc_all = np.concatenate([mpc_phrase, mpc_word])
+                mpc_all = np.concatenate([mpc_word, mpc_phrase])
                 word = LayerMPCStat(mpc_word)
                 stats = (word,) + phrase
             else:
@@ -977,8 +924,8 @@ if desktop:
                 if i == 0:
                     lo = offset, length
                 else:
-                    _len = i + length - size # pitari without +1
-                    if _len <= 0:
+                    _len = length - i + 1 # pitari without +1
+                    if _len <= 0 or stat is None:
                         continue
                     lo = offset, _len
                 x, _ = stat._without_paddings(lo)
@@ -989,6 +936,7 @@ if desktop:
                 xmin = np.where(invalid, _min, xmin)
                 invalid = _max > xmax
                 xmax = np.where(invalid, _max, xmax)
+
             self._min_val = xmin
             self._max_val = xmax
 
@@ -1024,22 +972,24 @@ if desktop:
             _max = self._max_all if show_paddings else self._max_val
             sature_max = 0
             for stat in self._stats :
+                if stat is None:
+                    continue
                 sature_max = max(sature_max, stat.colorify(_max[0], xy_dims))
 
             if self._word:
                 self._word = self._word.seal(sature_max)
-            self._phrase = tuple(s.seal(sature_max) for s in self._phrase)
+            self._phrase = tuple(s if s is None else s.seal(sature_max) for s in self._phrase)
             self._cache[key] = self._word, self._phrase
 
         @property
         def word(self):
             if self._word:
                 return self._word
-            return self._phrase[-1]
+            return self._phrase[0]
 
         @property
         def tag(self):
-            return self._phrase[-1]
+            return self._phrase[0]
 
         @property
         def phrase(self):
@@ -1095,8 +1045,10 @@ if desktop:
                        stat_color,
                        xlab,
                        filtered = None,
-                       distance = None):
-        xy, xmin, xmax, coord_x = stat.histo_data(width, histo_max, offset_length, filtered)
+                       distance = None,
+                       bin_width = 1):
+        gaussian = distance and distance > 0
+        xy, xmin, xmax, coord_x = stat.histo_data(width, gaussian, distance if gaussian else bin_width, histo_max, offset_length, filtered)
         if half_word_height and stat_font and xlab:
             stat_board.create_text(offx, offy + height + half_word_height,
                                    text = disp(xmin),
@@ -1108,24 +1060,13 @@ if desktop:
         stat_board.create_line(offx,         offy + height,
                                offx + width, offy + height,
                                fill = stat_color)# does not work, width = 0.5)
-        if distance and distance > 0:
-            m = 0
-            z = sqrt(2* pi* distance)
-            a = (2 * distance ** 2)
-            data = []
-            for i in range(width):
-                x = i / width
-                y = sum(yj / z * exp(-((x - xj) ** 2 ) / a) for xj, yj in xy)
-                if y > m: m = y
-                data.append((i, y))
-            for i, y in data:
-                y /= m
-                stat_board.create_line(offx + i, offy + height - y * height,
-                                       offx + i, offy + height, fill = stat_color)
-        else:
-            for x, y in xy:
-                stat_board.create_line(offx + x * width, offy + height - y * height,
-                                       offx + x * width, offy + height, fill = stat_color)
+        
+        
+        for x, y in xy:
+            stat_board.create_line(offx + x, offy + height - y * height,
+                                   offx + x, offy + height,
+                                   fill  = stat_color, 
+                                   width = 1 if gaussian else bin_width)
         return {c:x * width for c, x in coord_x}
 
     def make_scatter(stat_board, offx, offy, width, height, r,
@@ -1196,7 +1137,7 @@ if desktop:
             scatter_coord_item[c] = item
         return scatter_coord_item
 
-    # NumbList: 'word_width, word_height, xy_ratio, histo_width, scatter_width'
+    # NumbList: 'word_width, word_height, yx_ratio, histo_width, scatter_width'
     #  effect:      b             s,b   <-   s,b        s               s
     # dark_background, inverse_brightness, delta_shape, show_errors, statistics, show_paddings, show_nil, align_coord, show_color
     #        sb                 b              sb            b              s?              sb            s           s            b
@@ -1225,10 +1166,10 @@ if desktop:
             # calculate canvas
             half_word_width  = static_settings.word_width >> 1
             half_word_height = static_settings.word_height >> 1
-            line_dx = half_word_width - static_settings.word_height / static_settings.xy_ratio
-            line_dy = line_dx * static_settings.xy_ratio
-            deco_dx = static_settings.line_width / np.sqrt(1 + static_settings.xy_ratio ** 2) / 2
-            deco_dy = deco_dx * static_settings.xy_ratio
+            line_dx = half_word_width - static_settings.word_height / static_settings.yx_ratio
+            line_dy = line_dx * static_settings.yx_ratio
+            deco_dx = static_settings.line_width / np.sqrt(1 + static_settings.yx_ratio ** 2) / 2
+            deco_dy = deco_dx * static_settings.yx_ratio
             upper_padding = max(half_word_height, static_settings.line_width / 2)
             canvas_width  = num_word * static_settings.word_width
             canvas_height = (num_word + 2) * (static_settings.word_height + line_dy) + upper_padding # +2 for word and tag layer
@@ -1319,14 +1260,19 @@ if desktop:
         def set_framework(self, head, time_data):
             if len(time_data) != self._time_slider[0]:
                 raise ValueError(f'Set Invalid timesteps! {len(time_data)} vs. {self._time_slider[0]}')
-            self._head_time = head, tuple(time_data.items()) # [(fname, sents), ..]
+            self._head_time = head, tuple(time_data.items()) # [(fname, ((sent, stat), (sent, stat), ...)), ..]
 
         def show_sentence(self, sid): # across timesteps
             head, time_data = self._head_time
-            self._head = IOHead(*tuple(None if h is None else h[sid] for h in head))
+
+            # head in [sentence]: IOHead
+            self._head = head[sid]
+
+            # data in [epoch, sentence]: IOData
             self._data = []
             for _, (batch, _) in time_data:
                 self._data.append(batch[sid])
+
             self._refresh_board(self._time_slider[1].get())
             if not self._conf.show_paddings:
                 self._boards[0].xview_moveto(self._head.offset / self._conf.num_word)
@@ -1375,9 +1321,9 @@ if desktop:
 
             data, stat = self._data[tid]
             stat.make(self._conf.show_paddings, self._conf.pc_x, self._conf.pc_y)
-            label_layers = self.__draw_board(data, stat, fg_color, to_color)
+            self.__draw_board(data, stat, fg_color, to_color)
             if self._conf.statistics:
-                self.__draw_stat_board(label_layers, data.offset, data.length, stat, stat_fg, stat_bg, to_color)
+                self.__draw_stat_board(data.label, data.offset, data.length, stat, stat_fg, stat_bg, to_color)
             
             _, time = self._head_time
             bid, epoch = time[tid][0][5:-4].split('_')
@@ -1659,7 +1605,8 @@ if desktop:
                              stat_color       = fg_color,
                              stat_font        = self._conf.stat_font,
                              half_word_height = self._conf.half_word_height,
-                             distance = self._conf.gauss if self._conf.apply_gauss else None)
+                             distance  = self._conf.gauss if self._conf.apply_gauss else None,
+                             bin_width = self._conf.gauss * histo_width)
             bottom_offset_length = None if self._conf.show_paddings else (offset, length)
             level_tag(offy, tag = 'W')
 
@@ -1676,10 +1623,13 @@ if desktop:
                 scatter_coord_item  [('w', i)] = it
                 histo_coord_position[('w', j)] = ip
             offy += incre_y * 2 # skip .tag
-            for l, (plabel_layer, layer_phrase_energy) in enumerate(zip(label_layers, reversed(stat.phrase))): # TODO: not match, historic bug
+            for l, (plabel_layer, layer_phrase_energy) in enumerate(zip(label_layers, stat.phrase)):
+                if layer_phrase_energy is None:
+                    offy += incre_y
+                    continue
                 if self._conf.show_paddings or l < length: # watch out for not showing and len <= 2
                     cond_level_len  = None if self._conf.show_paddings else (offset, length - l)
-                    cond_nil_filter = None if self._conf.show_nil else [s != nil for s in plabel_layer] # interesting! tuple is not a good filter here, list is proper!
+                    cond_nil_filter = None if self._conf.show_nil else plabel_layer > nil # interesting! tuple is not a good filter here, list is proper!
                     level_tag(offy, str(l))
                     sci = _scatter(offy = offy, stat = layer_phrase_energy, offset_length = cond_level_len, filtered = cond_nil_filter, height = height, xlab = xlab, ylab = xlab, clab = not xlab).items()
                     hcp = _histo  (offy = offy, stat = layer_phrase_energy, offset_length = cond_level_len, filtered = cond_nil_filter, height = height, xlab = xlab).items()
@@ -1700,13 +1650,16 @@ if desktop:
 
             line_dx = self._conf.line_dx
             line_dy = -self._conf.line_dy
+            # line_xy = self._conf.line_dx / self._conf.line_dy
+            line_ldx = self._conf.word_height / self._conf.yx_ratio
             word_center     = self._conf.half_word_height + self._conf.offset_y    # >--- word ---<
             level_unit      = self._conf.word_height + self._conf.line_dy            # word lines
             tag_label_center  = word_center + level_unit                        # >--- tag label ---<
             tag_label_line_bo = 2 * level_unit            + self._conf.offset_y # word lines tag lines
-            w_p_s = self._conf.word_height + self._conf.offset_y, level_unit + self._conf.offset_y, level_unit + self._conf.word_height + self._conf.offset_y # word >--> tag >--> label
             line_width = self._conf.line_width
             r = line_width // 2
+            text_offy = 0
+            w_p_s = self._conf.word_height + self._conf.offset_y, level_unit + self._conf.offset_y, level_unit + self._conf.word_height + self._conf.offset_y # word >--> tag >--> label
             decorate = isinstance(line_width, int) and line_width % 2 == 0
             deco_dx = 0 if decorate else self._conf.deco_dx
             deco_dy = 0 if decorate else self._conf.deco_dy
@@ -1746,7 +1699,7 @@ if desktop:
                                                    tags = ('elems', 'line')))
                     board_item_coord[pbox] = elems, ('p', i)
                 else:
-                    node = board.create_text(center_x, word_center, text = word, font = (font_name, font_size),
+                    node = board.create_text(center_x, word_center + text_offy, text = word, font = (font_name, font_size),
                                              fill = word_color, tags = ('elems', 'node'))
                     line = board.create_line(center_x,  w_p_s[0],
                                              center_x,  w_p_s[1],
@@ -1757,17 +1710,18 @@ if desktop:
                         elems = node, line
                     else:
                         sdot = board.create_oval(center_x - r, w_p_s[0] - r,
-                                                center_x + r, w_p_s[0] + r,
-                                                fill = word_color, outline = '', tags = ('elems', 'dot'))
+                                                 center_x + r, w_p_s[0] + r,
+                                                 fill = word_color, outline = '', tags = ('elems', 'dot'))
                         edot = board.create_oval(center_x - r, w_p_s[1] - r,
-                                                center_x + r, w_p_s[1] + r,
-                                                fill = word_color, outline = '', tags = ('elems', 'dot'))
+                                                 center_x + r, w_p_s[1] + r,
+                                                 fill = word_color, outline = '', tags = ('elems', 'dot'))
                         elems = node, line, sdot, edot
                     board_item_coord[wbox] = elems, ('w', i)
                     tp = head.tag[i]
                     pp = data.tag[i]
-                    tag_color = to_color(data.tag_score if apply_dash else stat.tag[i])
-                    node = board.create_text(center_x, tag_label_center,
+                    # print(len(stat.tag), len(stat.word), len(stat.phrase[0])) shorter??
+                    tag_color = to_color(data.tag_score if apply_dash else stat.tag[i] if i < len(stat.tag) else (0,0,0))
+                    node = board.create_text(center_x, tag_label_center + text_offy,
                                              fill = tag_color, font = (font_name, font_size if apply_dash else round_int(font_size * data.tag_score[i])),
                                              text = f'{vocabs.tag[pp]}' if not self._conf.show_errors or pp == tp else f'{vocabs.tag[pp]}({vocabs.tag[tp]})',
                                              tags = ('elems', 'node'))
@@ -1798,19 +1752,9 @@ if desktop:
                 nil = vocabs.label.index(NIL)
             else:
                 nil = -1
-            tlabel = triangle_to_layers(head.label)
-            plabel = triangle_to_layers(data.label)
-            tright = triangle_to_layers(head.right)
-            pright = triangle_to_layers(data.right)
-            label_score = triangle_to_layers(data.label_score)
-            split_score = triangle_to_layers(data.split_score)
-            label_score.reverse()
-            split_score.reverse()
-            tlabel.reverse()
-            plabel.reverse()
-            tright.reverse()
-            pright.reverse()
-            for l, layers in enumerate(zip(plabel, tlabel, pright, tright)): # , data.energy.left, data.energy.right
+            layer_tracker = None
+
+            for l, (label_layer, right_layer) in enumerate(zip(data.label, data.right)): # no way to show head.right ?
                 last_line_bo = tag_label_line_bo
                 if self._conf.delta_shape:
                     tag_label_center = tag_label_line_bo - self._conf.half_word_height
@@ -1820,25 +1764,49 @@ if desktop:
                     tag_label_center = tag_label_line_bo + self._conf.half_word_height
                     line_y           = tag_label_line_bo + self._conf.word_height
                     tag_label_line_bo += level_unit
+                # layer_label = layers[1]
+                # layer_len   = len(layer_label)
+                # layer_len_diff = self._conf.num_word - layer_len
+                if label_layer is None:
+                    if layer_tracker is None:
+                        last_right = data.right[l - 1]
+                        last_exist = data.label[l - 1] > 0
+                        layer_tracker = []
+                        for p, (lhr, rhr, lhe, rhe) in enumerate(zip(last_right, last_right[1:], last_exist, last_exist[1:])):
+                            rw_relay = lhe and lhr
+                            lw_relay = rhe and not rhr
+                            if rw_relay or lw_relay:
+                                center_x = ((l + 1)/2 + p) * self._conf.word_width + self._conf.offset_x
+                                layer_tracker.append((center_x, line_y))
+                    continue
 
-                for p, (ps, ts, pr, tr) in enumerate(zip(*layers)):
+                for p, (ps, pr) in enumerate(zip(label_layer, right_layer)):
                     if not self._conf.show_paddings and not (head.offset <= p < head.offset + head.length - l) or not self._conf.show_nil and ps == nil: # not use ts because of spotlight
                         continue
+                        
                     center_x = (l/2 + p + .5) * self._conf.word_width + self._conf.offset_x
                     left_x   = center_x - self._conf.half_word_width
                     sbox = (left_x, tag_label_line_bo) if self._conf.delta_shape else (left_x, last_line_bo)
-                    lid = self._conf.num_word - l - 1
-                    mpc_color = to_color(stat.phrase[lid][p])
+                    mpc_color = to_color(stat.phrase[l][p])
                     if apply_dash:
-                        label_color = to_color(label_score[l][p])
+                        label_color = to_color(data.label_score[l][p])
                     else:
                         label_color = mpc_color
+
+                    if self._conf.show_errors and head.label[l] is not None:
+                        ts = head.label[l][p]
+                        draw_error_box = ps != ts
+                        label_text = f'{vocabs.label[ps]}({vocabs.label[ts]})' if draw_error_box else f'{vocabs.label[ps]}'
+                    else:
+                        draw_error_box = False
+                        label_text = f'{vocabs.label[ps]}' 
                     
-                    elems = [board.create_text(center_x, tag_label_center,
-                                               text = f'{vocabs.label[ps]}' if  not self._conf.show_errors or ps == ts else f'{vocabs.label[ps]}({vocabs.label[ts]})',
+                    elems = [board.create_text(center_x, tag_label_center + text_offy,
+                                               text = label_text,
                                                fill = label_color,
-                                               tags = ('elems', 'node'), font = (font_name, font_size if apply_dash else round_int(font_size * label_score[l][p])),)]
-                    if ps != ts and self._conf.show_errors:
+                                               tags = ('elems', 'node'), font = (font_name, font_size if apply_dash else round_int(font_size * data.label_score[l][p])),)]
+                    if draw_error_box:
+                        # x,y,x_,y_ = board.bbox(elems[0])
                         elems.append(board.create_rectangle(*board.bbox(elems[0]),
                                                             outline = 'red', dash = (1, 2),
                                                             tags = ('elems', 'err')))
@@ -1850,10 +1818,10 @@ if desktop:
 
                     if apply_dash:
                         if pr:
-                            score = split_score[l][p]
+                            score = data.split_score[l][p]
                             to_x = center_x + line_dx
                         else:
-                            score = 1 - split_score[l][p]
+                            score = 1 - data.split_score[l][p]
                             to_x = center_x - line_dx
                         score -= 0.5
                         score *= 2
@@ -1874,7 +1842,7 @@ if desktop:
                                                        width = width, fill = color, dash = dash_,
                                                        tags = ('elems', 'line')))
                     else:
-                        right_score = split_score[l][p]
+                        right_score = data.split_score[l][p]
                         left_score  = 1 - right_score
                         offset_right_x = line_dx * right_score
                         offset_left_x  = line_dx * left_score
@@ -1904,12 +1872,41 @@ if desktop:
                             elems.append(board.create_oval(center_x - r, line_y - r,
                                                            center_x + r, line_y + r,
                                                            fill = mpc_color, outline = '', tags = ('elems', 'dot')))
+                        color = mpc_color
 
+                    if layer_tracker is not None:
+                        last_x, last_y = layer_tracker[p]
+
+                        
+                        if last_x == center_x:
+                            to_x = center_x
+                        elif last_x < center_x:
+                            to_x = center_x - line_ldx
+                        else:
+                            to_x = center_x + line_ldx
+                        # else:
+                        #     dy = (last_y - last_line_bo) if last_y > last_line_bo else (last_line_bo - last_y)
+                        #     if last_x < center_x:
+                        #         to_x = center_x - line_ldx * dy / (center_x - last_x) * line_xy
+                        #     else:
+                        #         to_x = center_x + line_ldx * dy / (last_x - center_x) * line_xy
+                        elems.append(board.create_line(last_x, last_y, to_x, last_line_bo,
+                                                       width = line_width, fill = color, dashoffset = r,
+                                                       dash = (line_width, r, line_width, r), tags = ('elems', 'line')))
+                        if not apply_dash and decorate:
+                            elems.append(board.create_oval(last_x - r, last_y - r,
+                                                           last_x + r, last_y + r,
+                                                           fill = mpc_color, outline = '', tags = ('elems', 'd_dot')))
+                            elems.append(board.create_oval(to_x - r, last_line_bo - r,
+                                                           to_x + r, last_line_bo + r,
+                                                           fill = mpc_color, outline = '', tags = ('elems', 'u_dot')))
+                layer_tracker = None
+                # if layer_len == 1#: or not self._conf.show_paddings and np.any(layer_label):
+                #     break
             if self._spotlight_subjects:
                 self._spotlight_subjects = (board_item_coord, self._conf.word_width, level_unit) + self._spotlight_subjects[-3:]
             else:
                 self._spotlight_subjects = board_item_coord, self._conf.word_width, level_unit, None, None, None
-            return plabel
 
     import argparse
     import getpass

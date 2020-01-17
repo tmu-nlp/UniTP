@@ -48,4 +48,4 @@ p <- p + stat_smooth(method = 'lm', formula = y ~ splines::bs(x, 4), geom = 'lin
 # p <- p + theme(legend.position = "none", text = element_text(size = 15), axis.title = element_blank())
 # p
 
-ggsave('speed.png', height = 2.7, width = 5.2, dpi = 600)
+ggsave('speed.pdf', height = 2.7, width = 5.2, dpi = 600)

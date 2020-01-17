@@ -6,9 +6,9 @@ xln <- read.csv('fscore/tri_xlnet.csv')
 
 print(head(tri))
 
-tri$type <- rep('Triangle', length(tri$wbin))
+tri$type <- rep('Triangle',  length(tri$wbin))
 tra$type <- rep('Trapezoid', length(tra$wbin))
-xln$type <- rep('XLNet', length(xln$wbin))
+xln$type <- rep('XLNet',     length(xln$wbin))
 
 data <- rbind(tri, tra, xln)
 
@@ -26,6 +26,8 @@ p <- p + scale_x_continuous(breaks = wlens,
                             sec.axis = sec_axis(~.,
                                                 breaks = wlens, labels = tri$num, 
                                                 name = "Number of Test Samples"))
+# p <- p + scale_color_discrete(labels = c('XLNet', 'Trapezoid', 'Triangle'), breaks = c('XLNet', 'Trapezoid', 'Triangle'))
+# p <- p + scale_shape_discrete(labels = c('XLNet', 'Trapezoid', 'Triangle'), breaks = c('XLNet', 'Trapezoid', 'Triangle'))
 p <- p + theme(legend.position = c(0.33, 0.12),
                legend.direction = "horizontal",
                legend.background = element_blank(),
@@ -34,4 +36,4 @@ p <- p + theme(legend.position = c(0.33, 0.12),
             #    legend.title = element_text(size = 10),
                text = element_text(size = 15))
 
-ggsave('score.png', height = 2.3, width = 5.2, dpi = 600)
+ggsave('score.pdf', height = 2.3, width = 5.2, dpi = 600)
