@@ -1623,14 +1623,16 @@ if desktop:
                 scatter_coord_item  [('w', i)] = it
                 histo_coord_position[('w', j)] = ip
             offy += incre_y * 2 # skip .tag
+            nega = 0
             for l, (plabel_layer, layer_phrase_energy) in enumerate(zip(label_layers, stat.phrase)):
                 if layer_phrase_energy is None:
                     offy += incre_y
+                    nega += 1
                     continue
                 if self._conf.show_paddings or l < length: # watch out for not showing and len <= 2
                     cond_level_len  = None if self._conf.show_paddings else (offset, length - l)
                     cond_nil_filter = None if self._conf.show_nil else plabel_layer > nil # interesting! tuple is not a good filter here, list is proper!
-                    level_tag(offy, str(l))
+                    level_tag(offy, str(l - nega))
                     sci = _scatter(offy = offy, stat = layer_phrase_energy, offset_length = cond_level_len, filtered = cond_nil_filter, height = height, xlab = xlab, ylab = xlab, clab = not xlab).items()
                     hcp = _histo  (offy = offy, stat = layer_phrase_energy, offset_length = cond_level_len, filtered = cond_nil_filter, height = height, xlab = xlab).items()
                     for (i, it), (j, ip) in zip(sci, hcp):
@@ -1891,8 +1893,8 @@ if desktop:
                         #     else:
                         #         to_x = center_x + line_ldx * dy / (last_x - center_x) * line_xy
                         elems.append(board.create_line(last_x, last_y, to_x, last_line_bo,
-                                                       width = line_width, fill = color, dashoffset = r,
-                                                       dash = (line_width, r, line_width, r), tags = ('elems', 'line')))
+                                                       width = line_width, fill = color,# dashoffset = r,
+                                                       dash = (line_width, r, line_width, r), tags = ('elems', 'c_line')))
                         if not apply_dash and decorate:
                             elems.append(board.create_oval(last_x - r, last_y - r,
                                                            last_x + r, last_y + r,

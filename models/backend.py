@@ -3,7 +3,7 @@ from torch import nn, Tensor
 from utils.math_ops import s_index
 
 from utils.types import BaseType, true_type, frac_4, frac_2
-from utils.types import orient_dim, combine_type, num_ori_layer
+from utils.types import orient_dim, num_ori_layer
 
 contextual_type = BaseType(0, as_index = True, as_exception = True, default_set = (nn.LSTM, nn.GRU))
 activation_type = BaseType(0, as_index = True, as_exception = True, default_set = (nn.ReLU, nn.ReLU6, nn.Softplus,# end == 0, nn.GELU
@@ -12,6 +12,7 @@ activation_type = BaseType(0, as_index = True, as_exception = True, default_set 
                                                                                    nn.Tanh, nn.Softsign, nn.Hardtanh, # -<0<+
                                                                                    nn.Tanhshrink, nn.Softshrink, nn.Hardshrink)) # -0+
 
+from models.combine import get_combinator, combine_type
 stem_config = dict(orient_dim   = orient_dim,
                    combine_type = combine_type,
                    num_layers   = num_ori_layer,
@@ -19,7 +20,6 @@ stem_config = dict(orient_dim   = orient_dim,
                    drop_out     = frac_4,
                    trainable_initials = true_type)
 
-from models.combine import get_combinator
 from models.utils import squeeze_left
 from itertools import count
 class Stem(nn.Module):

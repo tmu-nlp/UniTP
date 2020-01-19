@@ -1,8 +1,7 @@
 from data.backend import LengthOrderedDataset
-from utils.str_ops import write_ptr, delete_ptr, swap_ptr
+from utils.str_ops import write_ptr, delete_ptr, swap_ptr, is_numeric
 import numpy as np
 import torch
-import re
 
 class CharDataset(LengthOrderedDataset):
     def __init__(self,
@@ -18,7 +17,6 @@ class CharDataset(LengthOrderedDataset):
 
         columns = {}
         heads = set()
-        is_numeric = re.compile(r'\d*[\./]?\d*')
         for field, (_, v2i) in field_v2is.items():
             heads.add(field)
             column  = []

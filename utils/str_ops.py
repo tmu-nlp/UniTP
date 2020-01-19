@@ -1,4 +1,6 @@
 from collections import defaultdict
+import re
+is_numeric = re.compile(r'\d*[\./]?\d*')
 
 def write_ptr(base, ptr, src, overwrite, as_unit):
     if isinstance(base, list):

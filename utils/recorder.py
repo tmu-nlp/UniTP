@@ -155,6 +155,8 @@ class Recorder:
                     for new_key in new_keys:
                         new_segs = new_key.split('.')
                         new_segs.reverse()
+                        if new_segs[0] != old_segs[0]:
+                            continue
                         match_depth = 0
                         for ns, os in zip(new_segs, old_segs):
                             if ns == os:

@@ -31,8 +31,10 @@ class BaseType:
                 else: # [0, 1] at 0.2
                     assert validator(default_val)
                     self._valid = validator
+            elif as_index:
+                assert not as_exception
+                self._valid = lambda x: (x in default_set or validator(x))
             else:
-                assert not as_index
                 if as_exception: # []
                     self._valid = lambda x: (x in default_set or validator(x) or x == default_val)
                 else:
@@ -120,6 +122,3 @@ binarization = {O_LFT: frac_7,
                 O_RGT: frac_1,
                 O_MIN: frac_1,
                 O_MOT: frac_1}
-
-E_COMBINE = 'CV2 CV1 CS2 CS1 Add Mul Average NV NS BV BS'.split()
-combine_type = BaseType(0, as_index = True, default_set = E_COMBINE)
