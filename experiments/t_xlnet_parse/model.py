@@ -15,7 +15,7 @@ xlnet_penn_tree_config = penn_tree_config.copy()
 xlnet_penn_tree_config['input_layer'] = xlnt_leaves_config
 xlnet_penn_tree_config['model_dim']   = word_dim
 
-from models.utils import squeeze_left
+from models.utils import condense_helper, condense_left
 class XLNetLeaves(nn.Module):
     def __init__(self,
                  model_dim,
@@ -60,9 +60,6 @@ class XLNetLeaves(nn.Module):
         return self._word_dim
 
     def forward(self, word_idx, offset, xl_ids, xl_start):
-        squeeze_params = dict(offset  = offset,
-                              out_len = word_idx.shape[1],
-                              get_rid_of_last_k = 1)
                               
         with torch.no_grad():
             xl_hidden = self._xlnet_model(xl_ids)[0]
@@ -90,14 +87,18 @@ class XLNetLeaves(nn.Module):
             return word_hidden
 
         if self._subword_proc == S_LFT:
-            xl_hidden, _ = squeeze_left(xl_hidden, xl_start, as_existence = True, **squeeze_params)
+            helper = condense_helper(xl_start, as_existence = True, offset = offset, get_rid_of_last_k = 1)
+            xl_hidden = condense_left(xl_hidden, helper, out_len = word_idx.shape[1])
             xl_base = transform_dim(xl_hidden) # use left most sub-word to save precious time!
         else:
             word_hidden = transform_dim(xl_hidden)
-            xl_base, xl_cumu = squeeze_left(word_hidden, xl_start, as_existence = False, **squeeze_params)
+            helper = condense_helper(xl_start, as_existence = False, offset = offset, get_rid_of_last_k = 1)
             if self._subword_proc == S_AVG:
+                xl_base, xl_cumu = condense_left(word_hidden, helper, out_len = word_idx.shape[1], get_cumu = True)
                 xl_cumu[xl_cumu < 1] = 1 # prevent 0
                 xl_base = xl_base / xl_cumu
+            else:
+                xl_base = condense_left(word_hidden, helper, out_len = word_idx.shape[1])
         
         if self._paddings: # will overwrite [cls][sep]
             bos, eos = self._paddings['word']

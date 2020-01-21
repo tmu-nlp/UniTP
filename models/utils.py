@@ -94,7 +94,10 @@ class GaussianCodebook(Module):
             in_features, out_features
         )
 
-def squeeze_left(hidden, existence_or_start, as_existence = False, offset = None, out_len = None, get_rid_of_last_k = 0):
+def condense_helper(existence_or_start,
+                    as_existence      = False,
+                    offset            = None,
+                    get_rid_of_last_k = 0):
     seq_idx = torch.cumsum(existence_or_start, 1)
 
     if offset is not None:
@@ -110,8 +113,15 @@ def squeeze_left(hidden, existence_or_start, as_existence = False, offset = None
         
     max_len = seq_idx.max() + 1
 
+    return seq_idx, max_len, as_existence
+
+def condense_left(hidden, helper,
+                  out_len    = None,
+                  get_cumu   = False,
+                  get_indice = False):
     # from hidden redirected by seq_idx to zeros, throw away 1:
     hidden_shape = list(hidden.shape)
+    seq_idx, max_len, as_existence = helper
     if out_len is None:
         hidden_shape[1] += 1
         truncate = max_len
@@ -123,26 +133,42 @@ def squeeze_left(hidden, existence_or_start, as_existence = False, offset = None
         truncate = out_len + 1
         
     if len(hidden_shape) == 3:
-        seq_idx.unsqueeze_(dim = -1)
-        cumu_shape = hidden_shape[:-1] + [1]
+        seq_idx = seq_idx.unsqueeze(dim = -1)
+        cumula_shape = hidden_shape[:-1] + [1]
     else:
-        cumu_shape = hidden_shape
+        cumula_shape = hidden_shape
 
     base = torch.zeros(*hidden_shape, device = hidden.device, dtype = hidden.dtype)
-    cumu = torch.zeros(*cumu_shape, device = hidden.device, dtype = seq_idx.dtype)
     if as_existence:
         base = base.scatter(1, seq_idx.expand_as(hidden), hidden)
     else:
         base = base.scatter_add(1, seq_idx.expand_as(hidden), hidden)
-    cumu.scatter_add_(1, seq_idx, torch.ones_like(seq_idx))
 
     # 0 used as a dump
-    if truncate is None:
-        base = base[:, 1:]
-        cumu = cumu[:, 1:]
+    base = base[:, 1:] if truncate is None else base[:, 1:truncate]
+
+    if get_cumu:
+        cumu = torch.zeros(*cumula_shape, device = hidden.device, dtype = seq_idx.dtype)
+        cumu.scatter_add_(1, seq_idx, torch.ones_like(seq_idx))
+        cumu = cumu[:, 1:] if truncate is None else cumu[:, 1:truncate]
+        if as_existence:
+            cumu = cumu > 0
+
+    num = get_indice + get_cumu
+    if num == 0:
+        return base
+    if num == 1:
+        return base, cumu if get_cumu else seq_idx
+    return base, cumu, seq_idx
+
+def release_left(base, seq_idx):
+    base_shape = base.shape
+    if len(base_shape) == 3:
+        batch_size, seq_len, model_dim = base_shape
+        left = torch.zeros(batch_size, 1, model_dim, dtype = base.dtype, device = base.device)
+        seq_idx = seq_idx.expand(batch_size, -1, model_dim)
     else:
-        base = base[:, 1:truncate]
-        cumu = cumu[:, 1:truncate]
-    if as_existence:
-        return base, cumu > 0
-    return base, cumu
+        batch_size, seq_len = base_shape
+        left = torch.zeros(batch_size, 1, dtype = base.dtype, device = base.device)
+    base = torch.cat([left, base], dim = 1)
+    return base.gather(1, seq_idx) # all non-dump index > 0

@@ -1,6 +1,6 @@
 import torch
 from torch import nn
-from models.utils import SimplerLinear
+from models.utils import SimplerLinear, condense_helper, condense_left, release_left
 from models.backend import activation_type
 from utils.types import BaseType
 from utils.str_ops import is_numeric
@@ -45,10 +45,10 @@ class Add(nn.Module):
             lw_emb = embeddings[:,  1:] * (1 - right)[:,  1:]
             rw_emb = embeddings[:, :-1] *      right [:, :-1]
 
-        add_emb = lw_emb + rw_emb
-        cmp_emb = self.compose(lw_emb, rw_emb)
         new_jnt = lw_ext & rw_ext
         new_ext = lw_ext | rw_ext
+        add_emb = lw_emb + rw_emb
+        cmp_emb = self.compose(lw_emb, rw_emb, new_jnt)
         if cmp_emb is None:
             new_emb = add_emb
         else:
@@ -58,15 +58,15 @@ class Add(nn.Module):
             return new_ext, new_emb
         return new_ext, new_jnt, lw_relay, rw_relay, new_emb
 
-    def compose(self, lw_emb, rw_emb):
+    def compose(self, lw_emb, rw_emb, is_jnt):
         return None # Default by add
 
 class Mul(Add):
-    def compose(self, lw_emb, rw_emb):
+    def compose(self, lw_emb, rw_emb, is_jnt):
         return lw_emb * rw_emb
 
 class Average(Add):
-    def compose(self, lw_emb, rw_emb):
+    def compose(self, lw_emb, rw_emb, is_jnt):
         return lw_emb * rw_emb / 2
 
 # class Max(Add):
@@ -75,6 +75,7 @@ class Average(Add):
 class Interpolation(Add):
     def __init__(self, type_id, in_size, out_size = None, bias = True):
         super().__init__()
+        use_condenser = False
         if out_size is None:
             out_size = in_size
         else:
@@ -101,6 +102,7 @@ class Interpolation(Add):
                 return (1 - itp) * lw + itp * rw
         elif type_id[0] == 'C':
             if type_id =='CV2' or type_id.startswith('CT-'):
+                # use_condenser = True # TESTED! 100sps SLOWER
                 itp_l = nn.Linear(in_size, out_size, bias = False)
                 itp_r = nn.Linear(in_size, out_size, bias = bias)
             elif type_id == 'CS2':
@@ -131,6 +133,7 @@ class Interpolation(Add):
                     return (1 - itp) * lw + itp * rw
         elif type_id[0] == 'B':
             if type_id == 'BV' or type_id.startswith('BT-'):
+                use_condenser = True
                 itp_ = nn.Bilinear(in_size, in_size, out_size, bias = bias)
             elif type_id == 'BS':
                 itp_ = nn.Bilinear(in_size, in_size, 1, bias = bias)
@@ -138,6 +141,9 @@ class Interpolation(Add):
             self._itp = itp_
             if type_id == 'BT':
                 def _compose(lw, rw):
+                    if type_id != 'BS':
+                        lw = lw.contiguous()
+                        rw = rw.contiguous()
                     if scale is not None:
                         tsf = activation(itp_(lw, rw)) * scale
                     else:
@@ -145,14 +151,24 @@ class Interpolation(Add):
                     return tsf
             else:
                 def _compose(lw, rw):
+                    if type_id != 'BS':
+                        lw = lw.contiguous()
+                        rw = rw.contiguous()
                     itp = itp_(lw, rw)
                     itp = activation(itp)
                     return (1 - itp) * lw + itp * rw
 
         # self._extra_repr = extra_repr
+        self._use_condenser = use_condenser
         self._compose = _compose
 
-    def compose(self, lw_emb, rw_emb):
+    def compose(self, lw_emb, rw_emb, is_jnt):
+        if self._use_condenser:
+            helper = condense_helper(is_jnt.squeeze(dim = 2), as_existence = True)
+            cds_lw, seq_idx = condense_left(lw_emb, helper, get_indice = True)
+            cds_rw          = condense_left(rw_emb, helper)
+            cds_cmb = self._compose(cds_lw, cds_rw)
+            return release_left(cds_cmb, seq_idx)
         return self._compose(lw_emb, rw_emb)
 
     # def extra_repr(self):

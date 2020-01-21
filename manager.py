@@ -291,7 +291,7 @@ class Manager:
         from utils.train_ops import train
         task, corp_name, name = check_select(args.select)
         op_code, exp_ids = check_instances_operation(args.instance)
-        assert op_code in (None, 'r', 'd'), f'Unknown operation {op_code}, neither [r]esume or [d]elete'
+        assert op_code in (None, False, 'r', 'd'), f'Unknown operation {op_code}, neither [r]esume or [d]elete'
         
         module = self._exp_modules[task]
         task_spec = ready_tasks[task]

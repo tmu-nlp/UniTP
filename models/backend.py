@@ -20,7 +20,7 @@ stem_config = dict(orient_dim   = orient_dim,
                    drop_out     = frac_4,
                    trainable_initials = true_type)
 
-from models.utils import squeeze_left
+from models.utils import condense_helper, condense_left
 from itertools import count
 class Stem(nn.Module):
     def __init__(self,
@@ -183,7 +183,8 @@ class Stem(nn.Module):
             if l_ % height == height - 1:
                 # import pdb; pdb.set_trace()
                 existence.squeeze_(dim = 2) # will soon be replaced
-                unit_hidden, existence = squeeze_left(unit_hidden, existence, as_existence = True)
+                helper = condense_helper(existence, as_existence = True)
+                unit_hidden, existence = condense_left(unit_hidden, helper, get_cumu = True)
                 seq_len = unit_hidden.shape[1]
             else:
                 seq_len -= 1

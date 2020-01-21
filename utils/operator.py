@@ -26,6 +26,7 @@ class Operator:
         self._test_materials = self.get_materials(M_TEST)
 
     def get_materials(self, mode):
+        self._epoch_start = time()
         ds_specs = self._get_datasets(mode)
         ds_specs = ((dn,) + ds for dn, ds in ds_specs.items())
         ds_names, ds_freqs, ds_iters = zip(*ds_specs)
@@ -40,7 +41,6 @@ class Operator:
         self._validate_materials = self.get_materials(M_DEVEL), devel_icon
         (epoch, global_step, fine_validation) = self._recorder.initial_or_restore(self._model)
         self._global_step = global_step
-        self._epoch_start = time()
         return epoch, fine_validation
 
     def train_step(self, epoch_cnt, wander_ratio):
