@@ -2,17 +2,17 @@ import numpy as np
 from data.delta import NIL, t_index, s_index
 from data.delta import get_tree_from_triangle, explain_warnings, explain_one_error
 from nltk.tree import Tree
-def head_to_tree(offset, length, words, tags, labels, rights, vocabs):
-    tree, warn = get_tree_from_triangle(*__before_to_tree(offset, length, words, tags, labels, rights, vocabs))
+def head_to_tree(offset, length, tokens, tags, labels, rights, vocabs):
+    tree, warn = get_tree_from_triangle(*__before_to_tree(offset, length, tokens, tags, labels, rights, vocabs))
     assert len(warn) == 0
     return tree
 
-def data_to_tree(offset, length, words, tags, labels, rights, vocabs,
+def data_to_tree(offset, length, tokens, tags, labels, rights, vocabs,
                  return_warnings = False,
                  on_warning      = None,
                  on_error        = None,
                  error_prefix    = ''):
-    return after_to_tree(*__before_to_tree(offset, length, words, tags, labels, rights, vocabs),
+    return after_to_tree(*__before_to_tree(offset, length, tokens, tags, labels, rights, vocabs),
                          return_warnings,
                          on_warning,
                          on_error,
@@ -42,28 +42,32 @@ def triangle_to_layers(data, *size_offset_length_vocab):
     layers.reverse()
     return layers
 
-def before_to_seq(offset, length, words, tags, labels, vocabs):
-    word_layer      = tuple(vocabs.word[w] for w in words[offset:offset+length])
+def before_to_seq(offset, length, tokens, tags, vocabs):
+    token_layer     = tuple(vocabs.token[w] for w in tokens[offset:offset+length])
     if tags is not None: # label_mode
         tag_layer   = tuple(vocabs.tag[t]  for t in tags [offset:offset+length])
         label_vocab = vocabs.label.__getitem__
     else:
         tag_layer = None
-        label_vocab = lambda x: NIL if x < 0 else vocabs.label[x]
-    return word_layer, tag_layer, label_vocab
+        if 'label' in vocabs._nested:
+            label_vocab = lambda x: NIL if x < 0 else vocabs.label[x]
+        else:
+            label_vocab = lambda x: f'{x * 100:.2f}%' if x > 0 else NIL
+    return token_layer, tag_layer, label_vocab
 
-def after_to_tree(word_layer, tag_layer, label_layers, right_layers,
+def after_to_tree(token_layer, tag_layer, label_layers, right_layers,
                     return_warnings = False,
                     on_warning      = None,
                     on_error        = None,
-                    error_prefix    = ''):
+                    error_prefix    = '',
+                    error_root      = 'S'):
     try:
-        tree, warnings = get_tree_from_triangle(word_layer, tag_layer, label_layers, right_layers)
+        tree, warnings = get_tree_from_triangle(token_layer, tag_layer, label_layers, right_layers)
     except ValueError as e:
         error, last_layer, warnings = e.args
         if callable(on_error):
             on_error(error_prefix, explain_one_error(error))
-        tree = Tree('S', [x for x in last_layer if x]) # Trust the model: TODO report failure rate
+        tree = Tree(error_root, [x for x in last_layer if x]) # Trust the model: TODO report failure rate
         warnings.append(error)
     if warnings and callable(on_warning) and tag_layer is not None:
         on_warning(explain_warnings(warnings, label_layers, tag_layer))
@@ -73,20 +77,20 @@ def after_to_tree(word_layer, tag_layer, label_layers, right_layers,
         return tree, warnings
     return tree
 
-def __before_to_tree(offset, length, words, tags, labels, rights, vocabs):
-    size = len(words)
-    word_layer, tag_layer, label_vocab = before_to_seq(offset, length, words, tags, labels, vocabs)
+def __before_to_tree(offset, length, tokens, tags, labels, rights, vocabs):
+    size = len(tokens)
+    token_layer, tag_layer, label_vocab = before_to_seq(offset, length, tokens, tags, vocabs)
     label_layers = triangle_to_layers(labels, size, offset, length, label_vocab)
     right_layers = triangle_to_layers(rights, size, offset, length,        None)
-    return word_layer, tag_layer, label_layers, right_layers
+    return token_layer, tag_layer, label_layers, right_layers
 
-# def convert_batch(h, d, num_word, vocabs, fh, fd):
+# def convert_batch(h, d, num_token, vocabs, fh, fd):
 
 #     for i, l in enumerate(h.len):
 #         if fh is not None:
-#             tree = head_to_tree(h.word[i], h.tag[i], h.label[i], l, h.left[i], vocabs)
+#             tree = head_to_tree(h.token[i], h.tag[i], h.label[i], l, h.left[i], vocabs)
 #             print(' '.join(str(tree).split()), file = fh)
-#         tree, warnings = data_to_tree(h.word[i], d.tag[i], _label(i), l, _left(i), vocabs, return_warnings = True)
+#         tree, warnings = data_to_tree(h.token[i], d.tag[i], _label(i), l, _left(i), vocabs, return_warnings = True)
 #         if fd is not None:
 #             print(' '.join(str(tree).split()), file = fd)
 #         yield i, l, warnings

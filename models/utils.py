@@ -14,7 +14,23 @@ class PCA:
         return torch.cat([m_, pc], -1)
 
 def fraction(cnt_n, cnt_d, dtype = torch.float32):
+    if cnt_d is None:
+        return cnt_n.sum().type(dtype) / cnt_n.nelement()
     return cnt_n.sum().type(dtype) / cnt_d.sum().type(dtype)
+
+def hinge_score(hinge_logits, inplace):
+    if inplace:
+        hinge_scores = hinge_logits
+        hinge_scores += 1
+    else:
+        hinge_scores = hinge_logits + 1
+        
+    hinge_scores /= 2
+    hinge_scores[hinge_scores < 0] = 0
+    hinge_scores[hinge_scores > 1] = 1
+
+    if not inplace:
+        return hinge_scores
 
 import math
 from torch.nn import Module, Parameter, init
@@ -93,6 +109,14 @@ class GaussianCodebook(Module):
         return 'in_dim={}, num_codes={}'.format(
             in_features, out_features
         )
+
+def bos_mask(seq_len, offset):
+    mask = torch.arange(seq_len, device = offset.device)[None]
+    return mask < offset[:, None]
+
+def eos_mask(seq_len, length):
+    mask = torch.arange(seq_len, device = length.device)[None]
+    return mask >= length[:, None]
 
 def condense_helper(existence_or_start,
                     as_existence      = False,

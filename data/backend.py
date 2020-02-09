@@ -76,24 +76,24 @@ class WordBaseReader(_BaseReader):
             if load_nil:
                 weights[0] = 0
             else:
-                i2v = i2vs['word'] = i2vs['word'][1:] + [BOS, EOS]
+                i2v = i2vs['token'] = i2vs['token'][1:] + [BOS, EOS]
                 weights = weights[1:]
                 num = len(i2v)
-                paddings['word'] = (num-2, num-1)
+                paddings['token'] = (num-2, num-1)
         else:
-            assert vocab_size <= len(i2vs['word'])
+            assert vocab_size <= len(i2vs['token'])
             if load_nil:
                 weights[0] = 0
-                words = i2vs['word'][:vocab_size-1]
-                words.append(UNK)
+                tokens = i2vs['token'][:vocab_size-1]
+                tokens.append(UNK)
                 weights = weights[:vocab_size-1]
             else:
-                words = i2vs['word'][1:vocab_size-2] + [UNK, BOS, EOS]
+                tokens = i2vs['token'][1:vocab_size-2] + [UNK, BOS, EOS]
                 weights = weights[1:vocab_size-2] # space will be filled
-                paddings['word'] = (vocab_size-2, vocab_size-1)
-            assert len(words) == vocab_size, f'{len(words)} != {vocab_size}'
-            i2vs['word'] = words
-            oovs['word'] = vocab_size - 3
+                paddings['token'] = (vocab_size-2, vocab_size-1)
+            assert len(tokens) == vocab_size, f'{len(tokens)} != {vocab_size}'
+            i2vs['token'] = tokens
+            oovs['token'] = vocab_size - 3
 
         if not load_nil:
             if 'tag' in i2vs:
@@ -114,7 +114,7 @@ class WordBaseReader(_BaseReader):
             assert 'ftag'  not in v2is
 
         if paddings:
-            assert all(x in paddings for x in ('word', 'tag'))
+            assert all(x in paddings for x in ('token', 'tag'))
             assert all(len(x) == 2 for x in paddings.values())
         super().__init__(vocab_dir, i2vs, v2is, paddings, initial_weights = weights)
 
@@ -122,18 +122,12 @@ class WordBaseReader(_BaseReader):
     def info(self):
         return self._info
 
-class CharBaseReader(_BaseReader):
+class SequenceBaseReader(_BaseReader):
     def __init__(self,
                  vocab_dir,
-                 load_nil,
                  i2vs):
-        paddings = {}
-        if not load_nil:
-            i2v = i2vs['char'] = i2vs['char'][1:] + [BOS, EOS]
-            num = len(i2v)
-            paddings['char'] = (num-2, num-1)
         i2vs, v2is = encapsulate_vocabs(i2vs, {})
-        super().__init__(vocab_dir, i2vs, v2is, paddings)
+        super().__init__(vocab_dir, i2vs, v2is, {})
 
 import torch
 from torch.utils.data import Dataset, DataLoader

@@ -9,7 +9,7 @@ lstm_penn_tree_config['contextual_layer'] = contextual_config
 
 class PennRnnTree(BaseRnnTree):
     def __init__(self,
-                 num_words,
+                 num_tokens,
                  initial_weights,
                  paddings,
                  model_dim,
@@ -17,7 +17,7 @@ class PennRnnTree(BaseRnnTree):
                  contextual_layer,
                  **base_config):
         super().__init__(model_dim, **base_config)
-        self._input_layer = InputLeaves(model_dim, num_words, initial_weights, **input_layer)
+        self._input_layer = InputLeaves(model_dim, num_tokens, initial_weights, **input_layer)
         self._contextual_layer = Contextual(model_dim, **contextual_layer)
 
     def forward(self, word_idx, **kw_args):

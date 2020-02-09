@@ -1,15 +1,15 @@
 import torch
-from torch import optim, nn
+from torch import nn
 from torch.utils.tensorboard import SummaryWriter
 from utils.operator import Operator
 from data.delta import get_rgt, get_dir, s_index
 from data.penn_types import C_ABSTRACT
 from time import time
-from math import exp
 from utils.math_ops import is_bin_times
 from utils.types import M_TRAIN
-from models.utils import PCA, fraction
+from models.utils import PCA, fraction, hinge_score
 from models.loss import binary_cross_entropy, hinge_loss
+from experiments.helper import warm_adam
 
 class PennOperator(Operator):
     def __init__(self, model, get_datasets, recorder, i2vs, evalb):
@@ -19,45 +19,20 @@ class PennOperator(Operator):
         self._orient_hinge_loss = True
         self._mode_length_bins = None, None
 
-    def _build_optimizer(self):
+    def _build_optimizer(self, start_epoch):
         self._loss_weights_of_tag_label_orient = 0.3, 0.1, 0.6
         self._writer = SummaryWriter(self.recorder.create_join('train'))
-        self._last_wander_ratio = 0
-        self._base_lr = 0.001
-        # self._lr_discount_rate = 0.0001
-        # for params in self._model.parameters():
-        #     if len(params.shape) > 1:
-        #         nn.init.xavier_uniform_(params)
-        return optim.Adam(self._model.parameters(), betas = (0.9, 0.98), weight_decay = 5e-4)
+        optim, schedule_lr = warm_adam(self._model)
+        self._schedule_lr = schedule_lr
+        if start_epoch > 0:
+            fpath = self.recorder.create_join('vis_devel')
+            PennOperator.clean_and_report(fpath, start_epoch)
+        return optim
 
     def _schedule(self, epoch, wander_ratio):
-        wander_threshold = 0.15
-
-        if wander_ratio < wander_threshold:
-            learning_rate = self._base_lr * (1 - exp(- epoch))
-        else:
-            # lr_discount = self._base_lr * self._lr_discount_rate
-            # if abs(self._last_wander_ratio - wander_ratio) > 1e-10: # change
-            #     self._last_wander_ratio = wander_ratio
-            #     if self._base_lr > lr_discount + 1e-10:
-            #         self._base_lr -= lr_discount
-            #     else:
-            #         self._base_lr *= self._lr_discount_rate
-
-            # if epoch > lr_half_life:
-            #     base_lr *= 
-            linear_dec = (1 - (wander_ratio - wander_threshold) / (1 - wander_threshold + 1e-20))
-            learning_rate = self._base_lr * linear_dec
-
-        # lr_half_life = 60
-        # if epoch > lr_half_life:
-        #     learning_rate *= exp(-(epoch - lr_half_life) / lr_half_life) # fine decline
-        # learning_rate += 1e-20
-        
+        learning_rate = self._schedule_lr(epoch, wander_ratio)
         self._writer.add_scalar('Batch/Learning_Rate', learning_rate, self.global_step)
         self._writer.add_scalar('Batch/Epoch', epoch, self.global_step)
-        for opg in self.optimizer.param_groups:
-            opg['lr'] = learning_rate
 
     def _step(self, mode, ds_name, batch, flush = True, batch_id = None):
         # assert ds_name == C_ABSTRACT
@@ -71,7 +46,7 @@ class PennOperator(Operator):
             #(batch['offset'], batch['length'])
             
         (batch_size, batch_len, static, dynamic, layers_of_base, existences, orient_logits, tag_logits, label_logits,
-         trapezoid_info) = self._model(batch['word'], **batch)
+         trapezoid_info) = self._model(batch['token'], **batch)
         batch_time = time() - batch_time
         
         orient_logits.squeeze_(dim = 2)
@@ -126,11 +101,11 @@ class PennOperator(Operator):
                 self._writer.add_scalar('Batch/Height', len(batch['segment']), gs)
         else:
             vis, _, _ = self._vis_mode
-            mpc_word = mpc_label = None
+            mpc_token = mpc_label = None
             if vis.save_tensors:
                 if hasattr(self._model._input_layer, 'pca'):
                     if dynamic is not None: # even dynamic might be None, being dynamic is necessary to train a good model
-                        mpc_word = self._model._input_layer.pca(static, flush = flush)
+                        mpc_token = self._model._input_layer.pca(static)
                     mpc_label    = self._model._input_layer.pca(layers_of_base)
                 else:
                     mpc_label = PCA(layers_of_base[:, -batch_len:].reshape(-1, layers_of_base.shape[2]))(layers_of_base)
@@ -138,19 +113,16 @@ class PennOperator(Operator):
                 tag_scores,   tags   = self._model.get_decision_with_value(tag_logits)
                 label_scores, labels = self._model.get_decision_with_value(label_logits)
                 if self._orient_hinge_loss: # otherwise with sigmoid
-                    orient_logits += 1
-                    orient_logits /= 2
-                    orient_logits[orient_logits < 0] = 0
-                    orient_logits[orient_logits > 1] = 1
-                b_mpcs = (None if mpc_word is None else mpc_word.type(torch.float16), mpc_label.type(torch.float16))
+                    hinge_score(orient_logits, inplace = True)
+                b_mpcs = (None if mpc_token is None else mpc_token.type(torch.float16), mpc_label.type(torch.float16))
                 b_scores = (tag_scores.type(torch.float16), label_scores.type(torch.float16), orient_logits.type(torch.float16))
             else:
                 tags    = self._model.get_decision(tag_logits  )
                 labels  = self._model.get_decision(label_logits)
-                b_mpcs = (mpc_word, mpc_label)
+                b_mpcs = (mpc_token, mpc_label)
                 b_scores = (None, None, None)
             b_size = (batch_len,)
-            b_head = tuple(batch[x].type(torch.uint8) if x in ('tag', 'label') else batch[x] for x in 'offset length word tag label'.split())
+            b_head = tuple(batch[x].type(torch.uint8) if x in ('tag', 'label') else batch[x] for x in 'offset length token tag label'.split())
             b_head = b_head + (gold_orients,)
             b_logits = (tags.type(torch.uint8), labels.type(torch.uint8), orients)
             b_data = b_logits + b_mpcs + b_scores
@@ -162,7 +134,7 @@ class PennOperator(Operator):
             vis.process(batch_id, tensors, trapezoid_info)
         return batch_size, batch_len
 
-    def _before_validation(self, ds_name, epoch, use_test_set = False, final_test = True):
+    def _before_validation(self, ds_name, epoch, use_test_set = False, final_test = False):
         devel_bins, test_bins = self._mode_length_bins
         if use_test_set:
             if final_test:
@@ -178,7 +150,6 @@ class PennOperator(Operator):
             save_tensors = is_bin_times(int(float(epoch)) - 1)
             scores_of_bins = False
 
-        self._model.eval()
         vis = PennVis(epoch,
                       self.recorder.create_join(folder),
                       self._evalb,
@@ -207,17 +178,41 @@ class PennOperator(Operator):
             rate = vis.proc_time / (seconds - vis.proc_time)
         logg += f' @{speed}sps. (sym:nn {rate:.2f})'
         scores['speed'] = speed
-        scores[ 'key' ] = scores.get('F1', 0)
         if not final_test:
             mode = 'TestSet' if use_test_set else 'DevelSet'
             self._writer.add_scalar(f'{mode}/F1', scores.get('F1', 0), self.global_step)
             self._writer.add_scalar(f'{mode}/SamplePerSec', speed,     self.global_step)
         self._vis_mode = None
-        self._model.train()
         return scores, desc, logg
 
+    @staticmethod
+    def combine_scores_and_decide_key(epoch, ds_scores):
+        scores = ds_scores[C_ABSTRACT]
+        scores['key'] = scores.get('F1', 0)
+        return scores
+
+    @staticmethod
+    def clean_and_report(fpath, start_epoch):
+        removed = remove_vis_data_from(fpath, start_epoch)
+        if removed:
+            if len(removed) == 1:
+                content = removed[0]
+            else:
+                content = f'{len(removed)} files'
+            Operator.msg(f' [{start_epoch:.2f}:] {content} removed in folder vis_devel.')
+
+        fpath = fpath.replace('vis_devel', 'vis_test_with_devel')
+        if isdir(fpath):
+            removed = remove_vis_data_from(fpath, start_epoch)
+            if removed:
+                if len(removed) == 1:
+                    content = removed[0]
+                else:
+                    content = f'{len(removed)} files'
+                Operator.msg(f' [{start_epoch:.2f}:] {content} removed in folder vis_test_with_devel.')
+
 from utils.vis import BaseVis, VisRunner
-from utils.file_io import join, isfile, listdir, remove
+from utils.file_io import join, isfile, listdir, remove, isdir
 from utils.pickle_io import pickle_dump
 from utils.param_ops import HParams
 from utils.shell_io import parseval, rpt_summary
@@ -233,7 +228,7 @@ class PennVis(BaseVis):
         self._i2vs = i2vs
         self._logger = logger
         htree = join(work_dir, 'head.tree')
-        dtree = join(work_dir, f'data.{self.epoch}.tree')
+        dtree = join(work_dir, f'data.{epoch}.tree')
         self._fnames = htree, dtree
         self._head_tree = None
         self._data_tree = None
@@ -248,11 +243,6 @@ class PennVis(BaseVis):
     def _before(self):
         htree, dtree = self._fnames
         if set_vocab(self._work_dir, self._i2vs._nested):
-            # for fname in listdir(self._work_dir):
-            #     if fname.startswith('head.'):
-            #         fname = join(self._work_dir, fname)
-            #         remove(fname)
-            #     if fname.startswith('data.'):
             self._head_tree = open(htree, 'w')
             self.register_property('length_bins', set())
         self._data_tree = open(dtree, 'w')
@@ -263,8 +253,8 @@ class PennVis(BaseVis):
         # else check head.emm.pkl
         # make data.emmb.tree & concatenate to data.emm.tree
         # make data.emm.rpt
-        (size, h_offset, h_length, h_word, h_tag, h_label, h_right, 
-         d_tag, d_label, d_right, mpc_word, mpc_label,
+        (size, h_offset, h_length, h_token, h_tag, h_label, h_right, 
+         d_tag, d_label, d_right, mpc_token, mpc_label,
          tag_score, label_score, split_score) = batch
         d_trapezoid_info = None
         if trapezoid_info:
@@ -272,23 +262,22 @@ class PennVis(BaseVis):
             trapezoid_info = segment, seg_length
             d_trapezoid_info = d_segment, d_seg_length
             
-        fpath = self._work_dir if self.save_tensors else None
         if self._head_tree:
-            bins = set_head(fpath, batch_id,
-                            size, h_offset, h_length, h_word, h_tag, h_label, h_right,
+            bins = set_head(self._work_dir, batch_id,
+                            size, h_offset, h_length, h_token, h_tag, h_label, h_right,
                             trapezoid_info,
                             self._i2vs, self._head_tree)
-            if fpath:
-                self.length_bins |= bins
+            self.length_bins |= bins
         
         if self.length_bins is not None and self._scores_of_bins:
             bin_width = 10
         else:
             bin_width = None
             
+        fpath = self._work_dir if self.save_tensors else None
         set_data(fpath, batch_id, size, self.epoch, 
-                 h_offset, h_length, h_word, d_tag, d_label, d_right,
-                 mpc_word, mpc_label,
+                 h_offset, h_length, h_token, d_tag, d_label, d_right,
+                 mpc_token, mpc_label,
                  tag_score, label_score, split_score,
                  d_trapezoid_info,
                  self._i2vs, self._data_tree, self._logger, self._evalb, bin_width)
@@ -341,3 +330,21 @@ class PennVis(BaseVis):
 # (S (S (VP (VBG CLUBBING) (NP (DT A) (NN FAN)))) (VP (VBD was) (RB n't) (NP (NP (DT the) (NNP Baltimore) (NNP Orioles) (POS ')) (NN fault))) (. .))
 # (S (NP (NP (JJ CLUBBING) (NNP A)) ('' FAN)) (VP (VBD was) (PP (RB n't) (NP     (DT the) (NNP Baltimore) (NNS Orioles) (POS ') (NN fault)))) (. .))
 # data
+
+def remove_vis_data_from(fpath, start_epoch):
+    removed = []
+    for fname in listdir(fpath):
+        if fname.startswith('data.'):
+            if fname.endswith('.tree'): # batch | epoch
+                batch_or_epoch = fname[5:-5]
+                if '.' in batch_or_epoch and float(batch_or_epoch) >= start_epoch:
+                    remove(join(fpath, fname))
+                    removed.append(fname)
+            elif fname.endswith('.pkl') or fname.endswith('.rpt'): # batch_epoch
+                epoch = fname[5:-4]
+                if '_' in epoch:
+                    epoch = epoch[epoch.index('_') + 1:]
+                if float(epoch) >= start_epoch:
+                    remove(join(fpath, fname))
+                    removed.append(fname)
+    return removed

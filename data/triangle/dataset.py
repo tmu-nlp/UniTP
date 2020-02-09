@@ -5,9 +5,12 @@ from tqdm import tqdm
 from time import time
 from data.delta import write_tensors, E_XDIM
 
-fields = 'word', 'tag', 'ftag'
+fields = 'token', 'tag', 'ftag'
 fieldx = 'label', 'xtype'
-# FieldOrder = 'word', 'tag', 'label', 'xtype', 'ftag', 'length'
+# FieldOrder = 'token', 'tag', 'label', 'xtype', 'ftag', 'length'
+
+def token_first(fdict):
+    return (('token', fdict.pop('token')),) + tuple(fdict.items())
 
 class TriangularDataset(LengthOrderedDataset):
     def __init__(self,
@@ -27,15 +30,15 @@ class TriangularDataset(LengthOrderedDataset):
             field_v2is = field_v2is.copy()
             field_v2is['xtype'] = (len(E_XDIM), int)
 
-        for field, v2i in field_v2is.items():
+        for field, v2i in token_first(field_v2is):
             start = time()
             heads.add(field)
             if field in fields:
                 print(f'Load Dataset {prefix}.{field}', end = ' ', flush = True)
-                extra = field == 'word'
-                column = read_data(dir_join(f'{prefix}.{field}'), v2i, extra)
-                if extra:
-                    column, lengths, text = column
+                if field == 'token':
+                    column, lengths, text = read_data(dir_join(f'{prefix}.word'), v2i, True)
+                else:
+                    column = read_data(dir_join(f'{prefix}.{field}'), v2i, False)
                 columns[field] = column
             else:
                 for factor, prob in factors.items():
@@ -78,7 +81,7 @@ class TriangularDataset(LengthOrderedDataset):
                 offsets = (max_len - lengths) // 2
                 field_columns['offset'] = offsets
                 tensor = lengths
-            elif field in fields: # word or tags
+            elif field in fields: # token or tags
                 tensor = np.zeros([batch_size, max_len], dtype)
                 for i, (values, offset, length) in enumerate(zip(column, offsets, lengths)):
                     end = offset + length

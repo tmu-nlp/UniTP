@@ -9,7 +9,7 @@ def isqrt(n):
 def is_bin_times(n):
     return 0 == (n & (n-1))
 
-def harmony(fractions):
+def harmony(*fractions):
     return len(fractions) / sum(1/f for f in fractions)
 
 from math import sqrt, floor

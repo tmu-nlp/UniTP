@@ -45,7 +45,7 @@ def get_configs(recorder = None):
             datasets[C_ABSTRACT] = reader.batch(mode, penn.batch_size, 0, non_train_cnf, max_len = penn.max_len)
         return datasets
 
-    task_params = {pname: reader.get_to_model(pname) for pname in ('initial_weights', 'num_words', 'num_tags', 'num_labels', 'paddings')}
+    task_params = {pname: reader.get_to_model(pname) for pname in ('initial_weights', 'num_tokens', 'num_tags', 'num_labels', 'paddings')}
 
     model = PennRnnTree(**model_config, **task_params)
     model.to(reader.device)

@@ -29,25 +29,27 @@ def inflate(layers):
     inflated.reverse()
     return inflated
 
-def head_to_tree(offset, length, words, tags, labels, rights, seg_lengths, segments, vocabs):
-    args = __before_to_tree(offset, length, words, tags, labels, rights, segments, seg_lengths, vocabs)
+def head_to_tree(offset, length, tokens, tags, labels, rights, seg_lengths, segments, vocabs):
+    args = __before_to_tree(offset, length, tokens, tags, labels, rights, segments, seg_lengths, vocabs)
     tree, warn = get_tree_from_triangle(*args)
     assert len(warn) == 0
     return tree
 
-def data_to_tree(offset, length, words, tags, labels, rights, seg_lengths, segments, vocabs,
+def data_to_tree(offset, length, tokens, tags, labels, rights, seg_lengths, segments, vocabs,
                  return_warnings = False,
                  on_warning      = None,
                  on_error        = None,
-                 error_prefix    = ''):
-    return after_to_tree(*__before_to_tree(offset, length, words, tags, labels, rights, segments, seg_lengths, vocabs),
+                 error_prefix    = '',
+                 error_root      = 'S'):
+    return after_to_tree(*__before_to_tree(offset, length, tokens, tags, labels, rights, segments, seg_lengths, vocabs),
                          return_warnings,
                          on_warning,
                          on_error,
-                         error_prefix)
+                         error_prefix,
+                         error_root)
 
-def __before_to_tree(offset, length, words, tags, labels, rights, segments, seg_lengths, vocabs):
-    word_layer, tag_layer, label_vocab = before_to_seq(offset, length, words, tags, labels, vocabs)
+def __before_to_tree(offset, length, tokens, tags, labels, rights, segments, seg_lengths, vocabs):
+    token_layer, tag_layer, label_vocab = before_to_seq(offset, length, tokens, tags, vocabs)
     label_layers = trapezoid_to_layers(labels, segments, seg_lengths, label_vocab)
     right_layers = trapezoid_to_layers(rights, segments, seg_lengths,        None)
-    return word_layer, tag_layer, label_layers, right_layers
+    return token_layer, tag_layer, label_layers, right_layers

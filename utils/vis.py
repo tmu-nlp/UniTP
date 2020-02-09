@@ -51,6 +51,7 @@ class VisRunner:
     def __init__(self, vis, async_ = False):
         self._vis   = vis
         self._async = async_
+        self._timer = 0
         
     def before(self):
         if self._async:
@@ -59,7 +60,6 @@ class VisRunner:
             self._async = worker, iq, oq
             worker.start()
         else:
-            self._timer = 0
             self._vis._before()
 
     def process(self, *args, **kw_args):
@@ -81,6 +81,10 @@ class VisRunner:
             self._vis._attrs.update(attrs)
             return out
         return self._vis._after()
+
+    def __del__(self):
+        if isinstance(self._async, tuple):
+            self._async[0].terminate()
 
     @property
     def proc_time(self):

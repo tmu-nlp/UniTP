@@ -88,16 +88,21 @@ def set_data(fpath, batch_id, size, epoch,
     old_tag   = tag
     old_tag_s = tag_score
     if tag is None: tag = inf_none_gen
+    if label is None:
+        label_ = label_score
+        tree_kwargs['error_root'] = 'NA'
+    else:
+        label_ = label
     trees = []
     batch_warnings = []
     if trapezoid_info is None:
         segment = seg_length = None
-        func_args = zip(offset, length, word, tag, label, right)
+        func_args = zip(offset, length, word, tag, label_, right)
         func_args = ((*args, vocabs) for args in func_args)
         data_to_tree = tri_d2t
     else:
         segment, seg_length = trapezoid_info
-        func_args = zip(offset, length, word, tag, label, right, seg_length)
+        func_args = zip(offset, length, word, tag, label_, right, seg_length)
         func_args = ((*args, segment, vocabs) for args in func_args)
         data_to_tree = tra_d2t
 
@@ -111,44 +116,51 @@ def set_data(fpath, batch_id, size, epoch,
         batch_warnings.append(warnings)
 
     if fpath:
-        fdata = join(fpath, f'data.{batch_id}.tree')
-        with open(fdata, 'w') as fw:
-            for tree in trees:
-                print(tree, file = fw)
-                
-        fhead = join(fpath, f'head.{batch_id}.tree')
-        proc = parseval(evalb, fhead, fdata)
-        idv, smy = rpt_summary(proc.stdout.decode(), True, True)
-
-        fhead = f'head.{batch_id}_{size}.pkl'
-        assert isfile(join(fpath, fhead)), f"Need a head '{fhead}'"
-        fdata = join(fpath, f'data.{batch_id}_{epoch}.pkl')
-        data = IOData(offset, length, word, tag, label, right, trees,
-                      segment, seg_length, mpc_word, mpc_phrase,
-                      batch_warnings, idv, tag_score, label_score, split_score, smy)
-        pickle_dump(fdata, data)
-
-        fname = join(fpath, 'summary.pkl')
-        if isfile(fname):
-            summary = pickle_load(fname)
-        else:
-            summary = {}
-        summary[(batch_id, epoch)] = smy
-        pickle_dump(fname, summary)
-
-        if isinstance(bin_width, int):
-            ftrees = {}
-            with ExitStack() as stack:
-                for wlen, tree in zip(length, trees):
-                    wbin = wlen // bin_width
-                    if wbin in ftrees:
-                        fw = ftrees[wbin]
-                    else:
-                        fw = open(join(fpath, f'data.bin_{wbin}.tree'), 'a')
-                        ftrees[wbin] = stack.enter_context(fw)
+        if label is None:
+            pickle_dump(join(fpath, f'data.{batch_id}_{epoch}.pkl'),
+                        IOData(offset, length, word, None, None, right, trees,
+                               segment, seg_length, mpc_word, mpc_phrase,
+                               batch_warnings, None, tag_score, label_score, split_score, None))
+            return batch_warnings
+        else: # supervised / labeled
+            fdata = join(fpath, f'data.{batch_id}.tree')
+            with open(fdata, 'w') as fw:
+                for tree in trees:
                     print(tree, file = fw)
+                    
+            fhead = join(fpath, f'head.{batch_id}.tree')
+            proc = parseval(evalb, fhead, fdata)
+            idv, smy = rpt_summary(proc.stdout.decode(), True, True)
 
-        return smy['F1']
+            fhead = f'head.{batch_id}_{size}.pkl'
+            assert isfile(join(fpath, fhead)), f"Need a head '{fhead}'"
+            fdata = join(fpath, f'data.{batch_id}_{epoch}.pkl')
+            data = IOData(offset, length, word, old_tag, label, right, trees,
+                        segment, seg_length, mpc_word, mpc_phrase,
+                        batch_warnings, idv, tag_score, label_score, split_score, smy)
+            pickle_dump(fdata, data)
+
+            fname = join(fpath, 'summary.pkl')
+            if isfile(fname):
+                summary = pickle_load(fname)
+            else:
+                summary = {}
+            summary[(batch_id, epoch)] = smy
+            pickle_dump(fname, summary)
+
+            if isinstance(bin_width, int):
+                ftrees = {}
+                with ExitStack() as stack:
+                    for wlen, tree in zip(length, trees):
+                        wbin = wlen // bin_width
+                        if wbin in ftrees:
+                            fw = ftrees[wbin]
+                        else:
+                            fw = open(join(fpath, f'data.bin_{wbin}.tree'), 'a')
+                            ftrees[wbin] = stack.enter_context(fw)
+                        print(tree, file = fw)
+
+            return smy['F1']
 
 def calc_stan_accuracy(folder, bid, e_major, e_minor, on_error):
     
@@ -1660,13 +1672,14 @@ if desktop:
             tag_label_line_bo = 2 * level_unit            + self._conf.offset_y # word lines tag lines
             line_width = self._conf.line_width
             r = line_width // 2
-            text_offy = 0
+            text_offy = 0 #2
             w_p_s = self._conf.word_height + self._conf.offset_y, level_unit + self._conf.offset_y, level_unit + self._conf.word_height + self._conf.offset_y # word >--> tag >--> label
             decorate = isinstance(line_width, int) and line_width % 2 == 0
             deco_dx = 0 if decorate else self._conf.deco_dx
             deco_dy = 0 if decorate else self._conf.deco_dy
             font_name, font_size = self._conf.font
             round_int = lambda x: int(round(x))
+            errors = []
             if self._conf.delta_shape:
                 line_dy = self._conf.line_dy
                 deco_dy = - deco_dy
@@ -1738,6 +1751,7 @@ if desktop:
                                                      dash = (1, 2),
                                                      tags = ('elems', 'err'))
                         elems = node, line, err
+                        errors.append
                     else:
                         elems = node, line
                     if not apply_dash and decorate:
@@ -1808,10 +1822,11 @@ if desktop:
                                                fill = label_color,
                                                tags = ('elems', 'node'), font = (font_name, font_size if apply_dash else round_int(font_size * data.label_score[l][p])),)]
                     if draw_error_box:
-                        # x,y,x_,y_ = board.bbox(elems[0])
+                        # x,y,x_,y_ = board.bbox(elems[0])x-7,y-3,x_+2,y_, 
                         elems.append(board.create_rectangle(*board.bbox(elems[0]),
                                                             outline = 'red', dash = (1, 2),
                                                             tags = ('elems', 'err')))
+                        errors.append(elems[-1])
                     board_item_coord[sbox] = elems, (l, p)
 
                     if not self._conf.show_paddings:
@@ -1905,6 +1920,8 @@ if desktop:
                 layer_tracker = None
                 # if layer_len == 1#: or not self._conf.show_paddings and np.any(layer_label):
                 #     break
+            for elem in errors:
+                board.tag_raise(elem)
             if self._spotlight_subjects:
                 self._spotlight_subjects = (board_item_coord, self._conf.word_width, level_unit) + self._spotlight_subjects[-3:]
             else:

@@ -94,6 +94,10 @@ class Recorder:
     def log(self, *args, **kwargs):
         print(*args, **self._print_args, **kwargs)
 
+    @staticmethod
+    def msg(*args, **kwargs):
+        print(*args, **kwargs, file = stderr, flush = True)
+
     def task_specs(self):
         specs = load_yaml(*self._sv_file_lock, wait_lock = False)
         _, model_type = self._module.get_configs()
@@ -201,7 +205,7 @@ class Recorder:
             self._key = checkpoint['key']
             
             print(f"Model restored from", model_fname, **self._print_args)
-            print(f'Model Restored at {epoch:.2f}, scoring {self._key:.2f}', file = stderr)
+            Recorder.msg(f'Model Restored at {epoch:.2f}, scoring {self._key:.2f}')
             if restore_from_best_validation:
                 return epoch
             epoch = int(epoch)

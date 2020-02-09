@@ -24,7 +24,7 @@ from models.backend import stem_config
 penn_tree_config = dict(orient_layer    = stem_config,
                         tag_label_layer = multi_class)
 from models.utils import GaussianCodebook
-from models.loss import cross_entropy, height_mask as make_
+from models.loss import cross_entropy, big_endian_height_mask
 
 class BaseRnnTree(nn.Module):
     def __init__(self,
@@ -106,7 +106,7 @@ class BaseRnnTree(nn.Module):
         else:
             net = self._label_layer
             distance = net.distance(logits, batch['label']) # [b, s]
-            distance *= make_(distance.shape[1], height_mask)
+            distance *= big_endian_height_mask(distance.shape[1], height_mask)
         loss = distance.sum()
 
         if self._repulsion > 0:

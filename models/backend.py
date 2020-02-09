@@ -53,9 +53,8 @@ class Stem(nn.Module):
             self.register_parameter('_c0', None)
             self._initial_size = None
 
-    @property
-    def combinator(self):
-        return self.combine
+    def blind_combine(self, unit_hidden, existence):
+        return self.combine(None, unit_hidden, existence)
     
     def get_h0c0(self, batch_size):
         if self._initial_size:
@@ -67,7 +66,7 @@ class Stem(nn.Module):
             h0c0 = None
         return h0c0
 
-    def forward_layer(self, unit_hidden, h0c0):
+    def predict_orient(self, unit_hidden, h0c0):
         orient_hidden, _ = self.orient_emb(unit_hidden, h0c0)
         orient_hidden = self._dp_layer(orient_hidden)
         return self.orient(orient_hidden)
@@ -117,7 +116,7 @@ class Stem(nn.Module):
             ends = offsets + lengths - 1
 
         for length in range(num_layers, 0, -1):
-            orient = self.forward_layer(unit_hidden, h0c0)
+            orient = self.predict_orient(unit_hidden, h0c0)
             layers_of_orient.append(orient)
             layers_of_unit  .append(unit_hidden)
             layers_of_existence.append(existence)
@@ -164,7 +163,7 @@ class Stem(nn.Module):
                 else:
                     seg_length.append(seg_length[-1] - 1)
                 
-            orient = self.forward_layer(unit_hidden, h0c0)
+            orient = self.predict_orient(unit_hidden, h0c0)
             layers_of_orient.append(orient)
             layers_of_unit  .append(unit_hidden)
             layers_of_existence.append(existence)
@@ -206,7 +205,7 @@ input_config = dict(pre_trained = true_type, activation = act_fasttext, trainabl
 class InputLeaves(nn.Module):
     def __init__(self,
                  model_dim,
-                 num_types,
+                 num_tokens,
                  initial_weight,
                  pre_trained,
                  trainable,
@@ -217,7 +216,7 @@ class InputLeaves(nn.Module):
         st_dy_bound = 0
         st_emb_layer = dy_emb_layer = None
         if pre_trained:
-            num_special_tokens = num_types - initial_weight.shape[0]
+            num_special_tokens = num_tokens - initial_weight.shape[0]
             assert num_special_tokens >= 0
             if num_special_tokens > 0: # bos eos
                 if trainable:
@@ -235,7 +234,7 @@ class InputLeaves(nn.Module):
                 st_emb_layer = nn.Embedding.from_pretrained(torch.as_tensor(initial_weight), freeze = True)
         else: # nil ... unk | ... unk bos eos
             assert trainable
-            dy_emb_layer = nn.Embedding(num_types, model_dim)
+            dy_emb_layer = nn.Embedding(num_tokens, model_dim)
 
         if activation is None:
             self._act_pre_trained = None
@@ -248,9 +247,11 @@ class InputLeaves(nn.Module):
         self._dy_emb_layer = dy_emb_layer
         self._pca_base = None
 
-    def pca(self, word_emb, flush = False):
-        # TODO: setup_pca with external
-        if flush or self._st_emb_layer is not None and self._pca_base is None:
+    def flush_pc(self):
+        self._pca_base = PCA(self._dy_emb_layer.weight)
+
+    def pca(self, word_emb):
+        if self._st_emb_layer is not None and self._pca_base is None:
             self._pca_base = PCA(self._st_emb_layer.weight)
         return self._pca_base(word_emb)
 

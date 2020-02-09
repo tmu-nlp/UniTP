@@ -1,4 +1,5 @@
 from utils.types import fill_placeholder, M_TRAIN, M_DEVEL, M_TEST, E_ORIF, UNK, NIL, BOS, EOS
+from utils.param_ops import change_key
 from data.io import load_i2vs
 
 SUB = '_SUB'
@@ -21,6 +22,7 @@ class PennReader(WordBaseReader):
             if load_ftags:
                 vocabs += ' ftag'
         i2vs = load_i2vs(vocab_dir, vocabs.split())
+        change_key(i2vs, 'word', 'token')
         oovs = {}
         if load_label and unify_sub:
             labels = [t for t in i2vs['label'] if t[0] not in '#_']
@@ -67,20 +69,19 @@ class PennReader(WordBaseReader):
 
 from utils.types import false_type, true_type
 from utils.types import train_batch_size, train_max_len, train_bucket_len
-tokenization_config = dict(lower_case = false_type, nil_as_pads = true_type,
+tokenization_config = dict(lower_case       = false_type,
                            batch_size       = train_batch_size,
                            max_len          = train_max_len,
                            bucket_len       = train_bucket_len,
                            sort_by_length   = false_type)
 
 from collections import Counter
-from data.backend import CharBaseReader
-from utils.param_ops import dict_print
-class LexiconReader(CharBaseReader):
+from data.backend import SequenceBaseReader
+# from utils.param_ops import dict_print
+class LexiconReader(SequenceBaseReader):
     def __init__(self,
                  vocab_dir,
-                 lower_case  = False,
-                 nil_as_pads = True):
+                 lower_case = False):
         i2vs = load_i2vs(vocab_dir, ('word',))
         word = i2vs.pop('word')
         assert word.pop(0) == NIL
@@ -91,9 +92,9 @@ class LexiconReader(CharBaseReader):
                 w = w.lower()
             char += Counter(w)
             data.append(w)
-        i2vs['char'] = [NIL] + sorted(char.keys())
+        i2vs['token'] = [NIL] + sorted(char.keys())
         # print(dict_print({k:char[k] for k in sorted(char, key = char.get, reverse = True)}))
-        super(LexiconReader, self).__init__(vocab_dir, nil_as_pads, i2vs)
+        super(LexiconReader, self).__init__(vocab_dir, i2vs)
         self._char_data = char, data
 
     def batch(self,
@@ -110,5 +111,5 @@ class LexiconReader(CharBaseReader):
         if noise_specs is None:
             assert sum(factors[k] for k in 'swap insert replace delete'.split() if k in factors) == 0, 'Need specs!'
         char, data = self._char_data
-        len_sort_ds = CharDataset(char, data, self.v2is, noise_specs, factors, self.paddings, self.device, min_len, max_len)
+        len_sort_ds = CharDataset(char, data, self.v2is, noise_specs, factors, self.device, min_len, max_len)
         return post_batch(mode, len_sort_ds, sort_by_length, bucket_length, batch_size)

@@ -10,7 +10,6 @@ class CharDataset(LengthOrderedDataset):
                  field_v2is,
                  noise_specs,
                  factors, # origin replace_all insert [_1, _2] delete swap
-                 paddings,
                  device,
                  min_len  = 0,
                  max_len  = None):
@@ -35,7 +34,7 @@ class CharDataset(LengthOrderedDataset):
         super().__init__(heads, lengths, factors, min_len, max_len, None)
 
         self._columns = columns
-        self._paddings_device = paddings, device
+        self._itype_device = np.int32, device
         char_ids = tuple(v2i(c) for c in chars) # TODO is numeric bit
         char_gen = lambda: np.random.choice(char_ids)
         chars = lambda x: tuple(np.random.choice(char_ids) for _ in range(x)) # TODO make it numpy
@@ -86,32 +85,39 @@ class CharDataset(LengthOrderedDataset):
                     if np.random.random() < noise_specs[factor]:
                         delete.append(i_)
                 if delete and len(delete) < length / 2:
-                    char_ids       = list(char_ids)
-                    first_validity = [True for _ in range(length)]
+                    char_ids        = list(char_ids)
+                    second_validity = [True for _ in range(length)]
                     length -= len(delete)
                     for i_ in delete:
                         if i_ >= 1:
-                            first_validity[i_-1] = False
+                            second_validity[i_-1] = False
                         if i_ + 1 < len(char_ids):
-                            first_validity[i_+1] = False
-                        delete_ptr(char_ids,       i_, 1)
-                        delete_ptr(first_validity, i_, 1)
+                            second_validity[i_+1] = False
+                        delete_ptr(char_ids,        i_, 1)
+                        delete_ptr(second_validity, i_, 1)
                     if is_digit[idx]:
-                        first_validity = second_validity = True
+                        second_validity = True
                     else:
-                        second_validity = tuple(l | r for l,r in zip(first_validity, first_validity[1:]))
+                        second_validity = tuple(l | r for l, r in zip(second_validity, second_validity[1:]))
                 else:
                     factor = 'origin'
             elif factor == 'swap': # swap_4.4 absolute short distance
-                distance = np.random.exponential(noise_specs[factor])
-                distance = int(distance + 1)
-                if distance < length:
-                    start = np.random.randint(0, length - distance)
-                    _end_ = start + distance
-                    # if _end_ == length - 1:
-                    #     import pdb; pdb.set_trace()
+                swap = []
+                per, dis = noise_specs[factor]
+                for i_ in range(length):
+                    if np.random.random() < per:
+                        distance = np.random.exponential(dis)
+                        distance = int(distance + 1)
+                        if distance < length:
+                            swap.append(distance)
+                if swap:
                     char_ids = list(char_ids)
-                    swap_ptr(char_ids, start, _end_, 1)
+                    for distance in swap:
+                        start = np.random.randint(0, length - distance)
+                        _end_ = start + distance
+                        # if _end_ == length - 1:
+                        #     import pdb; pdb.set_trace()
+                        swap_ptr(char_ids, start, _end_, 1)
                     _validity = tuple(o == s for o,s in zip(column[idx], char_ids))
                     if is_digit[idx] or all(_validity):
                         first_validity = True
@@ -137,17 +143,14 @@ class CharDataset(LengthOrderedDataset):
         return sample
 
     def _collate_fn(self, batch):
-        dtype = np.int32
         field_columns = {}
-        paddings, device = self._paddings_device
+        itype, device = self._itype_device
         
         for field, column in zip(self.heads, zip(*batch)):
             if field == 'length':
                 batch_size = len(column)
-                lengths = np.asarray(column, dtype)
+                lengths = np.asarray(column, itype)
                 max_len = np.max(lengths)
-                if paddings:
-                    max_len += 2 # BOS and EOS
                 offsets = (max_len - lengths) // 2
                 field_columns['offset'] = offsets
                 tensor = lengths
@@ -155,16 +158,10 @@ class CharDataset(LengthOrderedDataset):
                 noise_type = column
                 continue
             else: # char & _validity
-                len_mod = -1 if field == 'second_validity' else 0
-                tensor = np.zeros([batch_size, max_len + len_mod], np.bool if field.endswith('_validity') else dtype)
+                size_diff = -1 if field == 'second_validity' else 0
+                tensor = np.zeros([batch_size, max_len + size_diff], np.bool if field.endswith('_validity') else itype)
                 for i, (values, offset, length) in enumerate(zip(column, offsets, lengths)):
-                    # import pdb; pdb.set_trace()
-                    end = offset + length + len_mod
-                    tensor[i, offset:end] = values
-                    if paddings:
-                        bid, eid = paddings[field]
-                        tensor[i, :offset] = bid
-                        tensor[i, end:]    = eid
+                    tensor[i, offset:offset + length + size_diff] = values
             field_columns[field] = tensor
 
         for f, column in field_columns.items():

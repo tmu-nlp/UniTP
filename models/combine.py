@@ -163,7 +163,7 @@ class Interpolation(Add):
         self._compose = _compose
 
     def compose(self, lw_emb, rw_emb, is_jnt):
-        if self._use_condenser:
+        if self._use_condenser and is_jnt.shape[1] > 1:
             helper = condense_helper(is_jnt.squeeze(dim = 2), as_existence = True)
             cds_lw, seq_idx = condense_left(lw_emb, helper, get_indice = True)
             cds_rw          = condense_left(rw_emb, helper)

@@ -8,16 +8,9 @@ from utils.file_io import DelayedKeyboardInterrupt
 from time import sleep
 # from data.delta import E_XDIM
 
-fields = 'word', 'tag', 'ftag'
+fields = 'token', 'tag', 'ftag'
 fieldx = 'label', 'xtype'
-# FieldOrder = 'word', 'tag', 'label', 'xtype', 'ftag', 'length'
-
-def split_v2is(v2is):
-    _, w2i = v2is['word']
-    _, t2i = v2is['tag']
-    _, l2i = v2is['label']
-    x2i = lambda x: xtype_to_logits(x, to_str = False)
-    return w2i, t2i, l2i, x2i
+# FieldOrder = 'token', 'tag', 'label', 'xtype', 'ftag', 'length'
 
 class TreeKeeper:
     def __init__(self, tree, v2is, trapezoid_height):
@@ -58,8 +51,8 @@ class TreeKeeper:
             layers_of_labels.append(labels)
             layers_of_xtypes.append(xtypes)
         
-        factored = dict(word = word,
-                        tag  = tag,
+        factored = dict(token = word,
+                        tag   = tag,
                         label = layers_of_labels,
                         xtype = layers_of_xtypes)
         self._factored[factor] = factored
@@ -93,6 +86,13 @@ class WorkerX(Process):
                             tree[tree.leaf_treeposition(i)] = '-RRB-'
                 results = words, length, str(tree), factored
                 q.put(results)
+
+def split_v2is(v2is):
+    _, w2i = v2is['token']
+    _, t2i = v2is['tag']
+    _, l2i = v2is['label']
+    x2i = lambda x: xtype_to_logits(x, to_str = False)
+    return w2i, t2i, l2i, x2i
 
 from data.penn_types import Tree
 class TrapezoidDataset(LengthOrderedDataset):
@@ -150,7 +150,7 @@ class TrapezoidDataset(LengthOrderedDataset):
                         x.kill()
                 raise ex
 
-        heads = 'word tag label xtype'.split()
+        heads = 'token tag label xtype'.split()
         if extra_text_helper:
             extra_text_helper = extra_text_helper(text, device)
         super().__init__(heads, lengths, factors, min_len, max_len, extra_text_helper)
