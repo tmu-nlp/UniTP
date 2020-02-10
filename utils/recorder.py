@@ -207,7 +207,7 @@ class Recorder:
             print(f"Model restored from", model_fname, **self._print_args)
             Recorder.msg(f'Model Restored at {epoch:.2f}, scoring {self._key:.2f}')
             if restore_from_best_validation:
-                return epoch
+                return epoch, global_step
             epoch = int(epoch)
             # for cleaner in self._cleaners: # vis
             #     cleaner(after = epoch)

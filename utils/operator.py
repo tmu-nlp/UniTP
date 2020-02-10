@@ -81,7 +81,7 @@ class Operator:
         final_test = epoch is None
         if final_test:
             prefix = 'Test ' # final label
-            epoch  = self._recorder.initial_or_restore(self._model, restore_from_best_validation = True)
+            epoch, self._global_step = self._recorder.initial_or_restore(self._model, restore_from_best_validation = True)
         else:
             prefix = '   ⌙→ Test ' # match length of validation
         scores, ds_logg, from_start = self.validation_or_test(M_TEST, ds_total, ds_names, ds_iters, '🔮', epoch, final_test)

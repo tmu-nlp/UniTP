@@ -10,8 +10,8 @@ from nltk.tree import Tree
 from utils.math_ops import isqrt
 from utils.pickle_io import pickle_load, pickle_dump
 
-IOHead = namedtuple('IOHead', 'offset, length, word, tag, label, right, tree, segment, seg_length')
-IOData = namedtuple('IOData', 'offset, length, word, tag, label, right, tree, segment, seg_length, mpc_word, mpc_phrase, warning, scores, tag_score, label_score, split_score, summary')
+IOHead = namedtuple('IOHead', 'offset, length, token, tag, label, right, tree, segment, seg_length')
+IOData = namedtuple('IOData', 'offset, length, token, tag, label, right, tree, segment, seg_length, mpc_word, mpc_phrase, warning, scores, tag_score, label_score, split_score, summary')
 
 inf_none_gen = (None for _ in count())
 def set_vocab(fpath, vocabs, model_vocab_size = None, fname = 'vocabs.pkl'):
@@ -28,7 +28,7 @@ from data.triangle import data_to_tree as tri_d2t
 from data.trapezoid import head_to_tree as tra_h2t
 from data.trapezoid import data_to_tree as tra_d2t
 def set_head(fpath, batch_id, size,
-             offset, length, word, tag, label, right,
+             offset, length, token, tag, label, right,
              trapezoid_info,
              vocabs, fhtree, vfname = 'vocabs.pkl', bin_width = 10):
     old_tag = tag
@@ -38,12 +38,12 @@ def set_head(fpath, batch_id, size,
 
     if trapezoid_info is None:
         segment = seg_length = None
-        func_args = zip(offset, length, word, tag, label, right)
+        func_args = zip(offset, length, token, tag, label, right)
         func_args = ((*args, vocabs) for args in func_args)
         head_to_tree = tri_h2t
     else:
         segment, seg_length = trapezoid_info
-        func_args = zip(offset, length, word, tag, label, right, seg_length)
+        func_args = zip(offset, length, token, tag, label, right, seg_length)
         func_args = ((*args, segment, vocabs) for args in func_args)
         head_to_tree = tra_h2t
 
@@ -71,13 +71,18 @@ def set_head(fpath, batch_id, size,
 
         assert isfile(join(fpath, vfname))
         fname = join(fpath, f'head.{batch_id}_{size}.pkl')
-        head  = IOHead(offset, length, word, old_tag, label, right, trees, segment, seg_length)
+        head  = IOHead(offset, length, token, old_tag, label, right, trees, segment, seg_length)
         pickle_dump(fname, head)
         return ftrees.keys()
 
+def set_void_head(fpath, batch_id, size, offset, length, token):
+    fname = join(fpath, f'head.{batch_id}_{size}.pkl')
+    head  = IOHead(offset, length, token, None, None, None, None, None, None)
+    pickle_dump(fname, head)
+
 from utils.shell_io import parseval, rpt_summary
 def set_data(fpath, batch_id, size, epoch,
-             offset, length, word, tag, label, right, mpc_word, mpc_phrase,
+             offset, length, token, tag, label, right, mpc_word, mpc_phrase,
              tag_score, label_score, split_score,
              trapezoid_info,
              vocabs, fdtree, on_error = None, evalb = None, bin_width = 10):
@@ -97,12 +102,12 @@ def set_data(fpath, batch_id, size, epoch,
     batch_warnings = []
     if trapezoid_info is None:
         segment = seg_length = None
-        func_args = zip(offset, length, word, tag, label_, right)
+        func_args = zip(offset, length, token, tag, label_, right)
         func_args = ((*args, vocabs) for args in func_args)
         data_to_tree = tri_d2t
     else:
         segment, seg_length = trapezoid_info
-        func_args = zip(offset, length, word, tag, label_, right, seg_length)
+        func_args = zip(offset, length, token, tag, label_, right, seg_length)
         func_args = ((*args, segment, vocabs) for args in func_args)
         data_to_tree = tra_d2t
 
@@ -118,7 +123,7 @@ def set_data(fpath, batch_id, size, epoch,
     if fpath:
         if label is None:
             pickle_dump(join(fpath, f'data.{batch_id}_{epoch}.pkl'),
-                        IOData(offset, length, word, None, None, right, trees,
+                        IOData(offset, length, token, None, None, right, trees,
                                segment, seg_length, mpc_word, mpc_phrase,
                                batch_warnings, None, tag_score, label_score, split_score, None))
             return batch_warnings
@@ -135,7 +140,7 @@ def set_data(fpath, batch_id, size, epoch,
             fhead = f'head.{batch_id}_{size}.pkl'
             assert isfile(join(fpath, fhead)), f"Need a head '{fhead}'"
             fdata = join(fpath, f'data.{batch_id}_{epoch}.pkl')
-            data = IOData(offset, length, word, old_tag, label, right, trees,
+            data = IOData(offset, length, token, old_tag, label, right, trees,
                         segment, seg_length, mpc_word, mpc_phrase,
                         batch_warnings, idv, tag_score, label_score, split_score, smy)
             pickle_dump(fdata, data)
@@ -534,13 +539,13 @@ if desktop:
                     head = fpath.join(heads[i])
                     bid, num_word = (int(i) for i in heads[i][5:-4].split('_'))
                     head = pickle_load(head)
-                    if head.tag is None:
+                    if head.tag is None and head.label is not None:
                         neg_set = set(self._vocabs[0].label.index(i) for i in '01')
                         pos_set = set(self._vocabs[0].label.index(i) for i in '34')
                             
                     sentbox.delete(0, END)
-                    for sid, (offset, length, words) in enumerate(zip(head.offset, head.length, head.word)):
-                        if head.tag is None:
+                    for sid, (offset, length, words) in enumerate(zip(head.offset, head.length, head.token)):
+                        if head.tag is None and head.label is not None:
                             negation = any(i in head.label[sid] for i in pos_set) and any(i in head.label[sid] for i in neg_set)
                         else:
                             negation = False
@@ -549,10 +554,11 @@ if desktop:
                         # if warning_cnt:
                         #     mark += " ◌•▴⨯"[warning_level(warning_cnt)]
                         mark += '\t'
-                        sentbox.insert(END, mark + ' '.join(self._vocabs.word[idx] for idx in words[offset:offset + length]))
+                        tokens = ('' if head.label is None else ' ').join(self._vocabs.token[idx] for idx in words[offset:offset + length])
+                        sentbox.insert(END, mark + tokens)
 
                     head_ = []
-                    if head.segment is None:
+                    if head.segment is None and head.label is not None: # depend on task
                         sample_gen = (inf_none_gen if h is None else h for h in head)
                         for sample in zip(*sample_gen):
                             values = []
@@ -585,6 +591,7 @@ if desktop:
                         for sample in zip(*sample_gen):
                             values = dict(zip(IOHead._fields, sample))
                             for field in ('label', 'right'):
+                                # if values[field] 
                                 values[field] = inflate(trapezoid_to_layers(values[field], head.segment, values['seg_length']))
                             values['segment'] = head.segment
                             head_.append(IOHead(**values))
@@ -925,10 +932,10 @@ if desktop:
                 stats = phrase = tuple(l if l is None else LayerMPCStat(l) for l in layers)
             if mpc_word is not None:
                 mpc_all = np.concatenate([mpc_word, mpc_phrase])
-                word = LayerMPCStat(mpc_word)
-                stats = (word,) + phrase
+                token = LayerMPCStat(mpc_word)
+                stats = (token,) + phrase
             else:
-                word = None
+                token = None
 
             self._min_all = xmax = np.min(mpc_all, 0)
             self._max_all = xmin = np.max(mpc_all, 0)
@@ -953,7 +960,7 @@ if desktop:
             self._max_val = xmax
 
             self._stats  = stats
-            self._word   = word
+            self._word   = token
             self._phrase = phrase
             self._xy_dim = None
             self._cache  = {}
@@ -994,7 +1001,7 @@ if desktop:
             self._cache[key] = self._word, self._phrase
 
         @property
-        def word(self):
+        def token(self):
             if self._word:
                 return self._word
             return self._phrase[0]
@@ -1184,7 +1191,7 @@ if desktop:
             deco_dy = deco_dx * static_settings.yx_ratio
             upper_padding = max(half_word_height, static_settings.line_width / 2)
             canvas_width  = num_word * static_settings.word_width
-            canvas_height = (num_word + 2) * (static_settings.word_height + line_dy) + upper_padding # +2 for word and tag layer
+            canvas_height = (num_word + 2) * (static_settings.word_height + line_dy) + upper_padding # +2 for token and tag layer
             stat_paddings = (28, 10, 22)
             bcfg = num_word, half_word_width, half_word_height, line_dx, line_dy, deco_dx, deco_dy, upper_padding, canvas_width, canvas_height, ('helvetica', 10)
             self._frame_geometry = FrameGeometry(*(static_settings + bcfg + stat_paddings))
@@ -1441,7 +1448,7 @@ if desktop:
                 x = self._conf.word_width * self._head.offset
                 w = self._conf.word_width * self._head.length
 
-                n = self._conf.num_word - self._head.length # for word and tag layers
+                n = self._conf.num_word - self._head.length # for token and tag layers
                 l = self._conf.word_height + self._conf.line_dy
                 if self._conf.delta_shape:
                     y = n * l
@@ -1628,8 +1635,8 @@ if desktop:
             else:
                 height = line_dy
                 xlab = True
-            sci = _scatter(offy = bottom_offy, stat = stat.word, offset_length = bottom_offset_length, height = bottom_height, xlab = True, ylab = True, clab = not xlab).items()
-            hcp = _histo  (offy = bottom_offy, stat = stat.word, offset_length = bottom_offset_length, height = bottom_height, xlab = True).items()
+            sci = _scatter(offy = bottom_offy, stat = stat.token, offset_length = bottom_offset_length, height = bottom_height, xlab = True, ylab = True, clab = not xlab).items()
+            hcp = _histo  (offy = bottom_offy, stat = stat.token, offset_length = bottom_offset_length, height = bottom_height, xlab = True).items()
             for (i, it), (j, ip) in zip(sci, hcp):
                 ip = ip + histo_offset, bottom_offy, bottom_height
                 scatter_coord_item  [('w', i)] = it
@@ -1666,14 +1673,14 @@ if desktop:
             line_dy = -self._conf.line_dy
             # line_xy = self._conf.line_dx / self._conf.line_dy
             line_ldx = self._conf.word_height / self._conf.yx_ratio
-            word_center     = self._conf.half_word_height + self._conf.offset_y    # >--- word ---<
-            level_unit      = self._conf.word_height + self._conf.line_dy            # word lines
+            word_center     = self._conf.half_word_height + self._conf.offset_y    # >--- token ---<
+            level_unit      = self._conf.word_height + self._conf.line_dy            # token lines
             tag_label_center  = word_center + level_unit                        # >--- tag label ---<
-            tag_label_line_bo = 2 * level_unit            + self._conf.offset_y # word lines tag lines
+            tag_label_line_bo = 2 * level_unit            + self._conf.offset_y # token lines tag lines
             line_width = self._conf.line_width
             r = line_width // 2
             text_offy = 0 #2
-            w_p_s = self._conf.word_height + self._conf.offset_y, level_unit + self._conf.offset_y, level_unit + self._conf.word_height + self._conf.offset_y # word >--> tag >--> label
+            w_p_s = self._conf.word_height + self._conf.offset_y, level_unit + self._conf.offset_y, level_unit + self._conf.word_height + self._conf.offset_y # token >--> tag >--> label
             decorate = isinstance(line_width, int) and line_width % 2 == 0
             deco_dx = 0 if decorate else self._conf.deco_dx
             deco_dy = 0 if decorate else self._conf.deco_dy
@@ -1688,7 +1695,7 @@ if desktop:
                 tag_label_line_bo  = self._conf.canvas_height - tag_label_line_bo
                 w_p_s = tuple(self._conf.canvas_height - b for b in w_p_s)
                                
-            for i, w in enumerate(head.word):
+            for i, w in enumerate(head.token):
                 if not self._conf.show_paddings and not (head.offset <= i < head.offset + head.length):
                     continue
 
@@ -1701,11 +1708,11 @@ if desktop:
                     wbox = (left_x, 0       )
                     pbox = (left_x, w_p_s[1])
 
-                word_color = to_color(1.0 if apply_dash else stat.word[i])
-                word = vocabs.word[w]
+                word_color = to_color(1.0 if apply_dash else stat.token[i])
+                token = vocabs.token[w]
 
                 if data.tag is None:
-                    elems = [board.create_text(center_x, tag_label_center, text = word, font = (font_name, font_size),
+                    elems = [board.create_text(center_x, tag_label_center, text = token, font = (font_name, font_size),
                                                fill = word_color, tags = ('elems', 'node'))]
                     elems.append(board.create_line(center_x,  w_p_s[2],
                                                    center_x,  tag_label_line_bo,
@@ -1714,7 +1721,7 @@ if desktop:
                                                    tags = ('elems', 'line')))
                     board_item_coord[pbox] = elems, ('p', i)
                 else:
-                    node = board.create_text(center_x, word_center + text_offy, text = word, font = (font_name, font_size),
+                    node = board.create_text(center_x, word_center + text_offy, text = token, font = (font_name, font_size),
                                              fill = word_color, tags = ('elems', 'node'))
                     line = board.create_line(center_x,  w_p_s[0],
                                              center_x,  w_p_s[1],
@@ -1734,7 +1741,7 @@ if desktop:
                     board_item_coord[wbox] = elems, ('w', i)
                     tp = head.tag[i]
                     pp = data.tag[i]
-                    # print(len(stat.tag), len(stat.word), len(stat.phrase[0])) shorter??
+                    # print(len(stat.tag), len(stat.token), len(stat.phrase[0])) shorter??
                     tag_color = to_color(data.tag_score if apply_dash else stat.tag[i] if i < len(stat.tag) else (0,0,0))
                     node = board.create_text(center_x, tag_label_center + text_offy,
                                              fill = tag_color, font = (font_name, font_size if apply_dash else round_int(font_size * data.tag_score[i])),
