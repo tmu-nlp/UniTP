@@ -196,3 +196,17 @@ def release_left(base, seq_idx):
         left = torch.zeros(batch_size, 1, dtype = base.dtype, device = base.device)
     base = torch.cat([left, base], dim = 1)
     return base.gather(1, seq_idx) # all non-dump index > 0
+
+def shuffle_some_from(new_size, base, existence):
+    buffer = base.masked_select(existence).reshape(-1, base.shape[-1])
+    buffer_size = buffer.shape[0]
+    indices = torch.randint(high = buffer_size, size = (new_size,), device = base.device)
+    some = torch.index_select(buffer, 0, indices)
+
+    batch_ids = torch.where(existence)[0]
+    batch_ids = torch.index_select(batch_ids, 0, indices)
+
+    continuous = indices[1:] - indices[:-1] == 1
+    continuous &= batch_ids[1:] == batch_ids[:-1]
+
+    return some, continuous

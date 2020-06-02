@@ -165,6 +165,36 @@ def check_vocab(fname, expected_size = None):
         return False
     return True
 
+from random import randint
+class SourcePool:
+    def __init__(self, src, rand = False):
+        if rand:
+            bound = len(src) - 1
+        else:
+            bound = 0, len(src)
+        self._src_b = src, bound
+
+    def __call__(self):
+        src, bound = self._src_b
+        if isinstance(bound, int):
+            return src[randint(0, bound)]
+        idx, bound = bound
+        ctt = src[idx]
+        idx += 1
+        if idx == bound:
+            idx = 0
+        self._src_b = src, (idx, bound)
+        return ctt
+
+def distribute_jobs(jobs, num_workers):
+    workers = [[] for i in range(num_workers)]
+    pool = SourcePool(workers)
+    for fileid in jobs:
+        worker = pool()
+        worker.append(fileid)
+    del pool
+    return workers
+
 def exam_trace_mark(pickle_to = None):
     from nltk.corpus import treebank as ptb
     unary_trans = defaultdict(Counter)

@@ -99,10 +99,13 @@ class Recorder:
         print(*args, **kwargs, file = stderr, flush = True)
 
     def task_specs(self):
+        from utils.param_ops import HParams
         specs = load_yaml(*self._sv_file_lock, wait_lock = False)
-        _, model_type = self._module.get_configs()
+        _, model_type, train_type = self._module.get_configs()
         model_config = get_obj_from_config(model_type, specs['model'])
-        return specs['data'], model_config, specs['results']
+        train_config = get_obj_from_config(train_type, specs['train'])
+        train_config = HParams(train_config)
+        return specs['data'], model_config, train_config, specs['results']
 
     def create_join(self, *args):
         _, instance_dir = self._instance_dir

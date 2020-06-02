@@ -43,26 +43,7 @@ call_fasttext = make_call_fasttext(ft_bin)
 
 from nltk.tree import Tree
 from tempfile import TemporaryDirectory
-from random import randint
-class SourcePool:
-    def __init__(self, src, rand = False):
-        if rand:
-            bound = len(src) - 1
-        else:
-            bound = 0, len(src)
-        self._src_b = src, bound
-
-    def __call__(self):
-        src, bound = self._src_b
-        if isinstance(bound, int):
-            return src[randint(0, bound)]
-        idx, bound = bound
-        ctt = src[idx]
-        idx += 1
-        if idx == bound:
-            idx = 0
-        self._src_b = src, (idx, bound)
-        return ctt
+from data.io import SourcePool, distribute_jobs
 
 class CorpusReader:
     def __init__(self, path):
@@ -199,10 +180,10 @@ def build(save_to_dir,
     class WorkerX(Process):
         def __init__(self, *args):
             Process.__init__(self)
-            self._tid_q_reader_fns = args
+            self._args = args
 
         def run(self):
-            q, reader, fns, get_id = self._tid_q_reader_fns[1:]
+            q, reader, fns, get_id = self._args
             inst_cnt   = 0
             unary_cnt  = defaultdict(list)
             train_length_cnt = defaultdict(int)
@@ -261,15 +242,10 @@ def build(save_to_dir,
             q.put((inst_cnt, unary_cnt, train_length_cnt, valid_length_cnt, test_length_cnt, lrcs))
 
     num_threads = min(num_threads, len(corpus))
-    workers = [[] for i in range(num_threads)]
-    pool = SourcePool(workers)
+    workers = distribute_jobs(corpus, num_threads)
     q = Queue()
-    for fileid in corpus:
-        worker = pool()
-        worker.append(fileid)
-    del pool
     for i in range(num_threads):
-        w = WorkerX(i, q, reader, workers[i])
+        w = WorkerX(q, reader, workers[i], get_id)
         w.start()
         workers[i] = w
 

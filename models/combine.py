@@ -29,6 +29,11 @@ class Add(nn.Module):
         super().__init__()
 
     def forward(self, rightwards, embeddings, existences):
+        if existences is None:
+            assert rightwards is None
+            lw_emb = embeddings[1:]
+            rw_emb = embeddings[:-1]
+            return self.compose(lw_emb, rw_emb, None)
         if rightwards is None:
             lw_emb = embeddings[:,  1:]
             rw_emb = embeddings[:, :-1]
@@ -163,7 +168,7 @@ class Interpolation(Add):
         self._compose = _compose
 
     def compose(self, lw_emb, rw_emb, is_jnt):
-        if self._use_condenser and is_jnt.shape[1] > 1:
+        if self._use_condenser and is_jnt is not None and is_jnt.shape[1] > 1:
             helper = condense_helper(is_jnt.squeeze(dim = 2), as_existence = True)
             cds_lw, seq_idx = condense_left(lw_emb, helper, get_indice = True)
             cds_rw          = condense_left(rw_emb, helper)

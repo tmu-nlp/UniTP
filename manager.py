@@ -13,7 +13,7 @@ from utils.file_io import create_join, DelayedKeyboardInterrupt
 from utils.types import valid_size, fill_placeholder
 from utils.param_ops import zip_nt_params, unzip_nt_params, iter_zipped_nt_params, change_key, dict_print
 from utils.str_ops import strange_to
-from utils.shell_io import call_fasttext
+from utils.shell_io import call_fasttext, byte_style
 from collections import defaultdict
 from datetime import datetime
 from data.penn_types import E_PENN, C_ABSTRACT
@@ -54,9 +54,10 @@ def _new_status():
     for module_name in experiments.types:
         m = importlib.import_module(f'experiments.{module_name}')
         t = {}
-        data_type, model_type = m.get_configs()
+        data_type, model_type, train_type = m.get_configs()
         t['data']  = zip_nt_params((k,v.default) for k,v in iter_zipped_nt_params(data_type))
         t['model'] = zip_nt_params((k,v.default) for k,v in iter_zipped_nt_params(model_type))
+        t['train'] = zip_nt_params((k,v.default) for k,v in iter_zipped_nt_params(train_type))
         module_name = module_name[2:]
         task_status[module_name] = t
         exp_modules[module_name] = m
@@ -220,7 +221,7 @@ class Manager:
         if verbose:
             print('data:', file = sys.stderr)
             for data, msg in verbose.items():
-                print(data.rjust(15), '; '.join(msg) + '.', file = sys.stderr)
+                print(data.rjust(15), byte_style('; '.join(msg), '1') + '.', file = sys.stderr)
         if modified:
             # reload for consistency, update only modified data
             file_status = load_yaml(*self._mfile_lfile)
@@ -243,7 +244,7 @@ class Manager:
 
         for module_name, task_config in status['task'].items():
             m = self._exp_modules[module_name]
-            data_type, model_type = m.get_configs()
+            data_type, model_type, train_type = m.get_configs()
             data_config = task_config['data']
             errors = []
 
@@ -264,7 +265,11 @@ class Manager:
             for k, mnp, unp in iter_zipped_nt_params(model_type, task_config['model']):
                 if not mnp.validate(unp): #( or isinstance(unp, int) and mnp.is_valid(mnp[unp])):
                     errors.append(f'Invalid model_config: {k} = {unp}')
-            
+
+            for k, mnp, unp in iter_zipped_nt_params(train_type, task_config['train']):
+                if not mnp.validate(unp):
+                    errors.append(f'Invalid train_config: {k} = {unp}')
+                    
             if errors:
                 verbose[module_name] = errors
             else:
@@ -273,7 +278,7 @@ class Manager:
         if verbose:
             print('task:', file = sys.stderr)
             for task_name, msg in verbose.items():
-                print(task_name.rjust(15), '; '.join(msg) + '.', file = sys.stderr)
+                print(task_name.rjust(15), byte_style('; '.join(msg) + '.', '1'), file = sys.stderr)
 
         return ready_dpaths, ready_tasks, status
 
@@ -293,6 +298,8 @@ class Manager:
         op_code, exp_ids = check_instances_operation(args.instance)
         assert op_code in (None, False, 'r', 'd'), f'Unknown operation {op_code}, neither [r]esume or [d]elete'
         
+        assert task in self._exp_modules, f'No such task module {task} in [' + ', '.join(self._exp_modules.keys()) + ']'
+        assert task in ready_tasks, f'No such ready task_spec {task} in [' + ', '.join(ready_paths.keys()) + ']'
         module = self._exp_modules[task]
         task_spec = ready_tasks[task]
         data_config = task_spec['data']

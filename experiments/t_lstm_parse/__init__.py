@@ -3,17 +3,17 @@ from data.penn_types import C_ABSTRACT, parsing_config, select_and_split_corpus
 from utils.types import M_TRAIN, M_DEVEL, M_TEST
 from utils.param_ops import HParams, get_sole_key
 
-from experiments.t_lstm_parse.model import PennRnnTree, lstm_penn_tree_config
-from experiments.t_lstm_parse.operator import PennOperator
+from experiments.t_lstm_parse.model import PennRnnTree, model_type
+from experiments.t_lstm_parse.operator import PennOperator, train_type
 
 require_source_path = False
 
 get_any_penn = lambda ptb = None, ctb = None, ktb = None: ptb or ctb or ktb
 def get_configs(recorder = None):
     if recorder is None:
-        return {C_ABSTRACT: parsing_config}, lstm_penn_tree_config
+        return {C_ABSTRACT: parsing_config}, model_type, train_type
     
-    data_config, model_config, _ = recorder.task_specs()
+    data_config, model_config, train_config, _ = recorder.task_specs()
     penn = HParams(get_any_penn(**data_config), fallback_to_none = True)
     train_cnf     = penn.binarization._nested
     non_train_cnf = {max(train_cnf, key = lambda x: train_cnf[x]): 1}
@@ -49,7 +49,7 @@ def get_configs(recorder = None):
 
     model = PennRnnTree(**model_config, **task_params)
     model.to(reader.device)
-    return  PennOperator(model, get_datasets, recorder, reader.i2vs, recorder.evalb)
+    return PennOperator(model, get_datasets, recorder, reader.i2vs, recorder.evalb, train_config)
         
 # def get_datasets_for_tagging(ptb = None, ctb = None, ktb = None):
 #     if not (ptb or ctb or ktb):

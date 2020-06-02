@@ -26,7 +26,7 @@ class TriangularDataset(LengthOrderedDataset):
 
         columns = {}
         heads = set()
-        if 'label' in field_v2is:
+        if 'label' in field_v2is or 'polar' in field_v2is:
             field_v2is = field_v2is.copy()
             field_v2is['xtype'] = (len(E_XDIM), int)
 
@@ -40,6 +40,9 @@ class TriangularDataset(LengthOrderedDataset):
                 else:
                     column = read_data(dir_join(f'{prefix}.{field}'), v2i, False)
                 columns[field] = column
+            elif factors is None:
+                with tqdm(total = len(lengths), desc = f'Load Dataset {prefix}.{field}') as qbar:
+                    columns[field] = read_data(dir_join(f'{prefix}.{field}'), v2i, qbar = qbar)
             else:
                 for factor, prob in factors.items():
                     with tqdm(total = len(lengths), desc = f'Load Dataset {prefix}.{field}.{factor}') as qbar:
@@ -58,10 +61,10 @@ class TriangularDataset(LengthOrderedDataset):
     def at_idx(self, idx, factor, length):
         sample = {}
         for field, column in self._columns.items():
-            if field in fields:
-                sample[field]    = column[idx]
-            elif field[1] == factor:
+            if isinstance(field, tuple) and field[1] == factor:
                 sample[field[0]] = column[idx]
+            else:
+                sample[field]    = column[idx]
         sample['length'] = length
         return sample
 
@@ -69,7 +72,7 @@ class TriangularDataset(LengthOrderedDataset):
         dtype = np.int32
         field_columns = {}
         paddings, device = self._paddings_device
-        
+
         for field, column in zip(self.heads, zip(*batch)):
             if field == 'length':
                 batch_size = len(column)
@@ -94,14 +97,17 @@ class TriangularDataset(LengthOrderedDataset):
                 tensor = column, np.zeros([batch_size, tri_len], dtype)
             field_columns[field] = tensor
 
-        if 'label' in field_columns and 'xtype' in field_columns:
-            paddings = paddings['label'] + paddings['xtype'] if paddings else None
-            label, label_tensor = field_columns['label']
+        if 'xtype' in field_columns: # 'label' or 'polar' in field_columns and 
+            _label_ = 'label' if 'label' in field_columns else 'polar'
+            paddings = paddings[_label_] + paddings['xtype'] if paddings else None
+            label, label_tensor = field_columns[_label_]
             xtype, xtype_tensor = field_columns['xtype']
             for offset, l, lt, x, xt in zip(offsets, label, label_tensor, xtype, xtype_tensor):
                 write_tensors(l, x, lt, xt, offset, paddings)
-            field_columns['label'] = label_tensor
+            field_columns[_label_] = label_tensor
             field_columns['xtype'] = xtype_tensor
+            if _label_ == 'label':
+                field_columns['top3_label'] = np.stack([np.asarray(x[:3], dtype) for x in label])
 
         for f, column in field_columns.items():
             field_columns[f] = torch.as_tensor(column, dtype = (None if f == 'xtype' else torch.long), device = device)

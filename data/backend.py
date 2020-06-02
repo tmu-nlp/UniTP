@@ -63,15 +63,21 @@ class _BaseReader:
                 s += f' {v[0]}(0)\n'
         return s
 
+from utils.param_ops import change_key
 class WordBaseReader(_BaseReader):
     def __init__(self,
                  vocab_dir,
                  vocab_size,
                  load_nil,
-                 i2vs, oovs):
+                 i2vs, oovs,
+                 extra_vocab):
         self._info = pickle_load(join(vocab_dir, 'info.pkl'))
         weights = get_fasttext(join(vocab_dir, 'word.vec'))
         paddings = {}
+        change_key(i2vs, 'word', 'token')
+        if extra_vocab:
+            token = i2vs['token']
+            token.extend(w for w in extra_vocab if w not in token)
         if vocab_size is None:
             if load_nil:
                 weights[0] = 0

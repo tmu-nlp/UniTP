@@ -3,7 +3,7 @@ from math import exp
 
 def warm_adam(model, base_lr = 0.001, wander_threshold = 0.15):
 
-    adam = optim.Adam(model.parameters(), betas = (0.9, 0.98), weight_decay = 5e-4)
+    adam = optim.Adam(model.parameters(), betas = (0.9, 0.98), weight_decay = 0.01, eps = 1e-6)
         
     def schedule_lr(epoch, wander_ratio):
         if wander_ratio < wander_threshold:

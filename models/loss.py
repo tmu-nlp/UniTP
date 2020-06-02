@@ -1,6 +1,8 @@
 import torch
 from torch.nn import functional as F
 
+original_cross_entropy = F.cross_entropy
+
 def cross_entropy(x_, y_, w_):
     b_, t_, c_ = x_.shape
     losses = F.cross_entropy(x_.view(-1, c_), y_.view(-1), reduction = 'none')

@@ -150,8 +150,8 @@ class CharDataset(LengthOrderedDataset):
             if field == 'length':
                 batch_size = len(column)
                 lengths = np.asarray(column, itype)
-                max_len = np.max(lengths)
-                offsets = (max_len - lengths) // 2
+                max_len = np.max(lengths) + 1
+                offsets = np.random.randint(max_len - lengths)
                 field_columns['offset'] = offsets
                 tensor = lengths
             elif field == 'noise_type':

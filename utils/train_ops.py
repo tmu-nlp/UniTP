@@ -1,15 +1,8 @@
-from utils.param_ops import iter_zipped_nt_params, zip_nt_params, change_key, dict_print
-from utils.yaml_io import load_yaml, save_yaml
-from utils.file_io import create_join, join, isfile, isdir, listdir, rm_rf, copy_with_prefix_and_rename
-
-from utils.types import BaseType, valid_size, false_type
-train_params = dict(max_epoch = BaseType(100, validator = valid_size),
-                    stop_at_nth_wander = BaseType(40, validator = valid_size),
-                    fine_validation_at_nth_wander = BaseType(2, validator = valid_size),
-                    fine_validation_each_nth_epoch = BaseType(5, validator = valid_size),
-                    test_with_validation = false_type)
-
+# from utils.param_ops import iter_zipped_nt_params, zip_nt_params, change_key, dict_print
+# from utils.yaml_io import load_yaml, save_yaml
+# from utils.file_io import create_join, join, isfile, isdir, listdir, rm_rf, copy_with_prefix_and_rename
 from utils.param_ops import HParams
+
 def train(train_params, operator):
     train_params = HParams(train_params)
     nth_wander = 0

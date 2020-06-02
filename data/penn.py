@@ -1,9 +1,8 @@
 from utils.types import fill_placeholder, M_TRAIN, M_DEVEL, M_TEST, E_ORIF, UNK, NIL, BOS, EOS
-from utils.param_ops import change_key
 from data.io import load_i2vs
 
 SUB = '_SUB'
-from data.backend import WordBaseReader, DataLoader, post_batch
+from data.backend import WordBaseReader, post_batch
 
 class PennReader(WordBaseReader):
     def __init__(self,
@@ -14,7 +13,8 @@ class PennReader(WordBaseReader):
                  load_ftags  = False,
                  nil_as_pads = True,
                  trapezoid_specs   = None,
-                 extra_text_helper = None):
+                 extra_text_helper = None,
+                 extra_vocab = None):
         self._load_options = load_label, load_ftags, trapezoid_specs, extra_text_helper
         vocabs = 'word tag'
         if load_label:
@@ -22,14 +22,13 @@ class PennReader(WordBaseReader):
             if load_ftags:
                 vocabs += ' ftag'
         i2vs = load_i2vs(vocab_dir, vocabs.split())
-        change_key(i2vs, 'word', 'token')
         oovs = {}
         if load_label and unify_sub:
             labels = [t for t in i2vs['label'] if t[0] not in '#_']
             oovs['label'] = len(labels)
             labels.append(SUB)
             i2vs['label'] = labels
-        super(PennReader, self).__init__(vocab_dir, vocab_size, nil_as_pads, i2vs, oovs)
+        super(PennReader, self).__init__(vocab_dir, vocab_size, nil_as_pads, i2vs, oovs, extra_vocab)
 
     def batch(self,
               mode,
@@ -64,7 +63,7 @@ class PennReader(WordBaseReader):
         else:
             from data.trapezoid.dataset import TrapezoidDataset
             tree_reader, get_fnames, _, data_splits, trapezoid_height = trapezoid_specs
-            len_sort_ds = TrapezoidDataset(trapezoid_height, tree_reader, get_fnames, data_splits[mode], **common_args)
+            len_sort_ds = TrapezoidDataset.from_penn(tree_reader, get_fnames, data_splits[mode], trapezoid_height, **common_args)
         return post_batch(mode, len_sort_ds, sort_by_length, bucket_length, batch_size)
 
 from utils.types import false_type, true_type

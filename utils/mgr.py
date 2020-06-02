@@ -21,23 +21,32 @@ def check_instances_operation(instance):
     exp_ids = strange_to(exp_ids, str) if exp_ids else [exp_ids]
     return op_code, exp_ids
 
-import re
 def check_train(train_str):
-    # >4/4|30:100!
-    train = {}
-    match = re.match(r'>(\d+)', train_str)
-    train['fine_validation_at_nth_wander'] = int(match.group(1)) if match else 5
+    # fv=4:30:4,max=100,!
+    train = dict(test_with_validation = False,
+                 fine_validation_at_nth_wander = 5,
+                 stop_at_nth_wander = 100,
+                 fine_validation_each_nth_epoch = 4,
+                 max_epoch = 200)
+    assert ' ' not in train_str
+    for group in train_str.split(',' if ',' in train_str else ';'):
+        if group.startswith('fv='):
+            group = [int(x) for x in group[3:].split(':')]
+            assert 1 <= len(group) <= 3
+            if group[0]:
+                train['fine_validation_at_nth_wander'] = group[0]
+            if len(group) > 1 and group[1]:
+                train['stop_at_nth_wander'] = group[1]
+            if len(group) > 2 and group[2]:
+                train['fine_validation_each_nth_epoch'] = group[2]
 
-    match = re.match(r'/(\d+)', train_str)
-    train['fine_validation_each_nth_epoch'] = int(match.group(1)) if match else 4
+        elif group.startswith('max='):
+            train['max_epoch'] = int(group[4:])
+    
+        elif group == '!':
+            train['test_with_validation'] = True
 
-    match = re.match(r'\|(\d+)', train_str)
-    train['stop_at_nth_wander'] = int(match.group(1)) if match else 100
-
-    match = re.match(r':(\d+)', train_str)
-    train['max_epoch'] = int(match.group(1)) if match else 200
-
-    match = re.match(r'\^(\d+)', train_str)
-    train['test_with_validation'] = bool('!' in train_str)
+        elif group:
+            raise ValueError('Unknown training param:' + group)
 
     return train

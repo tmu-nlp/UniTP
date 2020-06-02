@@ -1,17 +1,19 @@
 from data.penn import PennReader
 from data.penn_types import C_ABSTRACT, parsing_config, select_and_split_corpus
-from utils.types import M_TRAIN, M_DEVEL, M_TEST
+from utils.types import M_TRAIN, M_DEVEL, M_TEST, BaseType, frac_open_0
 from utils.param_ops import HParams, get_sole_key
 
 from experiments.t_xlnet_parse.model import XLNetPennTree, xlnet_penn_tree_config, XLNetDatasetHelper
-from experiments.t_lstm_parse.operator import PennOperator
+from experiments.t_lstm_parse.operator import PennOperator, train_type
 
 require_source_path = False
+train_type = train_type.copy()
+train_type['learning_rate'] = BaseType(1e-5, validator = frac_open_0)
 
 get_any_penn = lambda ptb = None, ctb = None: ptb or ctb
 def get_configs(recorder = None):
     if recorder is None:
-        return {C_ABSTRACT: parsing_config}, xlnet_penn_tree_config
+        return {C_ABSTRACT: parsing_config}, xlnet_penn_tree_config, train_type
     
     data_config, model_config, _ = recorder.task_specs()
     penn = HParams(get_any_penn(**data_config))
@@ -50,4 +52,4 @@ def get_configs(recorder = None):
 
     model = XLNetPennTree(**model_config, **task_params)
     model.to(reader.device)
-    return  PennOperator(model, get_datasets, recorder, reader.i2vs, recorder.evalb)
+    return  PennOperator(model, get_datasets, recorder, reader.i2vs, recorder.evalb, train_type)

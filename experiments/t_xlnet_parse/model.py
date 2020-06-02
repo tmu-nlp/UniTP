@@ -1,7 +1,7 @@
 from models.nccp import BaseRnnTree, penn_tree_config, torch, nn, Tensor
 from utils.types import word_dim, num_ctx_layer, frac_2, frac_4, BaseType
 
-E_SUB = S_LFT, S_AVG, S_SGT = 'leftmost average selfgate'.split()
+E_SUB = S_LFT, S_RGT, S_AVG, S_SGT = 'leftmost rightmost average selfgate'.split()
 subword_proc = BaseType(0, as_index = True, default_set = E_SUB)
 
 from models.backend import contextual_type, activation_type
@@ -59,12 +59,16 @@ class XLNetLeaves(nn.Module):
     def embedding_dim(self):
         return self._word_dim
 
-    def forward(self, word_idx, offset, xl_ids, xl_start):
-                              
-        with torch.no_grad():
+    def forward(self, word_idx, offset, xl_ids, xl_start, tune_xlnet):
+
+        if tune_xlnet:
             xl_hidden = self._xlnet_model(xl_ids)[0]
             xl_hidden = self._xlnet_dp(xl_hidden)
             # xl_hidden = xl_hidden[:, :-2] # Bad idea: git rid of some [cls][sep]
+        else:
+            with torch.no_grad():
+                xl_hidden = self._xlnet_model(xl_ids)[0]
+                xl_hidden = self._xlnet_dp(xl_hidden)
 
         def transform_dim(xl_hidden):
             word_hidden = self._to_word_emb(xl_hidden)
@@ -86,8 +90,12 @@ class XLNetLeaves(nn.Module):
                     word_hidden = word_gate * word_hidden[:, :, 1:-1]
             return word_hidden
 
-        if self._subword_proc == S_LFT:
-            helper = condense_helper(xl_start, as_existence = True, offset = offset, get_rid_of_last_k = 1)
+        if self._subword_proc in (S_LFT, S_RGT):
+            if self._subword_proc == S_RGT:
+                xl_pointer = xl_start
+            else:
+                xl_pointer = torch.cat([xl_start[:, 1:], torch.ones_like(xl_start[:, :1])], dim = 1)
+            helper = condense_helper(xl_pointer, as_existence = True, offset = offset, get_rid_of_last_k = 1)
             xl_hidden = condense_left(xl_hidden, helper, out_len = word_idx.shape[1])
             xl_base = transform_dim(xl_hidden) # use left most sub-word to save precious time!
         else:
@@ -126,9 +134,10 @@ class XLNetPennTree(BaseRnnTree):
 
     def forward(self,
                 word_idx,
-                offset, xl_ids, xl_start, **kw_args):
+                offset, xl_ids, xl_start, 
+                tune_xlnet, **kw_args):
         batch_size, batch_len = word_idx.shape
-        static, dynamic = self._input_layer(word_idx, offset, xl_ids, xl_start)
+        static, dynamic = self._input_layer(word_idx, offset, xl_ids, xl_start, tune_xlnet)
 
         if self._paddings:
             bottom_existence = torch.ones(batch_size, batch_len,
@@ -137,7 +146,7 @@ class XLNetPennTree(BaseRnnTree):
         else:
             bottom_existence = word_idx > 0
         base_returns = super().forward(dynamic, bottom_existence, **kw_args)
-        return (batch_size, batch_len, static, dynamic) + base_returns
+        return (batch_size, batch_len, static, dynamic, None) + base_returns
 
 model_key_name = 'xlnet-base-cased'
 _penn_to_xlnet = {'``': '"', "''": '"'}

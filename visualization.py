@@ -121,7 +121,7 @@ def set_data(fpath, batch_id, size, epoch,
         batch_warnings.append(warnings)
 
     if fpath:
-        if label is None:
+        if label is None: # unlabeled
             pickle_dump(join(fpath, f'data.{batch_id}_{epoch}.pkl'),
                         IOData(offset, length, token, None, None, right, trees,
                                segment, seg_length, mpc_word, mpc_phrase,
@@ -453,25 +453,25 @@ if desktop:
                 raise ValueError("'%s' is an invalid dir" % fpath.base)
 
             if 'summary.pkl' in fnames:
-                summary = pickle_load(fpath.join('summary.pkl'))
                 from math import isnan
-            else:
-                summary = {}
-            for h in heads:
-                fscores = []
-                bid = get_batch_id(h)
-                
+                summary = pickle_load(fpath.join('summary.pkl'))
+                summary_fscores = defaultdict(list)
                 for (batch_id, epoch), smy in summary.items():
-                    if batch_id == bid:
-                        if not isnan(smy['F1']):
-                            fscores.append(smy['F1'])
+                    if not isnan(smy['F1']):
+                        summary_fscores[batch_id].append(smy['F1'])
+            else:
+                summary_fscores = {}
 
-                if len(fscores) == 0:
-                    fscores = ''
-                elif len(fscores) == 1:
-                    fscores = f'  {fscores[0]}'
+            for h in heads:
+                bid = get_batch_id(h)
+
+                if bid in summary_fscores:
+                    if len(summary_fscores[bid]) == 1:
+                        fscores = f'  {summary_fscores[bid][0]}'
+                    else:
+                        fscores = f'  ≤{max(summary_fscores[bid])}'
                 else:
-                    fscores = f'  ≤{max(fscores)}'
+                    fscores = ''
                 headbox.insert(END, h[5:-4].replace('_', '.\t<') + fscores)
             self._fpath_heads = fpath, heads
             self._last_init_time = time()
@@ -554,7 +554,8 @@ if desktop:
                         # if warning_cnt:
                         #     mark += " ◌•▴⨯"[warning_level(warning_cnt)]
                         mark += '\t'
-                        tokens = ('' if head.label is None else ' ').join(self._vocabs.token[idx] for idx in words[offset:offset + length])
+                        tokens = '' if head.label is None else ' '
+                        tokens = tokens.join(self._vocabs.token[idx] for idx in words[offset:offset + length])
                         sentbox.insert(END, mark + tokens)
 
                     head_ = []
@@ -577,7 +578,7 @@ if desktop:
                                     data_      = []
                                     for sample in zip(*sample_gen):
                                         values = []
-                                        for field, value in zip(IOData._fields, sample):
+                                        for field, value in zip(IOData._fields, sample): # TODO: open for unsup?
                                             if value is not None and field in ('label', 'right', 'label_score', 'split_score'):
                                                 value = triangle_to_layers(value)
                                             values.append(value)
@@ -591,8 +592,8 @@ if desktop:
                         for sample in zip(*sample_gen):
                             values = dict(zip(IOHead._fields, sample))
                             for field in ('label', 'right'):
-                                # if values[field] 
-                                values[field] = inflate(trapezoid_to_layers(values[field], head.segment, values['seg_length']))
+                                if values[field] is not None: # trapezoids for supervised parsing
+                                    values[field] = inflate(trapezoid_to_layers(values[field], head.segment, values['seg_length']))
                             values['segment'] = head.segment
                             head_.append(IOHead(**values))
 
@@ -606,8 +607,10 @@ if desktop:
                                     for sample in zip(*sample_gen):
                                         values = dict(zip(IOData._fields, sample))
                                         for field in ('label', 'right', 'label_score', 'split_score'):
-                                            # if values[field]:
-                                            values[field] = inflate(trapezoid_to_layers(values[field], data.segment, values['seg_length']))
+                                            if field == 'label' and values[field] is None:
+                                                values[field] = values['label_score']
+                                            if values[field] is not None: # trapezoid for supervised parsing
+                                                values[field] = inflate(trapezoid_to_layers(values[field], data.segment, values['seg_length']))
                                         values['segment'] = data.segment
                                         sample = IOData(**values)
                                         stat = SentenceEnergy(num_word, sample.mpc_word, sample.mpc_phrase,
@@ -616,7 +619,6 @@ if desktop:
                                         data_.append((sample, stat))
                                     self._sent_cache[fname_time] = data_, data[-1]
                     self._selected = bid, num_word, head_
-
 
                 elif event.widget is sentbox:
                     bid, num_word, head = self._selected[:3]
@@ -717,6 +719,7 @@ if desktop:
                 return
 
             bid, num_word, head, sid = self._selected
+            # import pdb; pdb.set_trace()
             prefix = f"data.{bid}_"
             suffix = '.pkl'
             timeline = []
@@ -1346,8 +1349,9 @@ if desktop:
             
             _, time = self._head_time
             bid, epoch = time[tid][0][5:-4].split('_')
-            scores = '  '.join(i+f'({data.scores[j]})' for i, j in zip(('len.', 'P.', 'R.', 'tag.'), (1, 3, 4, 11)))
-            title = f'Batch: {bid} Epoch: {epoch} ' + scores
+            title = f'Batch: {bid} Epoch: {epoch} '
+            if data.scores is not None:
+                title += '  '.join(i+f'({data.scores[j]})' for i, j in zip(('len.', 'P.', 'R.', 'tag.'), (1, 3, 4, 11)))
             self._time_change_callback(title, epoch) # [(fname, data)]
 
         def navi_to(self, navi_char, steps = 0, num_frame = 24, duration = 1):
@@ -1771,7 +1775,9 @@ if desktop:
                         elems = elems + (sdot, edot)
                     board_item_coord[pbox] = elems, (0, i)
 
-            if vocabs.tag: # in both meanning: label and pol cate
+            if data.tag is None:
+                nil = None
+            elif vocabs.tag: # in both meanning: label and pol cate
                 nil = vocabs.label.index(NIL)
             else:
                 nil = -1
@@ -1793,7 +1799,7 @@ if desktop:
                 if label_layer is None:
                     if layer_tracker is None:
                         last_right = data.right[l - 1]
-                        last_exist = data.label[l - 1] > 0
+                        last_exist = data.label[l - 1] > 0 # TODO: unlabeled dtype is float
                         layer_tracker = []
                         for p, (lhr, rhr, lhe, rhe) in enumerate(zip(last_right, last_right[1:], last_exist, last_exist[1:])):
                             rw_relay = lhe and lhr
@@ -1816,13 +1822,17 @@ if desktop:
                     else:
                         label_color = mpc_color
 
-                    if self._conf.show_errors and head.label[l] is not None:
-                        ts = head.label[l][p]
-                        draw_error_box = ps != ts
-                        label_text = f'{vocabs.label[ps]}({vocabs.label[ts]})' if draw_error_box else f'{vocabs.label[ps]}'
+                    if issubclass(label_layer.dtype.type, np.integer):
+                        if self._conf.show_errors and head.label[l] is not None:
+                            ts = head.label[l][p]
+                            draw_error_box = ps != ts
+                            label_text = f'{vocabs.label[ps]}({vocabs.label[ts]})' if draw_error_box else f'{vocabs.label[ps]}'
+                        else:
+                            draw_error_box = False
+                            label_text = f'{vocabs.label[ps]}'
                     else:
                         draw_error_box = False
-                        label_text = f'{vocabs.label[ps]}' 
+                        label_text = f'{ps * 100:.1f}%'
                     
                     elems = [board.create_text(center_x, tag_label_center + text_offy,
                                                text = label_text,

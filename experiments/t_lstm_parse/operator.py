@@ -6,23 +6,30 @@ from data.delta import get_rgt, get_dir, s_index
 from data.penn_types import C_ABSTRACT
 from time import time
 from utils.math_ops import is_bin_times
-from utils.types import M_TRAIN
+from utils.types import M_TRAIN, BaseType, frac_open_0, true_type
 from models.utils import PCA, fraction, hinge_score
-from models.loss import binary_cross_entropy, hinge_loss
+from models.loss import binary_cross_entropy, hinge_loss, cross_entropy
 from experiments.helper import warm_adam
 
+
+train_type = dict(loss_weight = dict(tag    = BaseType(0.3, validator = frac_open_0),
+                                     label  = BaseType(0.1, validator = frac_open_0),
+                                     orient = BaseType(0.6, validator = frac_open_0)),
+                  learning_rate = BaseType(0.001, validator = frac_open_0),
+                  orient_hinge_loss = true_type)
+
 class PennOperator(Operator):
-    def __init__(self, model, get_datasets, recorder, i2vs, evalb):
+    def __init__(self, model, get_datasets, recorder, i2vs, evalb, train_config):
         super().__init__(model, get_datasets, recorder, i2vs)
         self._evalb = evalb
         self._sigmoid = nn.Sigmoid()
-        self._orient_hinge_loss = True
         self._mode_length_bins = None, None
+        self._train_config = train_config
 
     def _build_optimizer(self, start_epoch):
-        self._loss_weights_of_tag_label_orient = 0.3, 0.1, 0.6
+        # self._loss_weights_of_tag_label_orient = 0.3, 0.1, 0.6 betas = (0.9, 0.98), weight_decay = 0.01, eps = 1e-6
         self._writer = SummaryWriter(self.recorder.create_join('train'))
-        optim, schedule_lr = warm_adam(self._model)
+        optim, schedule_lr = warm_adam(self._model, self._train_config.learning_rate)
         self._schedule_lr = schedule_lr
         if start_epoch > 0:
             fpath = self.recorder.create_join('vis_devel')
@@ -33,6 +40,7 @@ class PennOperator(Operator):
         learning_rate = self._schedule_lr(epoch, wander_ratio)
         self._writer.add_scalar('Batch/Learning_Rate', learning_rate, self.global_step)
         self._writer.add_scalar('Batch/Epoch', epoch, self.global_step)
+        self._tune_xlnet = False # wander_ratio > 0.5
 
     def _step(self, mode, ds_name, batch, flush = True, batch_id = None):
         # assert ds_name == C_ABSTRACT
@@ -44,14 +52,15 @@ class PennOperator(Operator):
         if mode == M_TRAIN:
             batch['supervised_orient'] = gold_orients
             #(batch['offset'], batch['length'])
-            
-        (batch_size, batch_len, static, dynamic, layers_of_base, existences, orient_logits, tag_logits, label_logits,
-         trapezoid_info) = self._model(batch['token'], **batch)
+
+        (batch_size, batch_len, static, dynamic, top3_label_logits,
+         layers_of_base, _, existences, orient_logits, tag_logits, label_logits,
+         trapezoid_info) = self._model(batch['token'], tune_xlnet = self._tune_xlnet, **batch)
         batch_time = time() - batch_time
-        
+
         orient_logits.squeeze_(dim = 2)
         existences   .squeeze_(dim = 2)
-        if self._orient_hinge_loss:
+        if self._train_config.orient_hinge_loss:
             orients = orient_logits > 0
         else:
             orient_logits = self._sigmoid(orient_logits)
@@ -75,14 +84,17 @@ class PennOperator(Operator):
 
             tag_loss   = self._model.get_loss(tag_logits,   batch, None)
             label_loss = self._model.get_loss(label_logits, batch, height_mask)
-            if self._orient_hinge_loss:
+            if top3_label_logits is not None:
+                tag_loss += cross_entropy(top3_label_logits, batch['top3_label'], None)
+
+            if self._train_config.orient_hinge_loss:
                 orient_loss = hinge_loss(orient_logits, gold_orients, orient_weight)
             else:
                 orient_loss = binary_cross_entropy(orient_logits, gold_orients, orient_weight)
 
-            total_loss = (tag_loss, label_loss, orient_loss)
-            total_loss = zip(self._loss_weights_of_tag_label_orient, total_loss)
-            total_loss = sum(w * loss for w, loss in total_loss)
+            total_loss = self._train_config.loss_weight.tag * tag_loss
+            total_loss = self._train_config.loss_weight.label * label_loss + total_loss
+            total_loss = self._train_config.loss_weight.orient * orient_loss + total_loss
             total_loss.backward()
             # check = existences == (batch['xtype'] > 0)
             if flush:
@@ -106,19 +118,19 @@ class PennOperator(Operator):
                 if hasattr(self._model._input_layer, 'pca'):
                     if dynamic is not None: # even dynamic might be None, being dynamic is necessary to train a good model
                         mpc_token = self._model._input_layer.pca(static)
-                    mpc_label    = self._model._input_layer.pca(layers_of_base)
+                    mpc_label = self._model._input_layer.pca(layers_of_base)
                 else:
                     mpc_label = PCA(layers_of_base[:, -batch_len:].reshape(-1, layers_of_base.shape[2]))(layers_of_base)
 
                 tag_scores,   tags   = self._model.get_decision_with_value(tag_logits)
                 label_scores, labels = self._model.get_decision_with_value(label_logits)
-                if self._orient_hinge_loss: # otherwise with sigmoid
+                if self._train_config.orient_hinge_loss: # otherwise with sigmoid
                     hinge_score(orient_logits, inplace = True)
                 b_mpcs = (None if mpc_token is None else mpc_token.type(torch.float16), mpc_label.type(torch.float16))
                 b_scores = (tag_scores.type(torch.float16), label_scores.type(torch.float16), orient_logits.type(torch.float16))
             else:
-                tags    = self._model.get_decision(tag_logits  )
-                labels  = self._model.get_decision(label_logits)
+                tags   = self._model.get_decision(tag_logits  )
+                labels = self._model.get_decision(label_logits)
                 b_mpcs = (mpc_token, mpc_label)
                 b_scores = (None, None, None)
             b_size = (batch_len,)
@@ -149,6 +161,9 @@ class PennOperator(Operator):
             length_bins = devel_bins
             save_tensors = is_bin_times(int(float(epoch)) - 1)
             scores_of_bins = False
+
+        if hasattr(self._model._input_layer, "has_only_dynamic") and self._model._input_layer.has_only_dynamic:
+            self._model._input_layer.flush_pc()
 
         vis = PennVis(epoch,
                       self.recorder.create_join(folder),
@@ -253,7 +268,7 @@ class PennVis(BaseVis):
         # else check head.emm.pkl
         # make data.emmb.tree & concatenate to data.emm.tree
         # make data.emm.rpt
-        (size, h_offset, h_length, h_token, h_tag, h_label, h_right, 
+        (size, h_offset, h_length, h_token, h_tag, h_label, h_right,
          d_tag, d_label, d_right, mpc_token, mpc_label,
          tag_score, label_score, split_score) = batch
         d_trapezoid_info = None
@@ -261,21 +276,21 @@ class PennVis(BaseVis):
             segment, seg_length, d_segment, d_seg_length = trapezoid_info
             trapezoid_info = segment, seg_length
             d_trapezoid_info = d_segment, d_seg_length
-            
+
         if self._head_tree:
             bins = set_head(self._work_dir, batch_id,
                             size, h_offset, h_length, h_token, h_tag, h_label, h_right,
                             trapezoid_info,
                             self._i2vs, self._head_tree)
             self.length_bins |= bins
-        
+
         if self.length_bins is not None and self._scores_of_bins:
             bin_width = 10
         else:
             bin_width = None
-            
+
         fpath = self._work_dir if self.save_tensors else None
-        set_data(fpath, batch_id, size, self.epoch, 
+        set_data(fpath, batch_id, size, self.epoch,
                  h_offset, h_length, h_token, d_tag, d_label, d_right,
                  mpc_token, mpc_label,
                  tag_score, label_score, split_score,

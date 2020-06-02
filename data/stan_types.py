@@ -3,11 +3,21 @@ C_SSTB = 'sstb'
 build_params = {C_SSTB: {}}
 ft_bin = {C_SSTB: 'en'}
 
+from utils.types import false_type, true_type
+from utils.types import train_batch_size, train_max_len, train_bucket_len, vocab_size, trapezoid_height
+data_type = dict(vocab_size       = vocab_size,
+                 batch_size       = train_batch_size,
+                 max_len          = train_max_len,
+                 bucket_len       = train_bucket_len,
+                 sort_by_length   = false_type,
+                 nil_as_pads      = true_type,
+                 trapezoid_height = trapezoid_height)
+
 from data.io import make_call_fasttext, check_fasttext
-from utils.types import M_TRAIN, M_TEST, M_DEVEL, UNK, NIL
+from utils.types import M_TRAIN, M_TEST, M_DEVEL, UNK, NIL, num_threads
 call_fasttext = make_call_fasttext(ft_bin)
 
-__datasets__ = {'train': M_TRAIN, 'dev': M_DEVEL, 'test': M_TEST}
+split_files = {'train': M_TRAIN, 'dev': M_DEVEL, 'test': M_TEST}
 
 from nltk.tree import Tree
 from collections import Counter, defaultdict
@@ -19,7 +29,8 @@ from data.io import check_vocab, save_vocab, sort_count
 from sys import stderr
 from data.delta import DeltaX, lnr_order, xtype_to_logits
 
-def string_to_pol_word_syn(line):
+def string_to_word_polar_xtype(line):
+    line = line.replace(b'\\/', b'/').replace(b'\xc2\xa0', b'.').decode('utf-8')
     tree = Tree.fromstring(line)
     x    = DeltaX.from_stan(tree)
     polar, direc, _ = x.to_triangles()
@@ -27,57 +38,110 @@ def string_to_pol_word_syn(line):
     polar = tuple(p[0] if isinstance(p, list) else p for p in polar)
     return words, polar, direc
 
-def _build_one(from_file, syn_file, word_file, xty_file):
-    word_cnt = Counter()
-    syn_cnt  = Counter()
-    xty_cnt  = Counter()
-    len_cnt  = defaultdict(int)
-    with open(from_file, 'rb') as fr,\
-         open(syn_file,  'w', encoding = 'utf-8') as fs,\
-         open(word_file, 'w', encoding = 'utf-8') as fw,\
-         open(xty_file,  'w', encoding = 'utf-8') as fd:
-        for line in tqdm(fr, desc = from_file):
-            line = line.replace(b'\\/', b'/').replace(b'\xc2\xa0', b'.').decode('utf-8')
-            words, polar, direc = string_to_pol_word_syn(line) # terrible sign
-            word_cnt += Counter(words)
-            syn_cnt  += Counter(polar)
-            xty_cnt  += Counter(direc)
-            direc = tuple(xtype_to_logits(x) for x in direc)
-            fw.write(' '.join(words) + '\n')
-            fs.write(' '.join(polar) + '\n')
-            fd.write(' '.join(direc) + '\n')
-            len_cnt[len(words)] += 1
-    return word_cnt, syn_cnt, xty_cnt, len_cnt
-
 def build(save_to_dir, stree_path, corp_name, verbose = True, **kwargs):
-    assert corp_name == 'sstb'
+    assert corp_name == C_SSTB
 
-    info = {}
-    tok_cnt, syn_cnt, xty_cnt = Counter(), Counter(), Counter()
-    for src, dst in __datasets__.items():
-        from_file = join(stree_path,  f'{src}.txt')
-        word_file = join(save_to_dir, f'{dst}.word')
-        syn_file  = join(save_to_dir, f'{dst}.polar')
-        xty_file  = join(save_to_dir, f'{dst}.xtype')
-        x = _build_one(from_file, syn_file, word_file, xty_file)
-        if dst == M_TRAIN:
-            train_cnt = x[0]
-        tok_cnt += x[0]
-        syn_cnt += x[1]
-        xty_cnt += x[2]
-        info[dst] = x[3]
+    jobs = []
+    for src, dst in split_files.items():
+        with open(join(stree_path, f'{src}.txt'), 'rb') as fr:
+            for line in fr:
+                jobs.append((line, dst))
+            
+    from data.io import distribute_jobs
+    from multiprocessing import Process, Queue
+    from utils.types import num_threads
+    num_threads = min(num_threads, len(jobs))
+    workers = distribute_jobs(jobs, num_threads)
+    q = Queue()
+    class WorkerX(Process):
+        def __init__(self, *args):
+            Process.__init__(self)
+            self._q_jobs = args
+
+        def run(self):
+            q, jobs = self._q_jobs
+            len_cnts = {}
+            tok_cnt, pol_cnt, xty_cnt = Counter(), Counter(), Counter()
+            for line, dst in jobs:
+                token, polar, xtype = string_to_word_polar_xtype(line) # terrible sign
+                tok_cnt += Counter(token)
+                pol_cnt += Counter(polar)
+                xty_cnt += Counter(xtype)
+                xtype = tuple(xtype_to_logits(x) for x in xtype)
+                instance = token, polar, xtype, dst
+                q.put(instance)
+                if dst not in len_cnts:
+                    len_cnts[dst] = Counter()
+                len_cnts[dst][len(token)] += 1
+            summary = tok_cnt, pol_cnt, xty_cnt, len_cnts, dst
+            q.put(summary)
+
+    for i in range(num_threads):
+        w = WorkerX(q, workers[i])
+        w.start()
+        workers[i] = w
+
+    train_tok_cnt = thread_join_cnt = 0
+    tok_cnt, pol_cnt, xty_cnt = Counter(), Counter(), Counter()
+    len_cnts = {dst: Counter() for dst in split_files.values()}
+    from contextlib import ExitStack
+    from itertools import count
+    from time import sleep
+    with ExitStack() as stack, tqdm(desc = f'  Receiving samples from {num_threads} threads', total = len(jobs)) as qbar:
+        ttf = stack.enter_context(open(join(save_to_dir, f'{M_TRAIN}.word'),  'w', encoding = 'utf-8'))
+        ptf = stack.enter_context(open(join(save_to_dir, f'{M_TRAIN}.polar'), 'w', encoding = 'utf-8'))
+        xtf = stack.enter_context(open(join(save_to_dir, f'{M_TRAIN}.xtype'), 'w', encoding = 'utf-8'))
+        tvf = stack.enter_context(open(join(save_to_dir, f'{M_DEVEL}.word'),  'w', encoding = 'utf-8'))
+        pvf = stack.enter_context(open(join(save_to_dir, f'{M_DEVEL}.polar'), 'w', encoding = 'utf-8'))
+        xvf = stack.enter_context(open(join(save_to_dir, f'{M_DEVEL}.xtype'), 'w', encoding = 'utf-8'))
+        t_f = stack.enter_context(open(join(save_to_dir, f'{M_TEST}.word'),   'w', encoding = 'utf-8'))
+        p_f = stack.enter_context(open(join(save_to_dir, f'{M_TEST}.polar'),  'w', encoding = 'utf-8'))
+        x_f = stack.enter_context(open(join(save_to_dir, f'{M_TEST}.xtype'),  'w', encoding = 'utf-8'))
+        for instance_cnt in count(): # Yes! this edition works fine!
+            if q.empty():
+                sleep(0.0001)
+            else:
+                t = q.get()
+                if len(t) == 4:
+                    token, polar, xtype, dst = t
+                    if dst == M_TRAIN:
+                        tf, pf, xf = ttf, ptf, xtf
+                    elif dst == M_DEVEL:
+                        tf, pf, xf = tvf, pvf, xvf
+                    else:
+                        tf, pf, xf = t_f, p_f, x_f
+                    tf.write(' '.join(token) + '\n')
+                    pf.write(' '.join(polar) + '\n')
+                    xf.write(' '.join(xtype) + '\n')
+                    qbar.update(1)
+                else: # summary
+                    thread_join_cnt += 1
+                    tc, pc, xc, lcs, dst = t
+                    if dst == M_TRAIN:
+                        train_tok_cnt += len(tc)
+                    tok_cnt += tc
+                    pol_cnt += pc
+                    xty_cnt += xc
+                    for _dst, lc in lcs.items():
+                        len_cnts[_dst] += lc
+                    if thread_join_cnt == num_threads:
+                        break
+
+    for dst, len_cnt in len_cnts.items():
         print(f'Length distribution in [ {dst.title()} set ]', file = stderr)
-        print(histo_count(x[3], bin_size = 10), file = stderr)
+        print(histo_count(len_cnt, bin_size = 10), file = stderr)
+    for w in workers:
+        w.join()
 
-    pickle_dump(join(save_to_dir, 'info.pkl'), info)
+    pickle_dump(join(save_to_dir, 'info.pkl'), len_cnts)
 
-    syn_file = join(save_to_dir, 'vocab.polar')
     tok_file = join(save_to_dir, 'vocab.word')
+    pol_file = join(save_to_dir, 'vocab.polar')
     xty_file = join(save_to_dir, 'vocab.xtype')
-    _, ts = save_vocab(tok_file, tok_cnt, [NIL, UNK] + sort_count(train_cnt))
-    _, ss = save_vocab(syn_file, syn_cnt, [NIL     ])
+    _, ts = save_vocab(tok_file, tok_cnt, [NIL])
+    _, ss = save_vocab(pol_file, pol_cnt, [NIL])
     _, dr = save_vocab(xty_file, xty_cnt, lnr_order(xty_cnt)[0])
-    return len(train_cnt), ts, ss, dr
+    return train_tok_cnt, ts, ss, dr
 
 def check_data(save_dir, valid_sizes):
     try:
@@ -95,8 +159,8 @@ def check_data(save_dir, valid_sizes):
     fname = join(save_dir, 'info.pkl')
     if res and isfile(fname):
         info = pickle_load(fname)
-        print('Total:', sum(sum(info[ds].values()) for ds in __datasets__.values()), file = stderr)
-        for ds in __datasets__.values():
+        print('Total:', sum(sum(info[ds].values()) for ds in split_files.values()), file = stderr)
+        for ds in split_files.values():
             print(f'Length distribution in [ {ds.title()} set ] ({sum(info[ds].values())})', file = stderr)
             print(histo_count(info[ds], bin_size = 10), file = stderr)
     

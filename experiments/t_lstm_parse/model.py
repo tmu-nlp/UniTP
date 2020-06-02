@@ -2,10 +2,10 @@ from models.backend import InputLeaves, Contextual, input_config, contextual_con
 from models.nccp import BaseRnnTree, penn_tree_config
 from utils.types import word_dim
 
-lstm_penn_tree_config = penn_tree_config.copy()
-lstm_penn_tree_config['model_dim']        = word_dim
-lstm_penn_tree_config['input_layer']      = input_config
-lstm_penn_tree_config['contextual_layer'] = contextual_config
+model_type = penn_tree_config.copy()
+model_type['model_dim']        = word_dim
+model_type['input_layer']      = input_config
+model_type['contextual_layer'] = contextual_config
 
 class PennRnnTree(BaseRnnTree):
     def __init__(self,
@@ -18,12 +18,13 @@ class PennRnnTree(BaseRnnTree):
                  **base_config):
         super().__init__(model_dim, **base_config)
         self._input_layer = InputLeaves(model_dim, num_tokens, initial_weights, **input_layer)
-        self._contextual_layer = Contextual(model_dim, **contextual_layer)
+        self._contextual_layer = Contextual(model_dim, self.hidden_dim, **contextual_layer)
 
     def forward(self, word_idx, **kw_args):
         batch_size, batch_len    = word_idx.shape
         static, bottom_existence = self._input_layer(word_idx)
-        dynamic      = self._contextual_layer(static)
+        dynamic, final_hidden    = self._contextual_layer(static)
         base_inputs  = static if dynamic is None else dynamic
         base_returns = super().forward(base_inputs, bottom_existence, **kw_args)
-        return (batch_size, batch_len, static, dynamic) + base_returns
+        top3_labels  = super().get_label(final_hidden) if final_hidden is not None else None
+        return (batch_size, batch_len, static, dynamic, top3_labels) + base_returns
