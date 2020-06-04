@@ -204,7 +204,7 @@ class Recorder:
 
             if optimizer is not None:
                 optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-            epoch, global_step, fine_validation = checkpoint['status']
+            epoch, fine_validation, global_step = checkpoint['status']
             self._key = checkpoint['key']
             
             print(f"Model restored from", model_fname, **self._print_args)
@@ -214,7 +214,7 @@ class Recorder:
             epoch = int(epoch)
             # for cleaner in self._cleaners: # vis
             #     cleaner(after = epoch)
-        return epoch, global_step, fine_validation
+        return epoch, fine_validation, global_step
 
     def check_betterment(self, epoch, falling, global_step, model, optimizer, key):
         specs = load_yaml(*self._sv_file_lock, wait_lock = False)

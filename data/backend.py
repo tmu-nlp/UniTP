@@ -11,20 +11,37 @@ BatchSpec = namedtuple('BatchSpec', 'size, iter')
 class _BaseReader:
     def __init__(self,
                  vocab_dir,
-                 i2vs, v2is,
+                 i2vs, oovs,
                  paddings,
                  **to_model):
         self._vocab_dir = vocab_dir
-        self._i2vs = HParams(i2vs)
-        self._v2is = v2is
         self._paddings = paddings
-        to_model.update({f'num_{k}s':v[0] for k,v in v2is.items()})
-        to_model['paddings'] = paddings
-        self._to_model = to_model
         self._device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+        to_model['paddings'] = paddings
+        self._to_model = {}
+        self._oovs = oovs
+        self.update(i2vs, **to_model)
         
     def dir_join(self, fname):
         return join(self._vocab_dir, fname)
+
+    def update(self, i2vs, **to_model):
+        i2vs, v2is = encapsulate_vocabs(i2vs, self._oovs)
+        self._i2vs = HParams(i2vs)
+        self._v2is = v2is
+        if to_model:
+            if self._to_model:
+                for k,v in self._to_model.items():
+                    if k not in to_model:
+                        to_model[k] = v # perserve old values
+            self._to_model = to_model
+        else:
+            to_model = self._to_model
+        to_model.update({f'num_{k}s':v[0] for k,v in v2is.items()})
+
+    def change_oovs(self, field, offset):
+        if field in self._oovs:
+            self._oovs[field] += offset
 
     @property
     def i2vs(self):
@@ -69,15 +86,11 @@ class WordBaseReader(_BaseReader):
                  vocab_dir,
                  vocab_size,
                  load_nil,
-                 i2vs, oovs,
-                 extra_vocab):
+                 i2vs, oovs):
+        change_key(i2vs, 'word', 'token')
         self._info = pickle_load(join(vocab_dir, 'info.pkl'))
         weights = get_fasttext(join(vocab_dir, 'word.vec'))
         paddings = {}
-        change_key(i2vs, 'word', 'token')
-        if extra_vocab:
-            token = i2vs['token']
-            token.extend(w for w in extra_vocab if w not in token)
         if vocab_size is None:
             if load_nil:
                 weights[0] = 0
@@ -112,21 +125,43 @@ class WordBaseReader(_BaseReader):
                 paddings['label'] = (num-2, num-1)
                 paddings['xtype'] = (xtype_to_logits('>s', False), xtype_to_logits('<s', False))
 
-        i2vs, v2is = encapsulate_vocabs(i2vs, oovs)
-
         if 'label' not in i2vs:
-            assert 'label' not in v2is
             assert 'ftag'  not in i2vs
-            assert 'ftag'  not in v2is
 
         if paddings:
             assert all(x in paddings for x in ('token', 'tag'))
             assert all(len(x) == 2 for x in paddings.values())
-        super().__init__(vocab_dir, i2vs, v2is, paddings, initial_weights = weights)
+        super().__init__(vocab_dir, i2vs, oovs, paddings, initial_weights = weights)
 
     @property
     def info(self):
         return self._info
+
+    def extend_vocab(self, extra_vocab, extra_weights):
+        i2vs = self._i2vs._nested
+        token = list(i2vs.pop('token'))
+        ext_token = []
+        ext_index = []
+
+        # TODO: check diff vocab settings
+        # checked: full+nil
+        # import pdb; pdb.set_trace()
+        for tid, tok in enumerate(extra_vocab):
+            if tok not in token and tok not in (NIL, BOS, EOS, UNK):
+                ext_index.append(tid)
+                ext_token.append(tok)
+
+        sep = len(token)
+        while token[sep - 1] in (UNK, EOS, UNK):
+            sep -= 1
+
+        i2vs['token'] = token[:sep] + ext_token + token[sep:]
+        weights = self.get_to_model('initial_weights')
+        weights = np.concatenate([weights, extra_weights[ext_index]])
+        self.change_oovs('token', len(ext_index))
+        self.update(i2vs, initial_weights = weights)
+        # import pdb; pdb.set_trace()
+        
 
 class SequenceBaseReader(_BaseReader):
     def __init__(self,

@@ -71,10 +71,11 @@ class SimplerLinear(Module):
 
 class GaussianCodebook(Module):
     __constants__ = ['bias', 'codebook' 'io_features']
-    def __init__(self, in_dim, num_codes, prefix_dims = 0):
+    def __init__(self, in_dim, num_codes, prefix_dims = 0, coeff = 0):
         super(GaussianCodebook, self).__init__()
 
         self.io_features = in_dim, num_codes
+        self._coeff = coeff
         size = [1 for _ in range(prefix_dims)]
         size += [in_dim, num_codes]
         self.codebook = Parameter(torch.Tensor(*size))
@@ -87,7 +88,11 @@ class GaussianCodebook(Module):
         diff = (x.unsqueeze(dim = 3) - self.codebook) ** 2
         return diff.mean(dim = -2) # [?...?, c]
 
-    def repulsion(self, coeff):
+    def repulsion(self, coeff = 0):
+        if coeff <= 0:
+            if self._coeff <= 0:
+                return 0
+            coeff = self._coeff
         in_dim, num_codes = self.io_features
         code = self.codebook.view(1, in_dim, num_codes)
         _code = code.transpose(0, 2)
@@ -109,6 +114,23 @@ class GaussianCodebook(Module):
         return 'in_dim={}, num_codes={}'.format(
             in_features, out_features
         )
+
+from torch.nn import Linear, Softmax, Softmin
+def get_logit_layer(logit_type):
+    if logit_type in ('affine', 'linear'):
+        Net = lambda i_size, o_size: Linear(i_size, o_size, bias = logit_type == 'affine')
+        argmax = True
+        score_fn = Softmax
+    elif logit_type.startswith('codebook'):
+        argmax = False
+        if '|' in logit_type:
+            bar = logit_type.index('|') + 1
+            repulsion = float(logit_type[bar:])
+        else:
+            repulsion = 0
+        score_fn = Softmin
+        Net = lambda i_size, o_size: GaussianCodebook(i_size, o_size, coeff = repulsion)
+    return Net, argmax, score_fn
 
 def bos_mask(seq_len, offset):
     mask = torch.arange(seq_len, device = offset.device)[None]

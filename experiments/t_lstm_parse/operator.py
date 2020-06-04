@@ -32,8 +32,9 @@ class PennOperator(Operator):
         optim, schedule_lr = warm_adam(self._model, self._train_config.learning_rate)
         self._schedule_lr = schedule_lr
         if start_epoch > 0:
-            fpath = self.recorder.create_join('vis_devel')
+            fpath = self.recorder.create_join('penn_devel')
             PennOperator.clean_and_report(fpath, start_epoch)
+        optim.zero_grad()
         return optim
 
     def _schedule(self, epoch, wander_ratio):
@@ -42,17 +43,15 @@ class PennOperator(Operator):
         self._writer.add_scalar('Batch/Epoch', epoch, self.global_step)
         self._tune_xlnet = False # wander_ratio > 0.5
 
-    def _step(self, mode, ds_name, batch, flush = True, batch_id = None):
-        # assert ds_name == C_ABSTRACT
-        if mode == M_TRAIN and flush:
-            self.optimizer.zero_grad()
+    def _step(self, mode, ds_name, batch, batch_id = None):
 
-        batch_time = time()
+        # assert ds_name == C_ABSTRACT
         gold_orients = get_rgt(batch['xtype'])
         if mode == M_TRAIN:
             batch['supervised_orient'] = gold_orients
             #(batch['offset'], batch['length'])
 
+        batch_time = time()
         (batch_size, batch_len, static, dynamic, top3_label_logits,
          layers_of_base, _, existences, orient_logits, tag_logits, label_logits,
          trapezoid_info) = self._model(batch['token'], tune_xlnet = self._tune_xlnet, **batch)
@@ -97,8 +96,6 @@ class PennOperator(Operator):
             total_loss = self._train_config.loss_weight.orient * orient_loss + total_loss
             total_loss.backward()
             # check = existences == (batch['xtype'] > 0)
-            if flush:
-                self.optimizer.step()
             gs = self.global_step
             self._writer.add_scalar('Accuracy/Tag',     1 - fraction(tag_mis,    tag_weight),   gs)
             self._writer.add_scalar('Accuracy/Label',   1 - fraction(label_mis,  label_weight), gs)
@@ -150,14 +147,14 @@ class PennOperator(Operator):
         devel_bins, test_bins = self._mode_length_bins
         if use_test_set:
             if final_test:
-                folder = 'vis_test'
+                folder = 'penn_test'
             else:
-                folder = 'vis_test_with_devel'
+                folder = 'penn_test_with_devel'
             save_tensors = True
             length_bins = test_bins
             scores_of_bins = True
         else:
-            folder = 'vis_devel'
+            folder = 'penn_devel'
             length_bins = devel_bins
             save_tensors = is_bin_times(int(float(epoch)) - 1)
             scores_of_bins = False
@@ -214,9 +211,9 @@ class PennOperator(Operator):
                 content = removed[0]
             else:
                 content = f'{len(removed)} files'
-            Operator.msg(f' [{start_epoch:.2f}:] {content} removed in folder vis_devel.')
+            Operator.msg(f' [{start_epoch:.2f}:] {content} removed in folder penn_devel.')
 
-        fpath = fpath.replace('vis_devel', 'vis_test_with_devel')
+        fpath = fpath.replace('penn_devel', 'penn_test_with_devel')
         if isdir(fpath):
             removed = remove_vis_data_from(fpath, start_epoch)
             if removed:
@@ -224,7 +221,7 @@ class PennOperator(Operator):
                     content = removed[0]
                 else:
                     content = f'{len(removed)} files'
-                Operator.msg(f' [{start_epoch:.2f}:] {content} removed in folder vis_test_with_devel.')
+                Operator.msg(f' [{start_epoch:.2f}:] {content} removed in folder penn_test_with_devel.')
 
 from utils.vis import BaseVis, VisRunner
 from utils.file_io import join, isfile, listdir, remove, isdir

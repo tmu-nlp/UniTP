@@ -5,6 +5,18 @@ from utils.math_ops import s_index
 from utils.types import BaseType, true_type, frac_4, frac_2
 from utils.types import orient_dim, num_ori_layer
 
+def valid_codebook(name):
+    if name.startswith('codebook'):
+        if '|' in name:
+            bar = name.index('|') + 1
+            try:
+                bar = float(name[bar:])
+            except:
+                return False
+        return bar >= 0
+    return False
+
+logit_type = BaseType('affine', default_set = ('affine', 'linear', 'codebook'), validator = valid_codebook)
 contextual_type = BaseType(0, as_index = True, as_exception = True, default_set = (nn.LSTM, nn.GRU))
 activation_type = BaseType(0, as_index = True, as_exception = True, default_set = (nn.ReLU, nn.ReLU6, nn.Softplus,# end == 0, nn.GELU
                                                                                    nn.LeakyReLU, nn.ELU, nn.CELU, nn.SELU, nn.RReLU, # end < 0

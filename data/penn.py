@@ -13,8 +13,7 @@ class PennReader(WordBaseReader):
                  load_ftags  = False,
                  nil_as_pads = True,
                  trapezoid_specs   = None,
-                 extra_text_helper = None,
-                 extra_vocab = None):
+                 extra_text_helper = None):
         self._load_options = load_label, load_ftags, trapezoid_specs, extra_text_helper
         vocabs = 'word tag'
         if load_label:
@@ -28,7 +27,7 @@ class PennReader(WordBaseReader):
             oovs['label'] = len(labels)
             labels.append(SUB)
             i2vs['label'] = labels
-        super(PennReader, self).__init__(vocab_dir, vocab_size, nil_as_pads, i2vs, oovs, extra_vocab)
+        super(PennReader, self).__init__(vocab_dir, vocab_size, nil_as_pads, i2vs, oovs)
 
     def batch(self,
               mode,

@@ -36,8 +36,6 @@ class TokenizerOperator(Operator):
 
     def _step(self, mode, ds_name, batch, flush = True, batch_id = None):
         # assert ds_name == C_ABSTRACT
-        if mode == M_TRAIN and flush:
-            self.optimizer.zero_grad()
 
         batch_time = time()
         token_ids, offset, length = (batch[key] for key in ('token', 'offset', 'length'))
@@ -66,8 +64,6 @@ class TokenizerOperator(Operator):
 
                 total_loss = validity_loss
                 total_loss.backward()
-                if flush:
-                    self.optimizer.step()
                 gs = self.global_step
                 self._writer.add_scalar(f'Accuracy/{ds_name.title()}/Validity', fraction(validity_match, existence),  gs)
                 self._writer.add_scalar(f'Loss/{ds_name.title()}/Validity', validity_loss, gs)
@@ -127,8 +123,6 @@ class TokenizerOperator(Operator):
                 alpha, beta, gamma = self._loss_weights
                 total_loss = alpha * valid_loss + beta * right_loss + gamma * bpe_loss
                 total_loss.backward()
-                if flush:
-                    self.optimizer.step()
                 gs = self.global_step
                 self._writer.add_scalar(f'Accuracy/{ds_name.title()}/Validity',    fraction(valid_match,            None), gs)
                 self._writer.add_scalar(f'Accuracy/{ds_name.title()}/Orientation', fraction(right_match, right_existence), gs)

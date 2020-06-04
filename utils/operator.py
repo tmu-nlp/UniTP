@@ -38,12 +38,12 @@ class Operator:
         train_icon, devel_icon = get_train_validation_pair()
         self._train_materials = self._get_datasets(M_TRAIN), train_icon
         self._validate_materials = self.get_materials(M_DEVEL), devel_icon
-        (epoch, global_step, fine_validation) = self._recorder.initial_or_restore(self._model)
+        (epoch, fine_validation, global_step) = self._recorder.initial_or_restore(self._model)
         self._optimizer = self._build_optimizer(epoch)
         self._global_step = global_step
         return epoch, fine_validation
 
-    def train_step(self, epoch_cnt, wander_ratio):
+    def train_step(self, epoch_cnt, wander_ratio, update_every_n_batch = 1):
         ds_specs, train_icon = self._train_materials
         ds_freqs = {dn: ds.size       for dn, ds in ds_specs.items()}
         ds_iters = {dn: iter(ds.iter) for dn, ds in ds_specs.items()}
@@ -58,6 +58,9 @@ class Operator:
                 # with torch.autograd.set_detect_anomaly(True):
                 self._schedule(epoch_cnt + qbar.n / qbar.total, wander_ratio)
                 num_samples, seq_len = self._step(M_TRAIN, ds_name, batch) # neural core
+                if self._global_step % update_every_n_batch == update_every_n_batch - 1:
+                    self._optimizer.step()
+                    self._optimizer.zero_grad()
 
                 # display
                 qbar.update(num_samples)

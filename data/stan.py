@@ -11,8 +11,7 @@ class StanReader(WordBaseReader):
                  nil_as_pads = True,
                  nil_is_neutral = True,
                  trapezoid_specs   = None,
-                 extra_text_helper = None,
-                 extra_vocab = None):
+                 extra_text_helper = None):
         i2vs = load_i2vs(vocab_dir, 'word polar'.split())
         oovs = {}
         if nil_is_neutral:
@@ -23,7 +22,7 @@ class StanReader(WordBaseReader):
             oovs['polar'] = 0
         else:
             assert i2vs['polar'][0] == NIL
-        super(StanReader, self).__init__(vocab_dir, vocab_size, nil_as_pads, i2vs, oovs, extra_vocab)
+        super(StanReader, self).__init__(vocab_dir, vocab_size, nil_as_pads, i2vs, oovs)
         self._load_options = trapezoid_specs, extra_text_helper
 
     def batch(self,

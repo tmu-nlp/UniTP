@@ -11,6 +11,7 @@ data_type = dict(vocab_size       = vocab_size,
                  bucket_len       = train_bucket_len,
                  sort_by_length   = false_type,
                  nil_as_pads      = true_type,
+                 nil_is_neutral   = true_type,
                  trapezoid_height = trapezoid_height)
 
 from data.io import make_call_fasttext, check_fasttext

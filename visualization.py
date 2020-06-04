@@ -127,31 +127,13 @@ def set_data(fpath, batch_id, size, epoch,
                                segment, seg_length, mpc_word, mpc_phrase,
                                batch_warnings, None, tag_score, label_score, split_score, None))
             return batch_warnings
+
         else: # supervised / labeled
+            
             fdata = join(fpath, f'data.{batch_id}.tree')
             with open(fdata, 'w') as fw:
                 for tree in trees:
                     print(tree, file = fw)
-                    
-            fhead = join(fpath, f'head.{batch_id}.tree')
-            proc = parseval(evalb, fhead, fdata)
-            idv, smy = rpt_summary(proc.stdout.decode(), True, True)
-
-            fhead = f'head.{batch_id}_{size}.pkl'
-            assert isfile(join(fpath, fhead)), f"Need a head '{fhead}'"
-            fdata = join(fpath, f'data.{batch_id}_{epoch}.pkl')
-            data = IOData(offset, length, token, old_tag, label, right, trees,
-                        segment, seg_length, mpc_word, mpc_phrase,
-                        batch_warnings, idv, tag_score, label_score, split_score, smy)
-            pickle_dump(fdata, data)
-
-            fname = join(fpath, 'summary.pkl')
-            if isfile(fname):
-                summary = pickle_load(fname)
-            else:
-                summary = {}
-            summary[(batch_id, epoch)] = smy
-            pickle_dump(fname, summary)
 
             if isinstance(bin_width, int):
                 ftrees = {}
@@ -165,25 +147,45 @@ def set_data(fpath, batch_id, size, epoch,
                             ftrees[wbin] = stack.enter_context(fw)
                         print(tree, file = fw)
 
-            return smy['F1']
+            fhead = f'head.{batch_id}_{size}.pkl'
+            assert isfile(join(fpath, fhead)), f"Need a head '{fhead}'"
+            fhead = join(fpath, f'head.{batch_id}.tree')
 
-def calc_stan_accuracy(folder, bid, e_major, e_minor, on_error):
+            if evalb is None: # sentiment
+                # 52VII
+                idv, smy, key_score = calc_stan_accuracy(fhead, fdata, error_prefix, on_error)
+            else: # constituency
+                proc = parseval(evalb, fhead, fdata)
+                idv, smy = rpt_summary(proc.stdout.decode(), True, True)
+
+                fname = join(fpath, 'summary.pkl')
+                if isfile(fname):
+                    summary = pickle_load(fname)
+                else:
+                    summary = {}
+                summary[(batch_id, epoch)] = smy
+                pickle_dump(fname, summary)
+
+                key_score = smy['F1']
+
+            fdata = join(fpath, f'data.{batch_id}_{epoch}.pkl')
+            data = IOData(offset, length, token, old_tag, label, right, trees,
+                          segment, seg_length, mpc_word, mpc_phrase,
+                          batch_warnings, idv, tag_score, label_score, split_score, smy)
+            pickle_dump(fdata, data)
+
+            return key_score
+
+def calc_stan_accuracy(hfname, dfname, error_prefix, on_error):
     
     numerators   = [0,0,0,0]
     denominators = [0,0,0,0]
     neg_set = '01'
     pos_set = '34'
-    tree_error_prefix = f'  [{bid}, {e_major}, {e_minor}]'
 
     sents = []
-    if bid is None:
-        hfname = 'tree.head'
-        dfname = f'tree.data.{e_major}_{e_minor}'
-    else:
-        hfname = f'head.{bid}.tree'
-        dfname = f'data.{bid}_{e_major}_{e_minor}.tree'
-    with open(join(folder, hfname)) as fh,\
-         open(join(folder, dfname)) as fd:
+    with open(hfname) as fh,\
+         open(dfname) as fd:
         for i, head, data in zip(count(), fh, fd):
 
             warnings = []
@@ -199,8 +201,7 @@ def calc_stan_accuracy(folder, bid, e_major, e_minor, on_error):
                     warnings.append(f'shapes do not match at {ith}-th leaf')
                     break
             if warnings:
-                error_prefix = tree_error_prefix + f'.{i} len={seq_len}'
-                on_error(error_prefix, warnings[-1])
+                on_error(error_prefix + f'.{i} len={seq_len}', warnings[-1])
             gr = head.label()
             pr = data.label()
             _denominators[0] += 1
@@ -231,10 +232,10 @@ def calc_stan_accuracy(folder, bid, e_major, e_minor, on_error):
                 denominators[i] += _denominators[i]
 
     scores = []
-    for n,d in  zip(numerators, denominators):
+    for n,d in zip(numerators, denominators):
         scores.append(n/d*100 if d else float('nan'))
     # 0: fine, 1: np, 2: fine_root, 3: np_root
-    return sents, scores, (numerators, denominators)
+    return sents, scores, (np.asarray(numerators), np.asarray(denominators))
 # dpi_value     = master.winfo_fpixels('1i')
 # master.tk.call('tk', 'scaling', '-displayof', '.', dpi_value / 72.272)
 # screen_shape = master.winfo_screenwidth(), master.winfo_screenheight()
