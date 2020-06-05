@@ -11,7 +11,7 @@ def train(train_params, operator):
     # TODO: set fine_validation_at_nth_wander to
     for epoch_cnt in range(epoch_cnt, train_params.max_epoch):
         nth_validation = 1 if fine_validation else train_params.fine_validation_each_nth_epoch
-        train_step = operator.train_step(epoch_cnt, nth_wander / train_params.stop_at_nth_wander)
+        train_step = operator.train_step(epoch_cnt, nth_wander / train_params.stop_at_nth_wander, train_params.update_every_n_batch)
         for percentage in train_step:
             if percentage >= (nth_validation / validation_each_nth_epoch):
                 epoch = epoch_cnt + nth_validation / validation_each_nth_epoch

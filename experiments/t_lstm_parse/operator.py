@@ -3,7 +3,7 @@ from torch import nn
 from torch.utils.tensorboard import SummaryWriter
 from utils.operator import Operator
 from data.delta import get_rgt, get_dir, s_index
-from data.penn_types import C_ABSTRACT
+from utils.param_ops import get_sole_key
 from time import time
 from utils.math_ops import is_bin_times
 from utils.types import M_TRAIN, BaseType, frac_open_0, true_type
@@ -41,7 +41,8 @@ class PennOperator(Operator):
         learning_rate = self._schedule_lr(epoch, wander_ratio)
         self._writer.add_scalar('Batch/Learning_Rate', learning_rate, self.global_step)
         self._writer.add_scalar('Batch/Epoch', epoch, self.global_step)
-        self._tune_xlnet = False # wander_ratio > 0.5
+        xtune = self._train_config.get('tune_xlnet_from_nth_epoch')
+        self._tune_xlnet = xtune is not None and xtune < epoch
 
     def _step(self, mode, ds_name, batch, batch_id = None):
 
@@ -199,7 +200,7 @@ class PennOperator(Operator):
 
     @staticmethod
     def combine_scores_and_decide_key(epoch, ds_scores):
-        scores = ds_scores[C_ABSTRACT]
+        scores = ds_scores[get_sole_key(ds_scores)]
         scores['key'] = scores.get('F1', 0)
         return scores
 

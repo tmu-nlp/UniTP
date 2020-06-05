@@ -27,10 +27,11 @@ def check_train(train_str):
                  fine_validation_at_nth_wander = 5,
                  stop_at_nth_wander = 100,
                  fine_validation_each_nth_epoch = 4,
+                 update_every_n_batch = 1,
                  max_epoch = 200)
     assert ' ' not in train_str
     for group in train_str.split(',' if ',' in train_str else ';'):
-        if group.startswith('fv='):
+        if group.startswith('fine='):
             group = [int(x) for x in group[3:].split(':')]
             assert 1 <= len(group) <= 3
             if group[0]:
@@ -42,6 +43,9 @@ def check_train(train_str):
 
         elif group.startswith('max='):
             train['max_epoch'] = int(group[4:])
+
+        elif group.startswith('update='):
+            train['update_every_n_batch'] = int(group[7:])
     
         elif group == '!':
             train['test_with_validation'] = True

@@ -29,9 +29,11 @@ from os.path import join, isfile
 from data.io import check_vocab, save_vocab, sort_count
 from sys import stderr
 from data.delta import DeltaX, lnr_order, xtype_to_logits
+from unidecode import unidecode
 
 def string_to_word_polar_xtype(line):
     line = line.replace(b'\\/', b'/').replace(b'\xc2\xa0', b'.').decode('utf-8')
+    line = unidecode(line)
     tree = Tree.fromstring(line)
     x    = DeltaX.from_stan(tree)
     polar, direc, _ = x.to_triangles()

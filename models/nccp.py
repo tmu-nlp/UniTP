@@ -21,8 +21,9 @@ class BaseRnnTree(nn.Module):
                  num_tags,
                  num_labels,
                  orient_layer,
-                 tag_label_layer):
-        super().__init__()
+                 tag_label_layer,
+                 **kw_args):
+        super().__init__(**kw_args)
 
         self._stem_layer = Stem(model_dim, **orient_layer)
 

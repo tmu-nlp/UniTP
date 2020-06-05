@@ -1,11 +1,6 @@
-from data.stan import StanReader
-from data.stan_types import C_SSTB, data_type
-from data.penn import PennReader
-from data.penn_types import C_PTB, parsing_config, select_and_split_corpus
-from experiments.t_lstm_sentiment.operator import StanOperator, train_type
-from experiments.t_lstm_sentiment.model import StanRnnTree, model_type
-from utils.types import M_TRAIN, M_DEVEL, M_TEST
-from utils.param_ops import HParams
+from experiments.t_lstm_sentiment import *
+from experiments.t_xlnet_sentiment.model import StanXLNetTree, model_type
+from models.xlnet import XLNetDatasetHelper
 
 def get_configs(recorder = None):
     if recorder is None:
@@ -23,7 +18,8 @@ def get_configs(recorder = None):
                              stan.vocab_size,
                              stan.nil_as_pads,
                              stan.nil_is_neutral,
-                             trapezoid_specs)
+                             trapezoid_specs,
+                             extra_text_helper = XLNetDatasetHelper)
     
 
     if model_config['tag_label_layer']['hidden_dim']:
@@ -47,14 +43,13 @@ def get_configs(recorder = None):
                                  penn.unify_sub,
                                  penn.with_ftags,
                                  penn.nil_as_pads,
-                                 trapezoid_specs)
+                                 trapezoid_specs,
+                                 extra_text_helper = XLNetDatasetHelper)
 
         stan_reader.extend_vocab(penn_reader.i2vs.token, penn_reader.get_to_model('initial_weights'))
         task_params = {'num_polars': stan_reader.get_to_model('num_polars')}
         for pname in ('num_tags', 'num_labels', 'paddings'):
             task_params[pname] = penn_reader.get_to_model(pname)
-        for pname in ('initial_weights', 'num_tokens'):
-            task_params[pname] = stan_reader.get_to_model(pname)
         penn_pad, stan_pad = (len(r.get_to_model('paddings')) for r in (penn_reader, stan_reader))
         assert penn_pad == stan_pad
         penn_i2vs = penn_reader.i2vs
@@ -62,7 +57,7 @@ def get_configs(recorder = None):
         stan_i2vs.create(token = penn_i2vs.token)
     else:
         stan_i2vs = penn_i2vs = stan_reader.i2vs
-        task_params = 'initial_weights', 'num_tokens', 'num_polars', 'paddings'
+        task_params = 'num_polars', 'paddings'
         task_params = {pname: stan_reader.get_to_model(pname) for pname in task_params}
         task_params['num_tags'] = task_params['num_labels'] = penn_reader = None
         
@@ -84,6 +79,6 @@ def get_configs(recorder = None):
                 datasets[C_PTB] = penn_reader.batch(mode, penn.batch_size, 0, non_train_cnf, max_len = penn.max_len)
         return datasets
 
-    model = StanRnnTree(**model_config, **task_params)
+    model = StanXLNetTree(**model_config, **task_params)
     model.to(stan_reader.device)
     return StanOperator(model, get_datasets, recorder, penn_i2vs, stan_i2vs, recorder.evalb, train_config)

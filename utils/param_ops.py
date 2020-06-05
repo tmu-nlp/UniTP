@@ -45,6 +45,11 @@ class HParams:
             return HParams(val)
         return val
 
+    def get(self, attr_name, fallback = None):
+        if attr_name not in self._nested:
+            return fallback
+        return self.__getattr__(attr_name)
+
     def __str__(self):
         return dict_print(self._nested, 2)
 

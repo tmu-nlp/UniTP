@@ -62,7 +62,7 @@ class PennTreeKeeper:
         s = f'Keeper with ' + ', '.join(self._factored.keys()) + 'cached'
         return s
 
-from data.stan_types import string_to_word_polar_xtype
+from unidecode import unidecode
 class StanTreeKeeper:
     def __init__(self, line, v2is, trapezoid_height):
         self._line = line
@@ -78,6 +78,7 @@ class StanTreeKeeper:
 
             w2i, p2i, x2i = self._v2is
             tree_str = self._line.replace(b'\\/', b'/').replace(b'\xc2\xa0', b'.').decode('utf-8')
+            tree_str = unidecode(tree_str)
             tree = Tree.fromstring(tree_str)
             dx = DeltaX.from_stan(tree)
             self._words = words = tree.leaves()

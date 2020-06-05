@@ -1,20 +1,21 @@
 from experiments.t_lstm_parse import PennOperator, train_type
 from data.stan_types import C_SSTB
-from utils.types import M_TRAIN, frac_3, frac_7
+from utils.types import M_TRAIN, rate_5
 from time import time
 from models.utils import PCA, fraction, hinge_score, torch
 from models.loss import binary_cross_entropy, hinge_loss, cross_entropy
 from data.delta import get_rgt, get_dir, s_index
-from utils.math_ops import is_bin_times
+from utils.math_ops import is_bin_times, f_score
 
 train_type = train_type.copy()
 train_type['loss_weight'] = train_type['loss_weight'].copy()
-train_type['loss_weight']['sentiment_orient'] = frac_7
-train_type['loss_weight']['sentiment_label']  = frac_3
+train_type['loss_weight']['sentiment_orient'] = rate_5
+train_type['loss_weight']['sentiment_label']  = rate_5
 
 class StanOperator(PennOperator):
-    def __init__(self, model, get_datasets, recorder, i2vs, evalb, train_config):
-        super().__init__(model, get_datasets, recorder, i2vs, evalb, train_config)
+    def __init__(self, model, get_datasets, recorder, penn_i2vs, sstb_i2vs, evalb, train_config):
+        super().__init__(model, get_datasets, recorder, penn_i2vs, evalb, train_config)
+        self._stan_i2vs = sstb_i2vs
 
     def _step(self, mode, ds_name, batch, batch_id = None):
         if ds_name == C_SSTB:
@@ -129,12 +130,12 @@ class StanOperator(PennOperator):
             
         vis = StanVis(epoch,
                       self.recorder.create_join(folder),
-                      self.i2vs,
+                      self._stan_i2vs,
                       self.recorder.log,
                       save_tensors,
                       length_bins,
                       scores_of_bins)
-        vis = VisRunner(vis, async_ = False) # wrapper
+        vis = VisRunner(vis, async_ = True) # wrapper
         vis.before()
         length_bins = vis.length_bins
         if length_bins is not None:
@@ -166,7 +167,9 @@ class StanOperator(PennOperator):
     @staticmethod
     def combine_scores_and_decide_key(epoch, ds_scores):
         scores = ds_scores[C_SSTB]
-        scores['key'] = scores['*']
+        fiv = f_score(scores['*'], scores['5'], 2)
+        two = f_score(scores[':'], scores['2'], 2)
+        scores['key'] = f_score(fiv, two, 2)
         return scores
 
 from utils.vis import BaseVis, VisRunner

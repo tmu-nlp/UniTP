@@ -21,6 +21,10 @@ def t_index(sid, b = 1):
 def s_index(lid, offset = 0, b = 1):
     return ((lid * (b * lid + (2 - b))) >> 1) + offset
 
+def f_score(t1, t2, beta = 1):
+    b = beta ** 2
+    return (1 + b) * (t1 * t2) / (b * t1 + t2)
+
 if __name__ == '__main__1':
     def max_nil_relay(n):
         if n < 3:

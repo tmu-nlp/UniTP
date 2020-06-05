@@ -1,9 +1,9 @@
-from experiments.t_lstm_parse.model import PennRnnTree, model_type
+from experiments.t_xlnet_parse.model import XLNetPennTree, model_type
 from models.sentiment import SentimentExtention, inject_sentiment_type
 
 model_type = inject_sentiment_type(model_type)
 
-class StanRnnTree(PennRnnTree, SentimentExtention):
+class StanXLNetTree(XLNetPennTree, SentimentExtention):
     def __init__(self,
                  num_polars,
                  sentiment_layer,

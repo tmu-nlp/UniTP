@@ -50,7 +50,7 @@ def before_to_seq(offset, length, tokens, tags, vocabs):
     else:
         tag_layer = None
         if 'label' in vocabs._nested:
-            label_vocab = vocabs.label[x]
+            label_vocab = vocabs.label[x].get
         elif 'polar' in vocabs._nested:
             label_vocab = lambda x: NIL if x < 0 else vocabs.polar[x]
         else:
