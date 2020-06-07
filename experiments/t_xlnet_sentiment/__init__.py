@@ -1,6 +1,8 @@
 from experiments.t_lstm_sentiment import *
 from experiments.t_xlnet_sentiment.model import StanXLNetTree, model_type
-from models.xlnet import XLNetDatasetHelper
+from models.xlnet import XLNetDatasetHelper, inject_xlnet_for_train_type
+
+train_type = inject_xlnet_for_train_type(train_type)
 
 def get_configs(recorder = None):
     if recorder is None:

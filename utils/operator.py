@@ -23,7 +23,8 @@ class Operator:
         self._optimizer = None
         self._train_materials = None
         self._validate_materials = None
-        self._test_materials = self.get_materials(M_TEST)
+        self._test_materials = (_, ds_names, _) = self.get_materials(M_TEST)
+        self._ds_icons = {ds_name: icon for ds_name, icon in zip(ds_names, '⚀⚁⚂⚃⚄⚅')}
 
     def get_materials(self, mode):
         self._epoch_start = time()
@@ -53,6 +54,7 @@ class Operator:
                 total = sum(ds_freqs.values())
                 ds_names, ds_probs = zip(*((dn, df/total) for dn, df in ds_freqs.items()))
                 ds_name = choice(ds_names, p = ds_probs)
+                ds_icon = self._ds_icons[ds_name] if len(ds_names) > 1 else ''
                 batch = next(ds_iters[ds_name])
 
                 # with torch.autograd.set_detect_anomaly(True):
@@ -64,7 +66,7 @@ class Operator:
 
                 # display
                 qbar.update(num_samples)
-                qbar.desc = f'[{epoch_cnt}] {train_icon}{100*wander_ratio:.0f}% :{num_samples}×{seq_len}'
+                qbar.desc = f'[{epoch_cnt}] {train_icon}{100*wander_ratio:.0f}% {ds_icon}:{num_samples}×{seq_len}'
                 ds_freqs[ds_name] -= num_samples
                 self._global_step += 1
 

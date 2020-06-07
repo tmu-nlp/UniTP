@@ -25,6 +25,7 @@ class PennOperator(Operator):
         self._sigmoid = nn.Sigmoid()
         self._mode_length_bins = None, None
         self._train_config = train_config
+        self._tune_xlnet = False
 
     def _build_optimizer(self, start_epoch):
         # self._loss_weights_of_tag_label_orient = 0.3, 0.1, 0.6 betas = (0.9, 0.98), weight_decay = 0.01, eps = 1e-6
@@ -38,11 +39,12 @@ class PennOperator(Operator):
         return optim
 
     def _schedule(self, epoch, wander_ratio):
-        learning_rate = self._schedule_lr(epoch, wander_ratio)
+        xtune = self._train_config.get('tune_xlnet_from_nth_epoch')
+        self._tune_xlnet = xtune = xtune is not None and xtune < epoch
+        lr_factor = self._train_config.lr_factor_for_tuning if xtune else 1
+        learning_rate = self._schedule_lr(epoch, wander_ratio, lr_factor)
         self._writer.add_scalar('Batch/Learning_Rate', learning_rate, self.global_step)
         self._writer.add_scalar('Batch/Epoch', epoch, self.global_step)
-        xtune = self._train_config.get('tune_xlnet_from_nth_epoch')
-        self._tune_xlnet = xtune is not None and xtune < epoch
 
     def _step(self, mode, ds_name, batch, batch_id = None):
 

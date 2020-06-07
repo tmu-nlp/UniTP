@@ -23,7 +23,10 @@ def s_index(lid, offset = 0, b = 1):
 
 def f_score(t1, t2, beta = 1):
     b = beta ** 2
-    return (1 + b) * (t1 * t2) / (b * t1 + t2)
+    d = b * t1 + t2
+    if d:
+        return (1 + b) * (t1 * t2) / d
+    return 0
 
 if __name__ == '__main__1':
     def max_nil_relay(n):

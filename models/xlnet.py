@@ -1,6 +1,13 @@
-from utils.types import BaseType
+from utils.types import BaseType, frac_open_0, epoch_type, frac_06
 E_SUB = S_LFT, S_RGT, S_AVG, S_SGT = 'leftmost rightmost average selfgate'.split()
 subword_proc = BaseType(0, as_index = True, default_set = E_SUB)
+
+def inject_xlnet_for_train_type(train_type):
+    train_type = train_type.copy()
+    train_type['learning_rate'] = BaseType(1e-5, validator = frac_open_0)
+    train_type['tune_xlnet_from_nth_epoch'] = epoch_type
+    train_type['lr_factor_for_tuning'] = frac_06
+    return train_type
 
 from models.utils import condense_helper, condense_left
 from models.backend import torch, nn
