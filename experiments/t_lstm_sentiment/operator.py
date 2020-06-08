@@ -1,6 +1,6 @@
 from experiments.t_lstm_parse import PennOperator, train_type
 from data.stan_types import C_SSTB
-from utils.types import M_TRAIN, rate_5
+from utils.types import M_TRAIN, rate_5, NIL
 from time import time
 from models.utils import PCA, fraction, hinge_score, torch
 from models.loss import binary_cross_entropy, hinge_loss, cross_entropy
@@ -40,10 +40,10 @@ class StanOperator(PennOperator):
                 orients = orient_logits > 0.5
 
             if mode == M_TRAIN:
-                polars = self._model.get_polar_decision(polar_logits)
+                polars = self._model.get_polar_decisions(polar_logits)
                 orient_weight = get_dir(batch['xtype'])
                 orient_match  = (orients == gold_orients) & orient_weight
-                polar_mis     = (polars  != batch['polar'])
+                polar_mis     = (polars[:, :, 0]  != batch['polar'])
                 polar_weight  = (polar_mis | existences)
 
                 if trapezoid_info is None:
@@ -84,20 +84,24 @@ class StanOperator(PennOperator):
                     else:
                         mpc_label = PCA(layers_of_base[:, -batch_len:].reshape(-1, layers_of_base.shape[2]))(layers_of_base)
 
-                    polar_scores, polars = self._model.get_polar_decision_with_value(polar_logits)
+                    polar_scores, polars = self._model.get_polar_decisions_with_values(polar_logits)
                     if self._train_config.orient_hinge_loss: # otherwise with sigmoid
                         hinge_score(orient_logits, inplace = True)
                     b_mpcs = (None if mpc_token is None else mpc_token.type(torch.float16), mpc_label.type(torch.float16))
                     b_scores = (polar_scores.type(torch.float16), orient_logits.type(torch.float16))
                 else:
-                    polars = self._model.get_polar_decision(polar_logits).type(torch.int8)
-                    polars = torch.where(existences, polars, - torch.ones_like(polars))
+                    polars = self._model.get_polar_decisions(polar_logits)
                     b_mpcs = (mpc_token, mpc_label)
                     b_scores = (None, None)
+
                 b_size = (batch_len,)
                 b_head = tuple(batch[x] for x in 'offset length token'.split())
                 b_pola = batch['polar'].type(torch.int8)
-                b_pola = torch.where(existences, b_pola, - torch.ones_like(b_pola))
+                polars = polars.type(torch.int8)
+                if NIL not in self._stan_i2vs.polar: # nil_is_neutral
+                    # import pdb; pdb.set_trace()
+                    polars[~existences] = -1
+                    b_pola[~existences] = -1
                 b_head = b_head + (b_pola, gold_orients)
                 b_logits = polars, orients
                 b_data = b_logits + b_mpcs + b_scores
@@ -167,9 +171,10 @@ class StanOperator(PennOperator):
     @staticmethod
     def combine_scores_and_decide_key(epoch, ds_scores):
         scores = ds_scores[C_SSTB]
-        fiv = f_score(scores['*'], scores['5'], 2)
-        two = f_score(scores[':'], scores['2'], 2)
-        scores['key'] = f_score(fiv, two, 2)
+        qui = f_score(scores['5'], scores['*'], 2)
+        ter = f_score(scores['3'], scores['∴'], 2)
+        bi  = f_score(scores['2'], scores[':'], 2)
+        scores['key'] = f_score(f_score(bi, ter, 2), qui, 2)
         return scores
 
 from utils.vis import BaseVis, VisRunner
@@ -273,6 +278,7 @@ class StanVis(BaseVis):
             fn, fd = calc_stan_accuracy(*self._fnames, self.epoch, self._logger)[-1]
         else:
             fn, fd = self._final_dn
-        scores = {d: float(f'{f * 100:.2f}') for f, d in zip(fn / fd, ('52*:'))}
-        desc = f'☺︎(5:{scores["5"]:.0f}\'{scores["*"]:.0f}/2:{scores["2"]:.0f}\'{scores[":"]:.0f})'
+        scores = {d: float(f'{f * 100:.2f}') for f, d in zip(fn / fd, ('532*∴:'))}
+        desc = f'☺︎({scores["*"]:.0f}\'{scores["∴"]:.0f}\'{scores[":"]:.0f}|'
+        desc += f'{scores["5"]:.0f}\'{scores["3"]:.0f}\'{scores["2"]:.0f})'
         return scores, desc, desc

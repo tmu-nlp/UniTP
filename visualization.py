@@ -176,21 +176,46 @@ def set_data(fpath, batch_id, size, epoch,
 
             return key_score
 
-def calc_stan_accuracy(hfname, dfname, error_prefix, on_error):
-    
-    numerators   = [0,0,0,0]
-    denominators = [0,0,0,0]
+def neg_pos(head, data, _numerators, _denominators, offset):
+    gr = head.label()
+    pr = data.label()
     neg_set = '01'
     pos_set = '34'
+    neutral = pr[0] == '2'
+    fine = gr == pr[0]
+    if gr in neg_set:
+        ternary = pr[0] in neg_set
+        binary = pr[1] in neg_set if neutral else ternary
+    elif gr in pos_set:
+        ternary = pr[0] in pos_set
+        binary = pr[1] in pos_set if neutral else ternary
+    else:
+        ternary = True
+        binary = None
+        
+    _denominators[0 + offset] += 1
+    _denominators[1 + offset] += 1
+    if fine:
+        _numerators[0 + offset] += 1
+    if ternary:
+        _numerators[1 + offset] += 1
+    if binary is not None:
+        _denominators[2 + offset] += 1
+        if binary:
+            _numerators[2 + offset] += 1
 
+def calc_stan_accuracy(hfname, dfname, error_prefix, on_error):
+    
+    numerators   = [0,0,0,0,0,0]
+    denominators = [0,0,0,0,0,0]
     sents = []
     with open(hfname) as fh,\
          open(dfname) as fd:
         for i, head, data in zip(count(), fh, fd):
 
             warnings = []
-            _numerators   = [0,0,0,0]
-            _denominators = [0,0,0,0]
+            _numerators   = [0,0,0,0,0,0]
+            _denominators = [0,0,0,0,0,0]
             head = Tree.fromstring(head)
             data = Tree.fromstring(data)
             seq_len = len(head.leaves())
@@ -202,39 +227,22 @@ def calc_stan_accuracy(hfname, dfname, error_prefix, on_error):
                     break
             if warnings:
                 on_error(error_prefix + f'.{i} len={seq_len}', warnings[-1])
-            gr = head.label()
-            pr = data.label()
-            _denominators[0] += 1
-            if gr == pr:
-                _numerators[0] += 1
-            if gr != '2':
-                _denominators[1] += 1
-                if (gr in pos_set and pr in pos_set) or (gr in neg_set and pr in neg_set):
-                    _numerators[1] += 1
-            
+
+            neg_pos(head, data, _numerators, _denominators, 0)
             for gt, pt in zip(head.subtrees(), data.subtrees()):
-                _denominators[2] += 1
-                gt = gt.label()
-                pt = pt.label()
-                if gt == pt:
-                    _numerators[2] += 1
-                if gt != '2':
-                    _denominators[3] += 1
-                    if (gt in pos_set and pt in pos_set) or (gt in neg_set and pt in neg_set):
-                        _numerators[3] += 1
+                neg_pos(gt, pt, _numerators, _denominators, 3)
+
             scores = []
-            for n,d in  zip(_numerators, _denominators):
+            for i, (n, d) in enumerate(zip(_numerators, _denominators)):
+                numerators  [i] += n
+                denominators[i] += d
                 scores.append(n/d*100 if d else float('nan'))
             sents.append(scores)
-
-            for i in range(4):
-                numerators[i]   += _numerators[i]
-                denominators[i] += _denominators[i]
 
     scores = []
     for n,d in zip(numerators, denominators):
         scores.append(n/d*100 if d else float('nan'))
-    # 0: fine, 1: np, 2: fine_root, 3: np_root
+    # 0: fine, 2: PnN 3: PN, 4: root_fine, 2: root_PnN 3: root_PN
     return sents, scores, (np.asarray(numerators), np.asarray(denominators))
 # dpi_value     = master.winfo_fpixels('1i')
 # master.tk.call('tk', 'scaling', '-displayof', '.', dpi_value / 72.272)

@@ -1,4 +1,4 @@
-from models.loss import get_decision, get_decision_with_value, get_loss
+from models.loss import get_loss, sorted_decisions, sorted_decisions_with_values
 from models.utils import get_logit_layer
 from models.backend import nn
 
@@ -64,11 +64,11 @@ class SentimentExtention(nn.Module):
             sentiment = get_sentiment(base_returns[6])
         return base_returns + (sentiment,)
 
-    def get_polar_decision(self, logits):
-        return get_decision(self._sentiment_argmax, logits)
+    def get_polar_decisions(self, logits):
+        return sorted_decisions(self._sentiment_argmax, 5, logits)
 
-    def get_polar_decision_with_value(self, logits):
-        return get_decision_with_value(self._sentiment_score_fn, logits)
+    def get_polar_decisions_with_values(self, logits):
+        return sorted_decisions_with_values(self._sentiment_score_fn, 5, logits)
 
     def get_polar_loss(self, logits, batch, height_mask):
         return get_loss(self._sentiment_argmax, logits, batch, self._sentiment_finale, height_mask, 'polar')

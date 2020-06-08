@@ -50,9 +50,14 @@ def before_to_seq(offset, length, tokens, tags, vocabs):
     else:
         tag_layer = None
         if 'label' in vocabs._nested:
-            label_vocab = vocabs.label[x].get
+            label_vocab = lambda x: vocabs.label[x]
         elif 'polar' in vocabs._nested:
-            label_vocab = lambda x: NIL if x < 0 else vocabs.polar[x]
+            def label_vocab(x):
+                if isinstance(x, np.ndarray):
+                    if x[0] < 0:
+                        return NIL
+                    return ''.join(vocabs.polar[xi] for xi in x)
+                return NIL if x < 0 else vocabs.polar[x]
         else:
             label_vocab = lambda x: f'{x * 100:.2f}%' if x > 0 else NIL
     return token_layer, tag_layer, label_vocab

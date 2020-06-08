@@ -31,17 +31,22 @@ def hinge_loss(x, y, w):
     losses[hinge] = 0
     return losses.sum()
 
-def get_decision(argmax, logtis):
+def get_decision(argmax, logits):
     if argmax:
-        return logtis.argmax(dim = 2)
-    return logtis.argmin(dim = 2)
+        return logits.argmax(dim = 2)
+    return logits.argmin(dim = 2)
 
 def get_decision_with_value(score_fn, logits):
-    probs = score_fn(logits)
-    prob, arg = probs.topk(1)
+    prob, arg = sorted_decisions_with_values(score_fn, 1, logits)
     arg .squeeze_(dim = 2)
     prob.squeeze_(dim = 2)
     return prob, arg
+
+def sorted_decisions(argmax, topk, logits):
+    return logits.topk(topk, largest = argmax)[1]
+
+def sorted_decisions_with_values(score_fn, topk, logits):
+    return score_fn(logits).topk(topk)
 
 def get_loss(argmax, logits, batch, *net_height_mask_key):
     if argmax:
