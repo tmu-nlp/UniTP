@@ -1,13 +1,6 @@
-from utils.types import BaseType, frac_open_0, epoch_type, frac_06
+from utils.types import BaseType
 E_SUB = S_LFT, S_RGT, S_AVG, S_SGT = 'leftmost rightmost average selfgate'.split()
 subword_proc = BaseType(0, as_index = True, default_set = E_SUB)
-
-def inject_xlnet_for_train_type(train_type):
-    train_type = train_type.copy()
-    train_type['learning_rate'] = BaseType(1e-5, validator = frac_open_0)
-    train_type['tune_xlnet_from_nth_epoch'] = epoch_type
-    train_type['lr_factor_for_tuning'] = frac_06
-    return train_type
 
 from models.utils import condense_helper, condense_left
 from models.backend import torch, nn
@@ -54,16 +47,15 @@ class XLNetLeaves(nn.Module):
     def embedding_dim(self):
         return self._word_dim
 
-    def forward(self, word_idx, offset, xl_ids, xl_start, tune_xlnet):
+    def forward(self, word_idx, offset, xl_ids, xl_start, tune_pre_trained = False):
 
-        if tune_xlnet:
+        if tune_pre_trained:
             xl_hidden = self._xlnet_model(xl_ids)[0]
-            xl_hidden = self._xlnet_dp(xl_hidden)
             # xl_hidden = xl_hidden[:, :-2] # Bad idea: git rid of some [cls][sep]
         else:
             with torch.no_grad():
                 xl_hidden = self._xlnet_model(xl_ids)[0]
-                xl_hidden = self._xlnet_dp(xl_hidden)
+        xl_hidden = self._xlnet_dp(xl_hidden)
 
         def transform_dim(xl_hidden):
             word_hidden = self._to_word_emb(xl_hidden)

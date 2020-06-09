@@ -25,10 +25,11 @@ class XLNetPennTree(BaseRnnTree):
 
     def forward(self,
                 word_idx,
+                tune_pre_trained,
                 offset, xl_ids, xl_start, 
-                tune_xlnet, ingore_logits = False, **kw_args):
+                ingore_logits = False, **kw_args):
         batch_size, batch_len = word_idx.shape
-        static, dynamic = self._input_layer(word_idx, offset, xl_ids, xl_start, tune_xlnet)
+        static, dynamic = self._input_layer(word_idx, offset, xl_ids, xl_start, tune_pre_trained)
 
         if self._paddings:
             bottom_existence = torch.ones(batch_size, batch_len,

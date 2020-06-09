@@ -6,16 +6,17 @@ from data.delta import get_rgt, get_dir, s_index
 from utils.param_ops import get_sole_key
 from time import time
 from utils.math_ops import is_bin_times
-from utils.types import M_TRAIN, BaseType, frac_open_0, true_type
+from utils.types import M_TRAIN, BaseType, frac_open_0, true_type, tune_epoch_type, frac_06
 from models.utils import PCA, fraction, hinge_score
 from models.loss import binary_cross_entropy, hinge_loss, cross_entropy
 from experiments.helper import warm_adam
-
 
 train_type = dict(loss_weight = dict(tag    = BaseType(0.3, validator = frac_open_0),
                                      label  = BaseType(0.1, validator = frac_open_0),
                                      orient = BaseType(0.6, validator = frac_open_0)),
                   learning_rate = BaseType(0.001, validator = frac_open_0),
+                  tune_pre_trained_from_nth_epoch = tune_epoch_type,
+                  lr_factor_for_tuning = frac_06,
                   orient_hinge_loss = true_type)
 
 class PennOperator(Operator):
@@ -25,7 +26,7 @@ class PennOperator(Operator):
         self._sigmoid = nn.Sigmoid()
         self._mode_length_bins = None, None
         self._train_config = train_config
-        self._tune_xlnet = False
+        self._tune_pre_trained = False
 
     def _build_optimizer(self, start_epoch):
         # self._loss_weights_of_tag_label_orient = 0.3, 0.1, 0.6 betas = (0.9, 0.98), weight_decay = 0.01, eps = 1e-6
@@ -39,9 +40,9 @@ class PennOperator(Operator):
         return optim
 
     def _schedule(self, epoch, wander_ratio):
-        xtune = self._train_config.get('tune_xlnet_from_nth_epoch')
-        self._tune_xlnet = xtune = xtune is not None and xtune < epoch
-        lr_factor = self._train_config.lr_factor_for_tuning if xtune else 1
+        tune = self._train_config.tune_pre_trained_from_nth_epoch
+        self._tune_pre_trained = tune = tune is not None and tune < epoch
+        lr_factor = self._train_config.lr_factor_for_tuning if tune else 1
         learning_rate = self._schedule_lr(epoch, wander_ratio, lr_factor)
         self._writer.add_scalar('Batch/Learning_Rate', learning_rate, self.global_step)
         self._writer.add_scalar('Batch/Epoch', epoch, self.global_step)
@@ -57,7 +58,7 @@ class PennOperator(Operator):
         batch_time = time()
         (batch_size, batch_len, static, dynamic, top3_label_logits,
          layers_of_base, _, existences, orient_logits, tag_logits, label_logits,
-         trapezoid_info) = self._model(batch['token'], tune_xlnet = self._tune_xlnet, **batch)
+         trapezoid_info) = self._model(batch['token'], self._tune_pre_trained, **batch)
         batch_time = time() - batch_time
 
         orient_logits.squeeze_(dim = 2)
@@ -236,7 +237,8 @@ class PennVis(BaseVis):
     def __init__(self, epoch, work_dir, evalb, i2vs, logger,
                  save_tensors   = True,
                  length_bins    = None,
-                 scores_of_bins = False):
+                 scores_of_bins = False,
+                 flush_heads    = False):
         super().__init__(epoch)
         self._work_dir = work_dir
         self._evalb = evalb
@@ -250,6 +252,8 @@ class PennVis(BaseVis):
         self._scores_of_bins = scores_of_bins
         self.register_property('save_tensors', save_tensors)
         self.register_property('length_bins',  length_bins)
+        if flush_heads:
+            remove(join(work_dir, 'vocabs.pkl'))
 
     def __del__(self):
         if self._head_tree: self._head_tree.close()

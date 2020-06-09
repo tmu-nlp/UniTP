@@ -22,13 +22,12 @@ class StanOperator(PennOperator):
             gold_orients = get_rgt(batch['xtype'])
             # if mode == M_TRAIN:
             batch['supervised_orient'] = gold_orients
-                
+            batch['is_sentiment'] = True
+
             batch_time = time()
             (batch_size, batch_len, static, dynamic, top3_polar_logits,
              layers_of_base, _, existences, orient_logits, _, _, trapezoid_info,
-             polar_logits) = self._model(batch['token'],
-                                         tune_xlnet   = self._tune_xlnet,
-                                         is_sentiment = True, **batch)
+             polar_logits) = self._model(batch['token'], self._tune_pre_trained, **batch)
             batch_time = time() - batch_time
 
             orient_logits.squeeze_(dim = 2)
@@ -120,14 +119,14 @@ class StanOperator(PennOperator):
         devel_bins, test_bins = self._mode_length_bins
         if use_test_set:
             if final_test:
-                folder = 'sstb_test'
+                folder = C_SSTB + '_test'
             else:
-                folder = 'sstb_test_with_devel'
+                folder = C_SSTB + '_test_with_devel'
             save_tensors = True
             length_bins = test_bins
             scores_of_bins = True
         else:
-            folder = 'sstb_devel'
+            folder = C_SSTB + '_devel'
             length_bins = devel_bins
             save_tensors = is_bin_times(int(float(epoch)) - 1)
             scores_of_bins = False
@@ -138,8 +137,9 @@ class StanOperator(PennOperator):
                       self.recorder.log,
                       save_tensors,
                       length_bins,
-                      scores_of_bins)
-        vis = VisRunner(vis, async_ = True) # wrapper
+                      scores_of_bins,
+                      final_test)
+        vis = VisRunner(vis, async_ = False) # wrapper
         vis.before()
         length_bins = vis.length_bins
         if length_bins is not None:
@@ -171,11 +171,11 @@ class StanOperator(PennOperator):
     @staticmethod
     def combine_scores_and_decide_key(epoch, ds_scores):
         scores = ds_scores[C_SSTB]
-        qui = f_score(scores['5'], scores['*'], 2)
-        ter = f_score(scores['3'], scores['∴'], 2)
-        bi  = f_score(scores['2'], scores[':'], 2)
-        scores['key'] = f_score(f_score(bi, ter, 2), qui, 2)
-        return scores
+        qui = f_score(scores['5'], scores['Q'], 2)
+        ter = f_score(scores['3'], scores['T'], 2) #∴⋮:
+        bi  = f_score(scores['2'], scores['B'], 2)
+        ds_scores['key'] = f_score(f_score(bi, ter, 2), qui, 2)
+        return ds_scores
 
 from utils.vis import BaseVis, VisRunner
 from utils.file_io import join, isfile, listdir, remove, isdir
@@ -187,7 +187,8 @@ class StanVis(BaseVis):
     def __init__(self, epoch, work_dir, i2vs, logger,
                  save_tensors   = True,
                  length_bins    = None,
-                 scores_of_bins = False):
+                 scores_of_bins = False,
+                 flush_heads    = False):
         super().__init__(epoch)
         self._work_dir = work_dir
         self._i2vs = i2vs
@@ -201,6 +202,8 @@ class StanVis(BaseVis):
         self.register_property('save_tensors', save_tensors)
         self.register_property('length_bins',  length_bins)
         self._final_dn = None
+        if flush_heads:
+            remove(join(work_dir, 'vocabs.pkl'))
 
     def __del__(self):
         if self._head_tree: self._head_tree.close()
@@ -278,7 +281,7 @@ class StanVis(BaseVis):
             fn, fd = calc_stan_accuracy(*self._fnames, self.epoch, self._logger)[-1]
         else:
             fn, fd = self._final_dn
-        scores = {d: float(f'{f * 100:.2f}') for f, d in zip(fn / fd, ('532*∴:'))}
-        desc = f'☺︎({scores["*"]:.0f}\'{scores["∴"]:.0f}\'{scores[":"]:.0f}|'
+        scores = {d: float(f'{f * 100:.2f}') for f, d in zip(fn / fd, ('532QTB'))}
+        desc = f'☺︎({scores["Q"]:.0f}\'{scores["T"]:.0f}\'{scores["B"]:.0f}|'
         desc += f'{scores["5"]:.0f}\'{scores["3"]:.0f}\'{scores["2"]:.0f})'
         return scores, desc, desc

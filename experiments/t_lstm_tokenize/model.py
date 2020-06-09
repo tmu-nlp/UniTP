@@ -7,7 +7,6 @@ from math import log
 
 input_config = input_config.copy()
 input_config.pop('pre_trained')
-input_config.pop('trainable')
 discrim_config = dict(hidden_dim = orient_dim, activation = activation_type, drop_out = frac_2)
 tokenizer_config = dict(model_dim        = word_dim,
                         input_layer      = input_config,
@@ -46,7 +45,6 @@ class RnnTokenizer(nn.Module):
         super().__init__()
 
         input_layer['pre_trained'] = False
-        input_layer['trainable']   = True
         self._input_layer = InputLeaves(model_dim, num_tokens, None, **input_layer)
         self._contextual_layer = Contextual(model_dim, 'hidden_never_used', **contextual_layer)
         self._discriminator = VectorDiscriminator(model_dim, **discrim_layer)

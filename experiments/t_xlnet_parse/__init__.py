@@ -3,11 +3,9 @@ from data.penn_types import C_PTB, parsing_config, select_and_split_corpus
 from utils.types import M_TRAIN, M_DEVEL, M_TEST
 from utils.param_ops import HParams, get_sole_key
 
-from models.xlnet import XLNetDatasetHelper, inject_xlnet_for_train_type
+from models.xlnet import XLNetDatasetHelper
 from experiments.t_xlnet_parse.model import XLNetPennTree, model_type
 from experiments.t_lstm_parse.operator import PennOperator, train_type
-
-train_type = inject_xlnet_for_train_type(train_type)
 
 get_any_penn = lambda ptb = None, ctb = None: ptb or ctb
 def get_configs(recorder = None):

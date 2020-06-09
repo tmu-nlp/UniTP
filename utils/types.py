@@ -80,6 +80,7 @@ frac_open_0    = lambda x: 0 < x <= 1
 valid_size      = lambda x: isinstance(x, int) and x > 0
 valid_odd_size  = lambda x: valid_size(x) and x % 2 == 1
 valid_even_size = lambda x: valid_size(x) and x % 2 == 0
+valid_epoch     = lambda x: isinstance(x, int) and x >= 0
 beam_size_exp  = BaseType(0, as_index = True, default_set = range(100))
 false_type     = BaseType(False, as_exception = True)
 true_type      = BaseType(True,  as_exception = True)
@@ -101,7 +102,8 @@ word_dim   = BaseType(300, validator = valid_even_size)
 orient_dim = BaseType(64,  validator = valid_even_size)
 hidden_dim = BaseType(200, validator = valid_size)
 train_batch_size = BaseType(80, validator = valid_size)
-train_bucket_len = epoch_type = BaseType(4, validator = lambda x: isinstance(x, int) and 0 <= x)
+train_bucket_len = BaseType(4, validator = valid_epoch)
+tune_epoch_type  = BaseType(None, as_exception = True, validator = valid_epoch)
 train_max_len    = BaseType(None, validator = valid_size, as_exception = True)
 fill_placeholder = '//FILL//THIS//'
 trapezoid_height = BaseType(None, valid_size, as_exception = True)

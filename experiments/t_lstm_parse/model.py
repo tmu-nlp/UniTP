@@ -20,9 +20,9 @@ class PennRnnTree(BaseRnnTree):
         self._input_layer = InputLeaves(model_dim, num_tokens, initial_weights, **input_layer)
         self._contextual_layer = Contextual(model_dim, self.hidden_dim, **contextual_layer)
 
-    def forward(self, word_idx, ingore_logits = False, **kw_args):
+    def forward(self, word_idx, tune_pre_trained, ingore_logits = False, **kw_args):
         batch_size, batch_len    = word_idx.shape
-        static, bottom_existence = self._input_layer(word_idx)
+        static, bottom_existence = self._input_layer(word_idx, tune_pre_trained)
         dynamic, final_hidden    = self._contextual_layer(static)
         base_inputs  = static if dynamic is None else dynamic
         base_returns = super().forward(base_inputs, bottom_existence, ingore_logits, **kw_args)

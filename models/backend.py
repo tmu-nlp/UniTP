@@ -212,7 +212,7 @@ from models.utils import PCA
 from utils.types import false_type, num_ctx_layer
 from utils.param_ops import HParams, dict_print
 act_fasttext = BaseType(None, as_index = True, as_exception = True, default_set = (nn.Tanh, nn.Softsign))
-input_config = dict(pre_trained = true_type, activation = act_fasttext, trainable = false_type, drop_out = frac_4)
+input_config = dict(pre_trained = true_type, activation = act_fasttext, drop_out = frac_4)
 
 class InputLeaves(nn.Module):
     def __init__(self,
@@ -220,7 +220,6 @@ class InputLeaves(nn.Module):
                  num_tokens,
                  initial_weight,
                  pre_trained,
-                 trainable,
                  activation,
                  drop_out):
         super().__init__()
@@ -232,20 +231,13 @@ class InputLeaves(nn.Module):
             assert num_special_tokens >= 0
             # import pdb; pdb.set_trace()
             if num_special_tokens > 0: # bos eos
-                if trainable:
-                    initial_weight = torch.cat([torch.tensor(initial_weight), torch.rand(num_special_tokens, model_dim)], 0)
-                    mutable_emb_layer = nn.Embedding.from_pretrained(initial_weight)
-                else:
-                    assert model_dim == initial_weight.shape[1]
-                    fixed_mutable_bound = initial_weight.shape[0]
-                    fixed_emb_layer     = nn.Embedding.from_pretrained(torch.as_tensor(initial_weight), freeze = True)
-                    mutable_emb_layer   = nn.Embedding(num_special_tokens, model_dim)
-            elif trainable: # nil nil
-                mutable_emb_layer = nn.Embedding.from_pretrained(torch.as_tensor(initial_weight), freeze = False)
+                assert model_dim == initial_weight.shape[1]
+                fixed_mutable_bound = initial_weight.shape[0]
+                fixed_emb_layer     = nn.Embedding.from_pretrained(torch.as_tensor(initial_weight), freeze = False)
+                mutable_emb_layer   = nn.Embedding(num_special_tokens, model_dim)
             else: # nil nil
                 fixed_emb_layer = nn.Embedding.from_pretrained(torch.as_tensor(initial_weight), freeze = True)
         else: # nil ... unk | ... unk bos eos
-            assert trainable
             mutable_emb_layer = nn.Embedding(num_tokens, model_dim)
 
         if activation is None:
@@ -271,20 +263,27 @@ class InputLeaves(nn.Module):
             self._pca_base = PCA(self._fixed_emb_layer.weight)
         return self._pca_base(word_emb)
 
-    def forward(self, word_idx):
-        # import pdb; pdb.set_trace()
+    def forward(self, word_idx, tune_pre_trained):
         if self._fixed_mutable_bound > 0: # [nil] vocab | UNK | BOS EOS
             b_ = self._fixed_mutable_bound
             c_ = word_idx < b_
             f0_idx = torch.where(c_, word_idx, torch.zeros_like(word_idx))
             fb_idx = torch.where(c_, torch.zeros_like(word_idx), word_idx - b_)
-            f0_emb = self._fixed_emb_layer(f0_idx)
+            if tune_pre_trained:
+                f0_emb = self._fixed_emb_layer(f0_idx)
+            else:
+                with torch.no_grad():
+                    f0_emb = self._fixed_emb_layer(f0_idx)
             fb_emb = self._mutable_emb_layer(fb_idx)
             static_emb = torch.where(c_.unsqueeze(-1), f0_emb, fb_emb)
             bottom_existence = torch.ones_like(word_idx, dtype = torch.bool)
         else:
             emb_layer = self._fixed_emb_layer or self._mutable_emb_layer
-            static_emb = emb_layer(word_idx)
+            if tune_pre_trained:
+                static_emb = emb_layer(word_idx)
+            else:
+                with torch.no_grad():
+                    static_emb = emb_layer(word_idx)
             bottom_existence = word_idx > 0
 
         static_emb = self._dp_layer(static_emb)
