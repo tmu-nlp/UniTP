@@ -116,6 +116,7 @@ M_INFER = 'infer'
 E_MODE = (M_TRAIN, M_DEVEL, M_TEST, M_INFER)
 E_ORIF = 'left', 'right', 'midin', 'midout'
 O_LFT, O_RGT, O_MIN, O_MOT = E_ORIF
+E_CNF = O_LFT, O_RGT
 
 import os
 num_threads = (os.cpu_count() - 2) if os.cpu_count() > 2 else 1

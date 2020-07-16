@@ -27,6 +27,7 @@ p <- p + labs(color = "", shape = "")
 wlens <- seq(0, 6, 1)
 wbins <- paste0(wlens * 10, '-', (wlens + 1) * 10 - 1)
 print(wbins)
+wbins[length(wbins)] <- paste(wbins[length(wbins)], "  ")
 p <- p + scale_x_continuous(breaks = wlens,
                             labels = wbins,
                             expand = c(0.03, 0.03),

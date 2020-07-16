@@ -178,6 +178,9 @@ from collections import defaultdict
 E_MODE = 'plain', 'increase', 'bucket'
 M_PLN, M_INC, M_BKT = E_MODE
 
+def token_first(fdict):
+    return (('token', fdict.pop('token')),) + tuple(fdict.items())
+
 class LengthOrderedDataset(Dataset):
     def __init__(self,
                  heads,
@@ -195,7 +198,7 @@ class LengthOrderedDataset(Dataset):
             if min_len <= length <= max_len:
                 indices[length].append(i)
 
-        self._heads = ('length',) + tuple(heads) # create order
+        self._heads = ('length',) + heads # create order
         self._indices = indices
         self._lengths = lengths
         self._mode = None

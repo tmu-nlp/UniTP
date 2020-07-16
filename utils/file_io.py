@@ -95,6 +95,11 @@ def copy_with_prefix_and_rename(path_prefix, dst_path, new_prefix):
         if mf.startswith(f_prefix):
             copy(join(src_path, mf), join(dst_path, f'{new_prefix + mf[len(f_prefix):]}'))
 
+def encoding_to_utf8(in_fmt, in_file, out_file):
+    with open(in_file, 'rb') as fr, open(out_file, 'wb') as fw:
+         for line in fr:
+             fw.write(line.decode(in_fmt).encode('utf-8'))
+
 import signal
 import logging
 

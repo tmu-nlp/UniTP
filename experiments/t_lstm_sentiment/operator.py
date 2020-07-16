@@ -139,7 +139,7 @@ class StanOperator(PennOperator):
                       length_bins,
                       scores_of_bins,
                       final_test)
-        vis = VisRunner(vis, async_ = False) # wrapper
+        vis = VisRunner(vis, async_ = True) # wrapper
         vis.before()
         length_bins = vis.length_bins
         if length_bins is not None:
@@ -202,8 +202,9 @@ class StanVis(BaseVis):
         self.register_property('save_tensors', save_tensors)
         self.register_property('length_bins',  length_bins)
         self._final_dn = None
-        if flush_heads:
-            remove(join(work_dir, 'vocabs.pkl'))
+        fname = join(work_dir, 'vocabs.pkl')
+        if flush_heads and isfile(fname):
+            remove(fname)
 
     def __del__(self):
         if self._head_tree: self._head_tree.close()

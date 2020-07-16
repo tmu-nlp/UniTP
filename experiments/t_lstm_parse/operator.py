@@ -252,8 +252,9 @@ class PennVis(BaseVis):
         self._scores_of_bins = scores_of_bins
         self.register_property('save_tensors', save_tensors)
         self.register_property('length_bins',  length_bins)
-        if flush_heads:
-            remove(join(work_dir, 'vocabs.pkl'))
+        fname = join(work_dir, 'vocabs.pkl')
+        if flush_heads and isfile(fname):
+            remove(fname)
 
     def __del__(self):
         if self._head_tree: self._head_tree.close()

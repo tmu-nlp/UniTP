@@ -35,7 +35,8 @@ def _new_status():
     tool = dict(fasttext = dict(path = fill_placeholder + 'fasttext',
                                 ft_bin = dict(en = fill_placeholder + 'wiki.en.bin',
                                               zh = fill_placeholder + 'cc.zh.300.bin',
-                                              ja = fill_placeholder + 'cc.ja.300.bin'),
+                                              ja = fill_placeholder + 'cc.ja.300.bin',
+                                              de = fill_placeholder + 'cc.de.300.bin'),
                                 ft_lower = False),
                 evalb = dict(path = fill_placeholder + 'evalb',
                              prm  = fill_placeholder + 'default.prm'))
@@ -170,8 +171,8 @@ class Manager:
         for corp_name, datum in data_status.items():
             # import pdb; pdb.set_trace()
             sp = datum['source_path']
-            if not isinstance(sp, str) or not isdir(sp):
-                verbose[corp_name].append(f'Invalid source_path')
+            if not isinstance(sp, str) or (not isdir(sp) if corp_name != 'tiger' else not isfile(sp)):
+                verbose[corp_name].append(f'Invalid source_path {sp}')
                 continue
 
             lp = datum['local_path']

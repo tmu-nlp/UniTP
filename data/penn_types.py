@@ -4,16 +4,13 @@ C_KTB = 'ktb'
 C_ABSTRACT = 'penn'
 E_PENN = C_PTB, C_CTB, C_KTB
 
-def temp_dict(tr, vl, ts):
-    return dict(train_set = tr,
-                devel_set = vl,
-                test_set  = ts)
-                
-build_params = {C_PTB: temp_dict('2-21',             '22',      '23'    ),
-                C_CTB: temp_dict('001-270,440-1151', '301-325', '271-300'),
-                C_KTB: temp_dict('300', '0-9', '10-20')}
+from data.io import make_call_fasttext, check_fasttext, check_vocab, split_dict
+build_params = {C_PTB: split_dict('2-21',             '22',      '23'    ),
+                C_CTB: split_dict('001-270,440-1151', '301-325', '271-300'),
+                C_KTB: split_dict('300', '0-9', '10-20')}
                 # C_KTB: dict(train_set = 'non_numeric_naming') }
 ft_bin = {C_PTB: 'en', C_CTB: 'zh', C_KTB: 'ja'}
+call_fasttext = make_call_fasttext(ft_bin)
 
 from utils.types import none_type, false_type, true_type, binarization, NIL
 from utils.types import train_batch_size, train_max_len, train_bucket_len, vocab_size, trapezoid_height
@@ -36,10 +33,6 @@ from os import listdir
 from contextlib import ExitStack
 from tqdm import tqdm
 from collections import Counter, defaultdict
-
-from data.io import make_call_fasttext, check_fasttext, check_vocab
-call_fasttext = make_call_fasttext(ft_bin)
-
 
 from nltk.tree import Tree
 from tempfile import TemporaryDirectory
@@ -161,7 +154,6 @@ def build(save_to_dir,
           train_set,
           devel_set,
           test_set,
-          verbose    = True,
           **kwargs):
     from multiprocessing import Process, Queue # seamless with threading.Thread
     from data.delta import DeltaX, bottom_up_ftags, xtype_to_logits, lnr_order, OriFct
@@ -402,7 +394,7 @@ def build(save_to_dir,
         xcs['ling-lb'] = lbc[0]
         xcs['ling-rb'] = lbc[1]
         save_vocab(join(save_to_dir, f'stat.xtype.{o}'), xcs, lnr_order(xcs)[0])
-        save_vocab(join(save_to_dir, f'stat.label.{o}'), scs)
+        save_vocab(join(save_to_dir, f'stat.label.{o}'), scs, lnr_order(scs)[0])
     return (ts, vs, ps, xs, ss, fs)
 
 def check_data(save_dir, valid_sizes):

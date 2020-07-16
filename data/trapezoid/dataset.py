@@ -266,7 +266,7 @@ class TrapezoidDataset(LengthOrderedDataset):
                  max_len,
                  extra_text_helper):
 
-        heads = heads.split()
+        heads = tuple(heads.split())
         if extra_text_helper:
             extra_text_helper = extra_text_helper(text, device)
         super().__init__(heads, lengths, factors, min_len, max_len, extra_text_helper)

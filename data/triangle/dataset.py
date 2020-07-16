@@ -1,4 +1,4 @@
-from data.backend import LengthOrderedDataset, np, torch
+from data.backend import LengthOrderedDataset, np, torch, token_first
 from data.delta import s_index
 from utils.file_io import read_data
 from tqdm import tqdm
@@ -8,9 +8,6 @@ from data.delta import write_tensors, E_XDIM
 fields = 'token', 'tag', 'ftag'
 fieldx = 'label', 'xtype'
 # FieldOrder = 'token', 'tag', 'label', 'xtype', 'ftag', 'length'
-
-def token_first(fdict):
-    return (('token', fdict.pop('token')),) + tuple(fdict.items())
 
 class TriangularDataset(LengthOrderedDataset):
     def __init__(self,
@@ -24,16 +21,16 @@ class TriangularDataset(LengthOrderedDataset):
                  max_len  = None,
                  extra_text_helper = None):
 
+        heads   = []
         columns = {}
-        heads = set()
         if 'label' in field_v2is or 'polar' in field_v2is:
             field_v2is = field_v2is.copy()
             field_v2is['xtype'] = (len(E_XDIM), int)
 
         for field, v2i in token_first(field_v2is):
             start = time()
-            heads.add(field)
-            if field in fields:
+            heads.append(field)
+            if field in fields: # token /tag / ftag / finc
                 print(f'Load Dataset {prefix}.{field}', end = ' ', flush = True)
                 if field == 'token':
                     column, lengths, text = read_data(dir_join(f'{prefix}.word'), v2i, True)
@@ -50,9 +47,10 @@ class TriangularDataset(LengthOrderedDataset):
                     columns[(field, factor)] = column
             print(f'in {time() - start:.2f}s')
         assert all(len(lengths) == len(col) for col in columns.values())
-
+        
         if extra_text_helper:
             extra_text_helper = extra_text_helper(text, device)
+        heads = tuple(heads)
         super().__init__(heads, lengths, factors, min_len, max_len, extra_text_helper)
 
         self._columns = columns

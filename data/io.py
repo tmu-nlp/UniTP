@@ -165,6 +165,11 @@ def check_vocab(fname, expected_size = None):
         return False
     return True
 
+def split_dict(tr, vl, ts):
+    return dict(train_set = tr,
+                devel_set = vl,
+                test_set  = ts)
+
 from random import randint
 class SourcePool:
     def __init__(self, src, rand = False):

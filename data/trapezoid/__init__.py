@@ -1,6 +1,6 @@
 from data.triangle import before_to_seq, after_to_tree
 from data.delta import get_tree_from_triangle, explain_warnings, explain_one_error
-def trapezoid_to_layers(data, segments, seg_length, vocab = None, offset = 0):
+def trapezoid_to_layers(data, segments, seg_length, vocab = None, offset = 0, big_endian = True):
     layers  = []
     l_end   = len(data)
     seg_len = list(zip(segments, seg_length))
@@ -11,8 +11,11 @@ def trapezoid_to_layers(data, segments, seg_length, vocab = None, offset = 0):
         if vocab:
             layer = tuple(vocab(x) for x in layer)
         layers.append(layer)
-        if seq_len == 1: break
+        if big_endian and seq_len == 1:
+            break
         l_end -= size
+    if not big_endian:
+        layers.reverse()
     return layers
 
 def inflate(layers):

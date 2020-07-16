@@ -65,6 +65,22 @@ def logits_to_xtype(logits):
         s += 'f'
     return s
 
+def get_logits(right, directional, is_joint, is_phrase, cnf_stable, has_ftag):
+    logits = 0
+    if directional:
+        logits |= __DIR
+    if right:
+        logits |= __RGT
+    if cnf_stable:
+        logits |= __DET
+    if is_joint:
+        logits |= __JNT
+    if is_phrase:
+        logits |= __PHS
+    if has_ftag:
+        logits |= __FTG
+    return logits
+
 def lnr_order(vocabs):
     ov = defaultdict(list)
     for v in vocabs:
@@ -755,12 +771,13 @@ def bottom_up_ftags(ftags, seq_to_str = True):
 
     def bottom_up(sid):
         tid = t_index(sid)
+        print(tid)
         return -tid[0], tid[1]
 
     pos_ftags = []
     for i, fcoord in enumerate(sorted(ftags, key = bottom_up)):
-        for ft in ftags[fcoord]:
-            pos_ftags.append((i, ft))
+        # for ft in :
+        pos_ftags.append((i, ftags[fcoord]))
     
     ftags, fseqs = [], []
     for i, (fpos, ftag) in enumerate(pos_ftags):
