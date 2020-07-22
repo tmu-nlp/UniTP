@@ -22,7 +22,7 @@ data_config = dict(vocab_size     = vocab_size,
 
 # tree = '/Users/zchen/KK/corpora/tiger_release_aug07.corrected.16012013.xml'
 
-from utils.file_io import join
+from utils.file_io import join, remove, isfile
 def build(save_to_dir,
           corp_path,
           corp_name,
@@ -30,7 +30,7 @@ def build(save_to_dir,
           devel_set,
           test_set,
           **kwargs):
-    from data.cross import cross_signals, zip_to_logit
+    from data.cross import read_tiger_graph, zip_to_logit
     from tqdm import tqdm
     import xml.etree.ElementTree as ET
     from collections import Counter, defaultdict
@@ -62,7 +62,7 @@ def build(save_to_dir,
                 cnf_bundle = {}
                 for cnf_factor in E_CNF:
                     try:
-                        wd, bt, lls, lrs, ljs, lds = cross_signals(sent, cnf_factor == O_RGT)
+                        wd, bt, lls, lrs, ljs, lds = read_tiger_graph(sent, cnf_factor == O_RGT)
                     except AssertionError:
                         errors.append(sent_id)
                         continue
@@ -187,6 +187,9 @@ def build(save_to_dir,
     for o in E_CNF:
         save_vocab(join(save_to_dir, f'stat.xtype.{o}'), xtype_cnts[o])
         save_vocab(join(save_to_dir, f'stat.label.{o}'), label_cnts[o])
+    index_cnn = join(save_to_dir, 'index.cnn')
+    if isfile(index_cnn):
+        remove(index_cnn)
     return (ts, ps, xs, ss)
 
 def check_data(save_dir, valid_sizes):
@@ -200,4 +203,13 @@ def check_data(save_dir, valid_sizes):
     valid_sizes = ts, ps, xs, ss
     vocab_files = 'vocab.word vocab.tag vocab.xtype vocab.label'.split()
     from data.io import check_vocab
-    return all(check_vocab(join(save_dir, vf), vs) for vf, vs in zip(vocab_files, valid_sizes))
+    safe = all(check_vocab(join(save_dir, vf), vs) for vf, vs in zip(vocab_files, valid_sizes))
+    index_cnn = join(save_dir, 'index.cnn')
+    if safe:
+        from data.tiger import TigerReader
+        tiger = TigerReader(save_dir, None, True, train_indexing_cnn = True)
+        tiger.indexing_model()
+    elif isfile(index_cnn):
+        print('Delete obsoleted Index-CNN: ' + index_cnn)
+        remove(index_cnn)
+    return safe

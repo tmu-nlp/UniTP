@@ -1,4 +1,5 @@
 from collections import namedtuple, defaultdict, Counter
+from utils.param_ops import get_sole_key
 TopDown = namedtuple('TopDown', 'label, children')
 
 def has_multiple(gen):
@@ -13,9 +14,8 @@ def has_multiple(gen):
 #     bottom[lhs], bottom[rhs] = bottom[rhs], bottom[lhs]
 from utils.shell_io import byte_style
 
-def _read_graph(graph, unary_join_mark = '+'):
+def _read_graph(graph):
     top_down = {}
-    unary = {}
     single_attachment = set()
     for nt in graph[1]:
         p_node = nt.get('id')
@@ -29,34 +29,320 @@ def _read_graph(graph, unary_join_mark = '+'):
             children[node] = edge.get('label')
             assert node not in single_attachment, 'multi-attachment'
             single_attachment.add(node)
-        
-        if len(children) == 1:
-            unary[node] = (label, p_node)
-        else:
             top_down[p_node] = TopDown(label, children)
 
-    word = []
     bottom = []
+    for t in graph[0]:
+        bottom.append((t.get('id'), t.get('word'), t.get('pos')))
+
+    return bottom, top_down
+
+_CMD_TAG = 0
+_CMD_BOL = 1
+_CMD_EOL = 2
+E_DISCO = '*T*', '*ICH*', '*EXP*', '*RNR*'
+from data.delta import preproc_cnf
+
+def remove_irrelevant_trace(tree):
+    bottom = list(enumerate(tree.pos()))
+    bottom.reverse()
+    for bid, (word, tag) in bottom:
+        is_not_trace   = tag != '-NONE-'
+        is_disco_trace = any(word.startswith(tc) for tc in E_DISCO)
+        if is_not_trace or is_disco_trace:
+            continue
+        
+        tag_path = tree.leaf_treeposition(bid)[:-1]
+        syn_path = tag_path[:-1] # leaf must be unary
+        if len(tree[syn_path]) > 1: # more than one child
+            # NP (SBAR) (-NONE- *-1)
+            syn_path = tag_path
+        else: # NP -NONE- *-1
+            while syn_path and len(tree[syn_path[:-1]]) == 1:
+                syn_path = syn_path[:-1]
+        del tree[syn_path]
+
+def _preorder(tree):
+    if tree.height() < 3:
+        assert len(tree) == 1
+        word = tree[0]
+        if '\\' in word: # single \ in nltk.cp.tb
+            word = word.replace('\\', '')
+        elif word == '-LRB-':
+            word = '('
+        elif word == '-RRB-':
+            word = ')'
+        yield _CMD_TAG
+        yield word, tree.label()
+    else:
+        for child in tree:
+            yield from _preorder(child)
+        yield _CMD_BOL
+        for child in reversed(tree):
+            yield child.label()
+        yield _CMD_EOL
+        yield tree.label()
+
+def boundaries(top_down, nid):
+    if nid not in top_down:
+        return nid, nid
+    nids = [nid]
+    cids = []
+    coverage = []
+    while nids:
+        for nid in nids:
+            for cid in top_down[nid].children:
+                if cid in top_down:
+                    cids.append(cid)
+                else:
+                    assert cid < 500
+                    coverage.append(cid)
+        nids = cids
+        cids = []
+    return min(coverage), max(coverage)
+
+def is_a_child(top_down, pid, cid):
+    if pid < 500:
+        return False
+    if cid in top_down[pid].children:
+        return True
+    cids = []
+    nids = list(c for c in top_down[pid].children if c in top_down)
+    while nids:
+        for nid in nids:
+            if cid in top_down[nid].children:
+                return True
+            cids.extend(top_down[nid].children)
+        nids = [c for c in cids if c in top_down]
+        cids = []
+    return False
+
+def is_valid(bottom_info, top_down, root_id):
+    checked_nids = []
+    cids = []
+    bids = []
+    nids = [root_id]
+    from pprint import pprint
+    while nids:
+        for nid in nids:
+            if nid < 500:
+                bids.append(nid)
+            elif nid not in top_down:
+                print(f'nid not in top_down: {nid} x {set(top_down)}')
+                import pdb; pdb.set_trace()
+                return False
+            checked_nids.append(nid)
+            for cid in top_down[nid].children:
+                if cid < 500:
+                    bids.append(cid)
+                else:
+                    cids.append(cid)
+        nids = cids
+        cids = []
+    to_be_bids = set(bids)
+    being_bids = set(bid for bid, _, _ in bottom_info)
+    redundant_bids = being_bids - to_be_bids
+    checked_nids = set(checked_nids)
+    redundant_nids = top_down.keys() - checked_nids
+    if to_be_bids ^ being_bids:
+        if to_be_bids - being_bids:
+            print(f'Lacking bids: {to_be_bids - being_bids}')
+        else:
+            print(f'Redundant bids: {redundant_bids}')
+        import pdb; pdb.set_trace()
+        return False
+    elif redundant_nids:
+        for nid in redundant_nids:
+            _, children = top_down.pop(nid)
+            safe = True
+            for cid in children:
+                if cid < 500:
+                    safe &= cid not in being_bids
+                else:
+                    safe &= cid in redundant_nids
+                if not safe:
+                    break
+            if not safe:
+                import pdb; pdb.set_trace()
+                return False
+
+    if checked_nids ^ top_down.keys():
+        pprint(top_down)
+        if checked_nids - top_down.keys():
+            print('Should not happen here')
+        else:
+            print(f'Redundant nids: {redundant_nids}')
+        import pdb; pdb.set_trace()
+        return False
+    return True
+
+TraceSrc = namedtuple('TraceSrc', 'pid, cid, lhs, rhs')
+TraceDst = namedtuple('TraceDst', 'typ, tid, pid, cid, bid')
+from nltk.tree import Tree
+
+def trace_dst_gen(trace_src, trace_dst):
+    # all trace_dst should be projected
+    for tid in trace_dst.keys() - trace_src.keys():
+        trace_dst.pop(tid) # 1 in nltk treebank
+
+    # select nearest attachment
+    for tid, tds in trace_dst.items():
+        num_tds = len(tds)
+        if num_tds > 1:
+            _, _, lhs, rhs = trace_src[tid]
+            distances = {}
+            for ti, td in enumerate(tds):
+                d_bid = td.bid
+                if td.tid == tid:
+                    lh = max(lhs - d_bid, 0)
+                    rh = max(d_bid - rhs, 0)
+                    distances[ti] = max(lh, rh)
+            yield tds[min(distances, key = distances.get)]
+        else:
+            yield tds[0]
+
+def _read_dpenn(tree):
+    bottom = []
+    top_down = {}
+    pd_args = {}
+    trace_src = {}
+    trace_dst = defaultdict(list)
+    stack = defaultdict(set)
+    remove_irrelevant_trace(tree)
+    tree = Tree('VROOT', [tree])
+    for item in _preorder(tree):
+        if isinstance(item, int):
+            status = item
+            if status == _CMD_BOL:
+                nid = 500 + len(top_down)
+                top_down[nid] = []
+                stack['__CURRENT__'].add(nid)
+        elif status == _CMD_TAG:
+            wd, tg = item
+            nid = len(bottom)
+            bottom.append((nid, wd, tg))
+            stack[tg].add(nid)
+            
+            if wd[0] == '*' and wd[-1].isdigit() and '-' in wd[1:-1]:
+                _args = wd.split('-')
+                if _args[0] in E_DISCO:
+                    tid = _args.pop()
+                    tp_ = '-'.join(_args)
+                    assert tg == '-NONE-'
+                    trace_dst[nid] = tp_, tid
+        elif status == _CMD_BOL:
+            # item is a tag or a label
+            cnid = max(stack[item])
+            stack[item].remove(cnid)
+            if not stack[item]:
+                stack.pop(item)
+            top_down[nid].append(cnid)
+        elif status == _CMD_EOL:
+            # item is the parent label
+            stack[item] |= stack.pop('__CURRENT__')
+
+            if '-' in item:
+                _args = item.split('-')
+                item = _args.pop(0)
+                if _args[-1].isdigit():
+                    trace_src[nid] = _args.pop()
+                if _args:
+                    pd_args[nid] = '-'.join(_args)
+
+            children = {}
+            for cnid in top_down[nid]:
+                children[cnid] = pd_args.pop(cnid, '')
+
+                if cnid in trace_src:
+                    lhs, rhs = boundaries(top_down, cnid)
+                    tid = trace_src.pop(cnid)
+                    if tid in trace_src:
+                        was_wh_movement = top_down[trace_src[tid].cid].label.startswith('WH')
+                        # trace_src[tid].lhs 
+                        if not was_wh_movement:
+                            import pdb; pdb.set_trace()
+                            trace_src[tid] = TraceSrc(nid, cnid, lhs, rhs)
+                    else:
+                        trace_src[tid] = TraceSrc(nid, cnid, lhs, rhs)
+
+                if cnid in trace_dst:
+                    ty_id = trace_dst.pop(cnid)
+                    if len(ty_id) == 2:
+                        trace_dst[nid] = ty_id + (cnid,)
+                    elif len(ty_id) == 3:
+                        typ, tid, bid = ty_id
+                        trace_dst[tid].append(TraceDst(typ, tid, nid, cnid, bid))
+
+            top_down[nid] = TopDown(item, children)
+    assert not pd_args or nid in pd_args
+    assert len(stack) == 1
+    assert nid in stack['VROOT']
+
+    if trace_dst:
+        trace_dst = trace_dst_gen(trace_src, trace_dst)
+        trace_dst = sorted(trace_dst, key = lambda td: td.bid, reverse = True)
+    else:
+        trace_src = [] # change type
+
+    # cross trace along the bottom (ordered and reversed for bottom.pop(i) stability)
+    history = {}
+    for _, tid, d_pid, d_cid, d_bid in trace_dst:
+        s_pid, s_cid, lhs, rhs = trace_src.pop(tid)
+        d_pid = history.pop(d_cid, d_pid)
+        s_ftag = top_down[s_pid].children.pop(s_cid)
+        d_ftag = top_down[d_pid].children.pop(d_cid)
+        v_bid, v_wd, v_tg = bottom.pop(d_bid)
+        assert v_wd.endswith(tid)
+        assert (d_bid, '-NONE-') == (v_bid, v_tg)
+        if s_ftag and d_ftag:
+            ftag = s_ftag if s_ftag == d_ftag else (s_ftag + '-' + d_ftag)
+        else:
+            ftag = s_ftag or d_ftag
+        top_down[d_pid].children[s_cid] = ftag
+        history[s_cid] = d_pid
+        if lhs < d_bid < rhs:
+            for s_ccid in top_down[s_cid].children:
+                if is_a_child(top_down, s_ccid, d_pid):
+                    break
+            ftag = top_down[s_cid].children.pop(s_ccid)
+            top_down[s_pid].children[s_ccid] = ftag
+
+    is_valid(bottom, top_down, nid)
+    vroot = top_down.pop(nid)
+    assert vroot.label == 'VROOT'
+    return bottom, top_down
+
+def _pre_proc(bottom_info, top_down, unary_join_mark = '+'):
+    bu_nodes = [p_node for p_node, (_, children) in top_down.items() if len(children) == 1]
+    unary = {}
+    while bu_nodes:
+        p_node = bu_nodes.pop()
+        label, children = top_down.pop(p_node)
+        node = get_sole_key(children) # prearg info lost
+        unary[node] = label, p_node
+
+    word = []
     node2tag = {}
     bottom_unary = {}
-    for t in graph[0]:
-        node = t.get('id')
+    new_bottom = []
+    for node, wd, tg in bottom_info:
+        word.append(wd)
+
         collapsed_label = ''
-        while node in unary:
-            label, node = unary.pop(node)
+        while node in unary: # bottom up node
+            label, node = unary.pop(node) # shift node!
             collapsed_label += unary_join_mark + label
         if collapsed_label:
             bottom_unary[node] = collapsed_label[1:]
-        node2tag[node] = t.get('pos')
-        bottom.append(node)
-        word.append(t.get('word'))
 
-    for node, (label, p_node) in unary.items():
+        new_bottom.append(node)
+        node2tag[node] = tg
+
+    for node, (label, p_node) in sorted(unary.items(), key = lambda x: x[0]): # collapse top_down unary branches
         td_label, children = top_down.pop(node)
         top_down[p_node] = TopDown(label + unary_join_mark + td_label, children)
 
-
-    return word, bottom, top_down, node2tag, bottom_unary
+    return word, new_bottom, node2tag, bottom_unary
 
 def _layer_base(bottom, top_down, completed_nodes, some_or_all, cnf_right, sub_suffix):
     bottom_up = {}
@@ -203,12 +489,15 @@ def _layer_output(bottom,
     return new_bottom, right_layer, joint_layer, label_layer, direc_layer
 
 
-def cross_signals(graph, cnf_right,
+def cross_signals(bottom_info, top_down, cnf_right,
                   aggressive = True,
-                  swap_right_priority = True,
+                  swap_right_priority = None,
                   sub_prefix = '_',
                   pos_prefix = '#'):
-    word, bottom, top_down, node2tag, bottom_unary = _read_graph(graph[0])
+    word, bottom, node2tag, bottom_unary = _pre_proc(bottom_info, top_down)
+    if swap_right_priority is None:
+        swap_right_priority = not cnf_right
+
     some_or_all = has_multiple if aggressive else all
     bottom_tag = [node2tag[t] for t in bottom]
     sub_suffix = '.'
@@ -240,9 +529,8 @@ def cross_signals(graph, cnf_right,
                                       sub_prefix,
                                       sub_suffix,
                                       pos_prefix)
-        # if new_bottom == bottom:
-        #     import pdb; pdb.set_trace()
-        assert new_bottom != bottom, 'should be different'
+        if new_bottom == bottom:
+            raise ValueError('should be different', bottom, top_down, bottom_unary, layers_of_label, layers_of_right, layers_of_joint, layers_of_direc)
         bottom = new_bottom
         layers_of_right.append(right_layer)
         layers_of_joint.append(joint_layer)
@@ -255,14 +543,16 @@ def cross_signals(graph, cnf_right,
         layers_of_label.append([top_down[bottom.pop()].label])
     return word, bottom_tag, layers_of_label, layers_of_right, layers_of_joint, layers_of_direc
 
+def read_tiger_graph(graph, cnf_right):
+    bottom_info, top_down = _read_graph(graph[0])
+    return cross_signals(bottom_info, top_down, cnf_right)
+
 def targets(right_layer, joint_layer):
     targets = [1 for _ in right_layer]
     tar_len = len(targets)
     for r0id, (r0, r1, jc) in enumerate(zip(right_layer, right_layer[1:], joint_layer)):
         if r0 and not r1:
-            if jc:
-                targets[r0id + 1] = 0
-            else:
+            if not jc:
                 targets[r0id] += 1
                 targets[r0id + 1] -= 2
                 if r0id + 2 < tar_len:

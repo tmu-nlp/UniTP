@@ -28,7 +28,17 @@ class Add(nn.Module):
     def __init__(self):
         super().__init__()
 
-    def forward(self, rightwards, embeddings, existences):
+    def forward(self, rightwards_or_lhs, embeddings_or_rhs, existences_or_phy_jnt):
+        if rightwards_or_lhs.shape == embeddings_or_rhs.shape:
+            self.disco_forward(rightwards_or_lhs, embeddings_or_rhs, existences_or_phy_jnt)
+        else:
+            self.conti_forward(rightwards_or_lhs, embeddings_or_rhs, existences_or_phy_jnt)
+
+    def disco_forward(self, lhs, rhs, phy_jnt):
+        cmp_emb = self.compose(lhs, rhs, phy_jnt)
+        return torch.where(phy_jnt, cmp_emb, lhs)
+    
+    def conti_forward(self, rightwards, embeddings, existences):
         if existences is None:
             assert rightwards is None
             lw_emb = embeddings[1:]

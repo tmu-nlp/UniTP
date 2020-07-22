@@ -140,6 +140,24 @@ def eos_mask(seq_len, length):
     mask = torch.arange(seq_len, device = length.device)[None]
     return mask >= length[:, None]
 
+def condense_splitter(right_layer, joint_layer, existence):
+    batch_size, old_batch_len = existence.shape
+    physical_joint = right_layer[:, :-1] # lhs2r
+    physical_joint &= right_layer[:, 1:].logical_not() # rhs2l
+    physical_joint &= joint_layer
+    rhs_exist = torch.cat([torch.zeros(batch_size, 1, dtype = physical_joint.dtype), physical_joint], dim = 1)
+    lhs_exist = rhs_exist.logical_not()
+    lhs_exist &= existence
+    rhs_exist &= existence
+    lhs_seq_idx = torch.cumsum(lhs_exist, dim = 1)
+    rhs_seq_idx = lhs_seq_idx.roll(1, 1) 
+    lhs_seq_idx *= lhs_exist
+    rhs_seq_idx *= rhs_exist
+    max_len = lhs_seq_idx.max() + 1
+    lhs_helper = lhs_seq_idx, max_len, True
+    rhs_helper = rhs_seq_idx, max_len, True
+    return lhs_helper, rhs_helper, physical_joint
+
 def condense_helper(existence_or_start,
                     as_existence      = False,
                     offset            = None,
@@ -164,7 +182,8 @@ def condense_helper(existence_or_start,
 def condense_left(hidden, helper,
                   out_len    = None,
                   get_cumu   = False,
-                  get_indice = False):
+                  get_indice = False,
+                  skip_dump0 = True):
     # from hidden redirected by seq_idx to zeros, throw away 1:
     hidden_shape = list(hidden.shape)
     seq_idx, max_len, as_existence = helper
@@ -191,12 +210,12 @@ def condense_left(hidden, helper,
         base = base.scatter_add(1, seq_idx.expand_as(hidden), hidden)
 
     # 0 used as a dump
-    base = base[:, 1:] if truncate is None else base[:, 1:truncate]
+    base = base[:, skip_dump0:] if truncate is None else base[:, skip_dump0:truncate]
 
     if get_cumu:
         cumu = torch.zeros(*cumula_shape, device = hidden.device, dtype = seq_idx.dtype)
         cumu.scatter_add_(1, seq_idx, torch.ones_like(seq_idx))
-        cumu = cumu[:, 1:] if truncate is None else cumu[:, 1:truncate]
+        cumu = cumu[:, skip_dump0:] if truncate is None else cumu[:, skip_dump0:truncate]
         if as_existence:
             cumu = cumu > 0
 

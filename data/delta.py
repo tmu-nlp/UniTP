@@ -96,7 +96,11 @@ def lnr_order(vocabs):
 def get_xtype(path, LNR = (-1, 0, 1)):
     return (LNR[0] if path[-1] else LNR[2]) if path else LNR[1]
 
-def preproc_cnf(mtree, replace_junc = '@', pos_in_syn = '#', lower = False, word_trace = False):
+def preproc_cnf(mtree,
+                replace_junc = '@',
+                pos_in_syn   = '#',
+                lower        = False,
+                word_trace   = False):
     # get rid of trace mtree e.g. (-NONE- *)
     # combine other unary branch e.g. replace NP-NNP with NNP
     # import pdb; pdb.set_trace()
@@ -120,12 +124,14 @@ def preproc_cnf(mtree, replace_junc = '@', pos_in_syn = '#', lower = False, word
         pos_path = word_path[:-1]
         syn_path = pos_path[:-1] # leaf must be unary
         pos_tag = mtree[pos_path].label()
-        if '-' in pos_tag:
+        if '-' in pos_tag: # -NONE-
             remove = pos_tag.index('-')
-            if remove and remove != len(pos_tag) - 1:
+            if remove and remove != len(pos_tag) - 1: # ignore -NONE-
                 mtree[pos_path].set_label(pos_tag[:remove])
         if word_trace:
             remove = (word[0] == '*' and (word[-1] == '*' or '*' in word[1:] and word[-1].isdigit()))
+        # elif callable(trace_remove):
+        #     remove = trace_remove(word, pos_tag)
         else:
             remove = pos_tag == '-NONE-'
         if remove: # POS
@@ -144,7 +150,7 @@ def preproc_cnf(mtree, replace_junc = '@', pos_in_syn = '#', lower = False, word
             pos_unary = mtree[pos_path]
             if pos_unary.height() == 2:
                 mtree[pos_path] = Tree(pos_in_syn + pos_unary.label(), [pos_unary])
-    if replace_junc is None:
+    if not replace_junc:
         return
     for b in mtree.subtrees():
         l, update = b.label(), False

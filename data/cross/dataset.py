@@ -14,7 +14,6 @@ class CrossDataset(LengthOrderedDataset):
                  dir_join,
                  prefix,
                  field_v2is,
-                 paddings,
                  device,
                  factors  = None,
                  min_len  = 0,
@@ -25,6 +24,8 @@ class CrossDataset(LengthOrderedDataset):
         factored_indices = {}
         if 'label' in field_v2is:
             field_v2is = field_v2is.copy()
+            if train_indexing_cnn:
+                field_v2is.pop('label')
             field_v2is['xtype'] = (len(E_XDIM), int)
 
         for field, v2i in token_first(field_v2is):
@@ -56,18 +57,20 @@ class CrossDataset(LengthOrderedDataset):
                                 lr, lj, ld = unzip_xlogit(sizes, layer)
                                 c_right.append(lr)
                                 c_joint.append(lj)
-                                c_direc.append(ld)
                                 if train_indexing_cnn:
                                     target = []
                                     for lri, lji in zip(lr, lj + [[]]):
                                         target.append(targets(lri, lji))
                                     c_target.append(target)
+                                else:
+                                    c_direc.append(ld)
                                 qbar.update(1)
                             columns[('right', factor)] = c_right
                             columns[('joint', factor)] = c_joint
-                            columns[('direc', factor)] = c_direc
                             if train_indexing_cnn:
                                 columns[('target', factor)] = c_target
+                            else:
+                                columns[('direc', factor)] = c_direc
                         else:
                             raise ValueError('Unknown field: ' + field)
                     
@@ -86,7 +89,7 @@ class CrossDataset(LengthOrderedDataset):
         super().__init__(heads, lengths, factors, min_len, max_len, extra_text_helper)
 
         self._columns = columns
-        self._paddings_device = paddings, device
+        self._device = device
 
     def at_idx(self, idx, factor, length):
         sample = {}
@@ -100,12 +103,10 @@ class CrossDataset(LengthOrderedDataset):
 
     def _collate_fn(self, batch):
         field_columns = {}
-        paddings, device = self._paddings_device
-        pad_len = 2 if paddings else 0
+        cat_joint = 'target' in self.heads
+        pad_len = 2 if cat_joint else 1 # for cnn_indexing
 
         for field, column in zip(self.heads, zip(*batch)):
-            if paddings:
-                bid, eid = paddings[field]
             if field == 'length':
                 batch_size = len(column)
                 lengths = np.asarray(column, np.int32)
@@ -118,9 +119,6 @@ class CrossDataset(LengthOrderedDataset):
                 for i, (values, offset, length) in enumerate(zip(column, offsets, lengths)):
                     end = offset + length
                     tensor[i, offset:end] = values
-                    if paddings:
-                        tensor[i, :offset] = bid
-                        tensor[i, end:]    = eid
             elif field == 'seq_len':
                 seq_len = zip(*zip_longest(*column, fillvalue = 0))
                 seq_len = np.asarray(list(seq_len))
@@ -129,28 +127,45 @@ class CrossDataset(LengthOrderedDataset):
                 field_columns['segments'] = segments
                 continue
             else:
-                dtype = np.int32 if field == 'label' else np.bool
-                if field == 'joint':
-                    sizes = seq_len[:, :-1] - 1
-                    sizes[sizes < 0] = 0
-                    slens = segments[:-1] - 1 + pad_len
-                else:
+                dtype = np.int32 if field in ('label', 'target') else np.bool
+                size_adjust = 0
+                is_right_field = field == 'right'
+                if field != 'joint':
                     sizes = seq_len
                     slens = segments + pad_len
-                tensor = np.zeros([batch_size, np.sum(slens)], dtype)
-                pad_offset = pad_len >> 1 # more dynamic
+                elif cat_joint:
+                    sizes = seq_len[:, :-1] - 1
+                    slens = segments + pad_len
+                    size_adjust -= 1
+                else:
+                    sizes = seq_len[:, :-1] - 1
+                    slens = segments[:-1] - 1 + pad_len
+                tensor = np.zeros([batch_size, np.sum(slens) + size_adjust], dtype)
                 for i, inst_size in enumerate(zip(column, sizes)):
                     l_start = 0
                     for (slen, layer, size) in zip(slens, *inst_size):
-                        start = l_start + pad_offset
-                        end   = start + size
-                        tensor[i, start:end] = layer
-                        if paddings:
-                            tensor[i, :start] = bid
-                            tensor[i, end:]   = eid
-                        l_start += slen
+                        if size > 0:
+                            start = l_start + pad_len
+                            end   = start + size
+                            tensor[i, start:end] = layer
+                            if is_right_field:
+                                tensor
+                            l_start += slen
 
             field_columns[field] = tensor
+
+        if cat_joint: # target -= 1 would make any difference
+            slens = segments + pad_len
+            tensor = np.zeros([batch_size, np.sum(slens)], np.bool)
+            for i, layer_lens in enumerate(seq_len):
+                l_start = 0
+                for (slen, size) in zip(slens, layer_lens):
+                    if size > 0:
+                        start = l_start + pad_len
+                        end   = start + size
+                        tensor[i, start:end] = True
+                        l_start += slen
+            field_columns['existence'] = tensor
 
         for f, column in field_columns.items():
             if f in ('length', 'offset', 'target', 'segments', 'seq_len'):
@@ -159,5 +174,5 @@ class CrossDataset(LengthOrderedDataset):
                 dtype = torch.long
             else:
                 dtype = torch.bool
-            field_columns[f] = torch.as_tensor(column, dtype = dtype, device = device)
+            field_columns[f] = torch.as_tensor(column, dtype = dtype, device = self._device)
         return field_columns
