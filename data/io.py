@@ -38,34 +38,6 @@ def encapsulate_vocabs(i2vs, oovs):
 
     return i2vs, v2is
 
-def extend_vocabs_joint(vocabs, main_tv, categorical_label):
-    tv, sv = vocabs
-    if main_tv:
-        extra_tv = ((i, t) for i,t in enumerate(tv) if t not in main_tv) # exclude <nil>
-        extra_id, extra_tv = zip(*extra_tv)
-        assert UNK not in extra_tv
-        tv = main_tv + extra_tv
-    else:
-        extra_id = None
-    cs = categorical_label
-    if categorical_label:
-        sv = sv[:3] + tuple(sorted(sv[3:]))
-    else:
-        sv = sorted(sv[3:])
-    assert ''.join(sv[-5:]) == '01234'
-    tn = len(tv)
-    sn = len(sv)
-    tok_vocab = index_table_from_tensor(tf_tv, default_value = 0)
-    pol_vocab = index_table_from_tensor(tf_sv, default_value = -1 if cs else 2)
-    # tok_inv = tf.contrib.lookup.index_to_string_table_from_tensor(tf_tv, default_value = unk)
-    # label_inv = tf.contrib.lookup.index_to_string_table_from_tensor(tf_sv, default_value = unk)
-    # xty_inv = tf.contrib.lookup.index_to_string_table_from_tensor(tf_dv, default_value = unk)
-    # (tok_inv, None, label_inv, xty_inv), 
-    py_sizes  = tn, cs, sn, cs
-    py_vocabs = tv, cs, sv, cs
-    tf_tables = tok_vocab, cs, pol_vocab, cs
-    return PyVocabs(*py_sizes), PyVocabs(*py_vocabs), PyVocabs(*tf_tables), extra_id
-
 def make_call_fasttext(corp_ft_bin):
     from utils.shell_io import call_fasttext
     def inner(fasttext, path, corp_name):

@@ -62,6 +62,12 @@ def remove_irrelevant_trace(tree):
                 syn_path = syn_path[:-1]
         del tree[syn_path]
 
+def remove_eq(label):
+    pos = label.find('=')
+    if pos < 0:
+        return label
+    return label[:pos]
+
 def _preorder(tree):
     if tree.height() < 3:
         assert len(tree) == 1
@@ -79,9 +85,9 @@ def _preorder(tree):
             yield from _preorder(child)
         yield _CMD_BOL
         for child in reversed(tree):
-            yield child.label()
+            yield remove_eq(child.label())
         yield _CMD_EOL
-        yield tree.label()
+        yield remove_eq(tree.label())
 
 def boundaries(top_down, nid):
     if nid not in top_down:
@@ -117,28 +123,45 @@ def is_a_child(top_down, pid, cid):
         cids = []
     return False
 
-def is_valid(bottom_info, top_down, root_id):
-    checked_nids = []
-    cids = []
-    bids = []
+def validate_and_maintain(bottom_info, top_down, root_id, remove_cids, trace_dst):
+    bottom_up = {}
+    checked_nids = set()
+    cids = set()
+    bids = set()
     nids = [root_id]
-    from pprint import pprint
     while nids:
         for nid in nids:
             if nid < 500:
-                bids.append(nid)
+                bids.add(nid)
             elif nid not in top_down:
-                print(f'nid not in top_down: {nid} x {set(top_down)}')
-                import pdb; pdb.set_trace()
-                return False
-            checked_nids.append(nid)
+                raise ValueError(f'nid({nid}) not in top_down[\'{set(top_down)}\']')
+            checked_nids.add(nid)
             for cid in top_down[nid].children:
                 if cid < 500:
-                    bids.append(cid)
+                    bids.add(cid)
                 else:
-                    cids.append(cid)
+                    cids.add(cid)
+                bottom_up[cid] = nid
         nids = cids
-        cids = []
+        cids = set()
+    remove_bids = (bid for bid, _, tag in bottom_info if tag == '-NONE-')
+    remove_bids = sorted(remove_bids, reverse = True)
+    for cid in remove_cids + remove_bids:
+        if cid in remove_bids:
+            bid = cid - sum(td.bid < cid for td in trace_dst)
+            assert bottom_info.pop(bid)[2] == '-NONE-'
+            bids.remove(cid)
+        else:
+            top_down.pop(cid)
+            checked_nids.remove(cid)
+        pid = bottom_up.pop(cid)
+        top_down[pid].children.pop(cid)
+        while not top_down[pid].children: # empty again
+            top_down.pop(pid)
+            cid = pid
+            checked_nids.remove(cid)
+            pid = bottom_up.pop(cid)
+            top_down[pid].children.pop(cid)
     to_be_bids = set(bids)
     being_bids = set(bid for bid, _, _ in bottom_info)
     redundant_bids = being_bids - to_be_bids
@@ -146,11 +169,10 @@ def is_valid(bottom_info, top_down, root_id):
     redundant_nids = top_down.keys() - checked_nids
     if to_be_bids ^ being_bids:
         if to_be_bids - being_bids:
-            print(f'Lacking bids: {to_be_bids - being_bids}')
+            msg = f'Lacking bids: {to_be_bids - being_bids}'
         else:
-            print(f'Redundant bids: {redundant_bids}')
-        import pdb; pdb.set_trace()
-        return False
+            msg = f'Redundant bids: {redundant_bids}'
+        raise ValueError(msg)
     elif redundant_nids:
         for nid in redundant_nids:
             _, children = top_down.pop(nid)
@@ -163,18 +185,15 @@ def is_valid(bottom_info, top_down, root_id):
                 if not safe:
                     break
             if not safe:
-                import pdb; pdb.set_trace()
-                return False
+                raise ValueError(f'Redundant nids: {redundant_nids}')
 
     if checked_nids ^ top_down.keys():
-        pprint(top_down)
         if checked_nids - top_down.keys():
-            print('Should not happen here')
+            msg = f'Should not happen here {checked_nids - top_down.keys()}'
         else:
-            print(f'Redundant nids: {redundant_nids}')
-        import pdb; pdb.set_trace()
-        return False
-    return True
+            msg = f'Redundant nids: {redundant_nids}'
+        raise ValueError(msg)
+
 
 TraceSrc = namedtuple('TraceSrc', 'pid, cid, lhs, rhs')
 TraceDst = namedtuple('TraceDst', 'typ, tid, pid, cid, bid')
@@ -259,8 +278,7 @@ def _read_dpenn(tree):
                     if tid in trace_src:
                         was_wh_movement = top_down[trace_src[tid].cid].label.startswith('WH')
                         # trace_src[tid].lhs 
-                        if not was_wh_movement:
-                            import pdb; pdb.set_trace()
+                        if not was_wh_movement: # wh-movement has the priority
                             trace_src[tid] = TraceSrc(nid, cnid, lhs, rhs)
                     else:
                         trace_src[tid] = TraceSrc(nid, cnid, lhs, rhs)
@@ -286,6 +304,7 @@ def _read_dpenn(tree):
 
     # cross trace along the bottom (ordered and reversed for bottom.pop(i) stability)
     history = {}
+    remove_cids = []
     for _, tid, d_pid, d_cid, d_bid in trace_dst:
         s_pid, s_cid, lhs, rhs = trace_src.pop(tid)
         d_pid = history.pop(d_cid, d_pid)
@@ -300,14 +319,16 @@ def _read_dpenn(tree):
             ftag = s_ftag or d_ftag
         top_down[d_pid].children[s_cid] = ftag
         history[s_cid] = d_pid
-        if lhs < d_bid < rhs:
+        if lhs <= d_bid <= rhs:
             for s_ccid in top_down[s_cid].children:
                 if is_a_child(top_down, s_ccid, d_pid):
                     break
             ftag = top_down[s_cid].children.pop(s_ccid)
             top_down[s_pid].children[s_ccid] = ftag
+        if s_pid != nid and not top_down[s_pid].children: # empty node
+            remove_cids.append(s_pid)
 
-    is_valid(bottom, top_down, nid)
+    validate_and_maintain(bottom, top_down, nid, remove_cids, trace_dst)
     vroot = top_down.pop(nid)
     assert vroot.label == 'VROOT'
     return bottom, top_down
@@ -427,15 +448,12 @@ def _layer_output(bottom,
                     last_node = new_bottom.pop()
                     new_bottom += [node, last_node]
                     swap_distance = 0
-                    # print(byte_style(' @', '1'), end = '')
                 elif swap_right_priority:
                     prev_node = new_bottom.pop(-2)
                     new_bottom += [node, prev_node]
                     swap_distance = 0
-                    # print(byte_style('rhs@', '2'), end = '')
                 else:
                     new_bottom.append(node)
-                    # print(byte_style('@lhs', '3'), end = '')
             else:
                 new_bottom.append(node)
             directional = True
@@ -461,7 +479,6 @@ def _layer_output(bottom,
         if nid > 0:
             is_joint = nid in joint_rset
             joint_layer.append(is_joint)
-            # print(' x'[is_joint], end = '')
         
         if sub_suffix in node:
             label_layer.append(sub_prefix + top_down[node.split('.')[0]].label)
@@ -472,18 +489,6 @@ def _layer_output(bottom,
         else:
             label_layer.append(top_down[node].label)
 
-    #     _node = node.split('_')[-1]
-    #     if node[0] == sub_prefix:
-    #         _node = sub_prefix + _node
-    #     if right:
-    #         print(_node.rjust(5) + '≥>'[directional], end = '')
-    #     else:
-    #         print('≤<'[directional] + _node.ljust(5), end = '')
-    # print()
-    # target_layer = targets(right_layer, joint_layer)
-    # for t in target_layer:
-    #     print(str(t).center(6), end = ' ')
-    # print()
     assert len(right_layer) == len(label_layer) == len(direc_layer)
     assert len(right_layer) - 1 == len(joint_layer)
     return new_bottom, right_layer, joint_layer, label_layer, direc_layer
@@ -546,6 +551,17 @@ def cross_signals(bottom_info, top_down, cnf_right,
 def read_tiger_graph(graph, cnf_right):
     bottom_info, top_down = _read_graph(graph[0])
     return cross_signals(bottom_info, top_down, cnf_right)
+
+def read_disco_penn(tree, cnf_right):
+    bottom_info, top_down = _read_dpenn(tree)
+    bottom_info = [(f'n_{bid}', w, t) for bid, w, t in bottom_info]
+    new_top_down = {}
+    for nid, td in top_down.items():
+        children = {}
+        for cid, ftag in td.children.items():
+            children[f'n_{cid}'] = ftag
+        new_top_down[f'n_{nid}'] = TopDown(td.label, children)
+    return cross_signals(bottom_info, new_top_down, cnf_right)
 
 def targets(right_layer, joint_layer):
     targets = [1 for _ in right_layer]

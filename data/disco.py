@@ -7,7 +7,7 @@ from torch import load, save
 SUB = '_SUB'
 from data.backend import WordBaseReader, post_batch
 
-class TigerReader(WordBaseReader):
+class DiscoReader(WordBaseReader):
     def __init__(self,
                  vocab_dir,
                  vocab_size  = None,
@@ -23,7 +23,7 @@ class TigerReader(WordBaseReader):
             oovs['label'] = len(labels)
             labels.append(SUB)
             i2vs['label'] = labels
-        super(TigerReader, self).__init__(vocab_dir, vocab_size, True, i2vs, oovs)
+        super(DiscoReader, self).__init__(vocab_dir, vocab_size, True, i2vs, oovs)
 
     def batch(self,
               mode,
@@ -57,7 +57,7 @@ class TigerReader(WordBaseReader):
 
     def indexing_model(self):
         m = Index().to(self.device)
-        fname = self.dir_join('index.cnn')
+        fname = self.dir_join('index.cnn', pardir = 1)
         assert self._load_options[-1]
         if isfile(fname):
             m.load_state_dict(load(fname))

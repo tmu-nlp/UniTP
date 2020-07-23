@@ -74,9 +74,12 @@ def read_data(fname, v2i, lengths_and_lines = False, qbar = None):
         lengths = []
         lines = []
     with open(fname) as fr:
-        for line in fr:
+        for line_id, line in enumerate(fr):
             words = line.rstrip().split()
-            value = array('H', (v2i(tok) for tok in words))
+            try:
+                value = array(byte, (v2i(tok) for tok in words))
+            except:
+                import pdb; pdb.set_trace()
             values.append(value)
             if lengths_and_lines:
                 lengths.append(len(value))

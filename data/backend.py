@@ -4,6 +4,7 @@ from data.io import TreeSpecs, get_fasttext, encapsulate_vocabs
 from data.delta import xtype_to_logits, logits_to_xtype
 from collections import defaultdict, namedtuple
 from utils.param_ops import HParams
+from utils.file_io import parpath
 from utils.types import NIL, UNK, BOS, EOS, M_TRAIN
 
 BatchSpec = namedtuple('BatchSpec', 'size, iter')
@@ -22,8 +23,12 @@ class _BaseReader:
         self._oovs = oovs
         self.update(i2vs, **to_model)
         
-    def dir_join(self, fname):
-        return join(self._vocab_dir, fname)
+    def dir_join(self, fname, pardir = 0):
+        if parpath:
+            fpath = parpath(self._vocab_dir, pardir)
+        else:
+            fpath = self._vocab_dir
+        return join(fpath, fname)
 
     def update(self, i2vs, **to_model):
         i2vs, v2is = encapsulate_vocabs(i2vs, self._oovs)

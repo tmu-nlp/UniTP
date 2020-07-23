@@ -22,7 +22,7 @@ data_config = dict(vocab_size     = vocab_size,
 
 # tree = '/Users/zchen/KK/corpora/tiger_release_aug07.corrected.16012013.xml'
 
-from utils.file_io import join, remove, isfile
+from utils.file_io import join, remove, isfile, parpath
 def build(save_to_dir,
           corp_path,
           corp_name,
@@ -30,14 +30,16 @@ def build(save_to_dir,
           devel_set,
           test_set,
           **kwargs):
-    from data.cross import read_tiger_graph, zip_to_logit
+    from data.cross import read_tiger_graph, read_disco_penn, zip_to_logit
     from tqdm import tqdm
-    import xml.etree.ElementTree as ET
+    from xml.etree import ElementTree
+    from nltk.corpus import BracketParseCorpusReader
     from collections import Counter, defaultdict
     from itertools import count, tee
     from data.io import save_vocab, sort_count
     from utils.str_ops import strange_to # histo_count, str_percentage
     from utils.pickle_io import pickle_dump
+    from utils.shell_io import byte_style
     from data.io import SourcePool, distribute_jobs
     from multiprocessing import Process, Queue
     from utils.types import E_CNF, O_LFT, O_RGT, M_TRAIN, M_DEVEL, M_TEST, num_threads
@@ -56,53 +58,83 @@ def build(save_to_dir,
             tag_cnt  = Counter()
             label_cnts = {o: Counter() for o in E_CNF}
             xtype_cnts = {o: Counter() for o in E_CNF}
-            q, sents = self._args
-            for sent in sents:
-                sent_id = sent.get('id')
+            q, sents, read_func = self._args
+            for sent_tag, sent in sents:
                 cnf_bundle = {}
+                inst_label_cnts = {}
+                inst_xtype_cnts = {}
                 for cnf_factor in E_CNF:
                     try:
-                        wd, bt, lls, lrs, ljs, lds = read_tiger_graph(sent, cnf_factor == O_RGT)
-                    except AssertionError:
-                        errors.append(sent_id)
-                        continue
+                        wd, bt, lls, lrs, ljs, lds = read_func(sent, cnf_factor == O_RGT)
+                    except ValueError:
+                        errors.append(sent_tag)
+                        break
                     cindex, labels, xtypes = zip_to_logit(lls, lrs, ljs, lds)
-                    label_cnts[cnf_factor] += Counter(labels)
-                    xtype_cnts[cnf_factor] += Counter(logits_to_xtype(x) for x in xtypes)
+                    inst_label_cnts[cnf_factor] = Counter(labels)
+                    inst_xtype_cnts[cnf_factor] = Counter(logits_to_xtype(x) for x in xtypes)
                     cindex = ' '.join(str(x) for x in cindex) + '\n'
                     labels = ' '.join(labels) + '\n'
                     xtypes = ' '.join(str(x) for x in xtypes) + '\n'
                     cnf_bundle[cnf_factor] = cindex, labels, xtypes
-                word_cnt += Counter(wd)
-                tag_cnt += Counter(bt)
-                wd = ' '.join(wd) + '\n'
-                bt = ' '.join(bt) + '\n'
-                bundle = sent_id, len(wd), wd, bt, cnf_bundle
-                q.put(bundle)
+
+                if all(o in cnf_bundle for o in E_CNF):
+                    for o in E_CNF:
+                        label_cnts[o] += inst_label_cnts[o]
+                        xtype_cnts[o] += inst_xtype_cnts[o]
+                    word_cnt += Counter(wd)
+                    tag_cnt  += Counter(bt)
+                    wd = ' '.join(wd) + '\n'
+                    bt = ' '.join(bt) + '\n'
+                    bundle = sent_tag, len(wd), wd, bt, cnf_bundle
+                    q.put(bundle)
             bundle = len(sents) - len(errors), errors, word_cnt, tag_cnt, label_cnts, xtype_cnts
             q.put(bundle)
 
-    devel_set = strange_to(devel_set)
-    test_set  = strange_to(test_set)
-    non_train_set = devel_set + test_set
-    in_devel_set = lambda x: int(x[1:]) in devel_set
-    in_test_set  = lambda x: int(x[1:]) in test_set
-    if train_set == '__rest__':
-        in_corpus = lambda x: True
-        in_train_set = lambda x: int(x[1:]) not in non_train_set
-    else:
-        train_set = strange_to(train_set)
-        all_sets = train_set + non_train_set
-        in_corpus = lambda x: int(x[1:]) in all_sets
-        in_train_set = lambda x: int(x[1:]) in train_set
+    if corp_name == C_DPTB:
+        folder_pattern = lambda x: f'{x:02}'
+        reader = BracketParseCorpusReader(corp_path, r".*/wsj_.*\.mrg")
+        devel_set = strange_to(devel_set, folder_pattern)
+        test_set  = strange_to(test_set,  folder_pattern)
+        non_train_set = set(devel_set + test_set)
+        if train_set == '__rest__':
+            all_folders = reader.fileids()
+            all_sets = set(fp[:2] for fp in all_folders)
+            train_set = all_sets - non_train_set
+        else:
+            train_set = strange_to(train_set, folder_pattern)
+            all_sets = non_train_set | set(train_set)
+            all_folders = [fp for fp in reader.fileids() if fp[:2] in all_sets]
+        in_train_set = lambda fn: fn in train_set
+        in_devel_set = lambda fn: fn in devel_set
+        in_test_set  = lambda fn: fn in test_set
+        corpus = []
+        for fp in all_folders:
+            for sent in reader.parsed_sents(fp):
+                corpus.append((fp[:2], sent))
+        read_func = read_disco_penn
+    elif corp_name == C_TGR:
+        devel_set = strange_to(devel_set)
+        test_set  = strange_to(test_set)
+        non_train_set = devel_set + test_set
+        in_devel_set = lambda x: int(x[1:]) in devel_set
+        in_test_set  = lambda x: int(x[1:]) in test_set
+        if train_set == '__rest__':
+            in_corpus = lambda x: True
+            in_train_set = lambda x: int(x[1:]) not in non_train_set
+        else:
+            train_set = strange_to(train_set)
+            all_sets = train_set + non_train_set
+            in_corpus = lambda x: int(x[1:]) in all_sets
+            in_train_set = lambda x: int(x[1:]) in train_set
+        root = ElementTree.parse(corp_path).getroot()
+        corpus = [(sent.get('id'), sent) for sent in root[1] if in_corpus(sent.get('id'))]
+        read_func = read_tiger_graph
 
-    root = ET.parse(corp_path).getroot()
-    corpus = [sent for sent in root[1] if in_corpus(sent.get('id'))]
     num_threads = min(num_threads, len(corpus))
     workers = distribute_jobs(corpus, num_threads)
     q = Queue()
     for i in range(num_threads):
-        w = WorkerX(q, workers[i])
+        w = WorkerX(q, workers[i], read_func)
         w.start()
         workers[i] = w
 
@@ -136,15 +168,16 @@ def build(save_to_dir,
             else:
                 t = q.get()
                 if len(t) == 5:
-                    sent_id, sent_len, wd, bt, cnf_bundle = t
-                    if in_devel_set(sent_id):
-                        length_stat['vlc'][sent_id] += 1
+                    sent_tag, sent_len, wd, bt, cnf_bundle = t
+                    if in_devel_set(sent_tag):
+                        length_stat['vlc'][sent_tag] += 1
                         fw, ft, fxs, fls, fis = fvw, fvp, fvxs, fvls, fvis
-                    elif in_test_set(sent_id):
-                        length_stat['_lc'][sent_id] += 1
+                    elif in_test_set(sent_tag):
+                        length_stat['_lc'][sent_tag] += 1
                         fw, ft, fxs, fls, fis = f_w, f_p, f_xs, f_ls, f_is
                     else:
-                        length_stat['tlc'][sent_id] += 1
+                        assert in_train_set(sent_tag)
+                        length_stat['tlc'][sent_tag] += 1
                         fw, ft, fxs, fls, fis = ftw, ftp, ftxs, ftls, ftis
                     fw.write(wd)
                     ft.write(bt)
@@ -161,6 +194,8 @@ def build(save_to_dir,
                     else:
                         qbar.total = ic
                     errors.extend(es)
+                    if '\n' in wc:
+                        import pdb; pdb.set_trace()
                     word_cnt += wc
                     tag_cnt  += tc
                     for o in E_CNF:
@@ -173,7 +208,12 @@ def build(save_to_dir,
                     raise ValueError('Unknown data: %r' % t)
         for w in workers:
             w.join()
-
+        errors = Counter(errors)
+        thread_str = byte_style(f'{num_threads}', '3')
+        sample_str = byte_style(f'{qbar.total}', '2')
+        error_str0 = byte_style(f'{sum(errors.values())}' if errors else 'No', '1' if errors else '2')
+        error_str1 = (' from \'' + ', '.join(byte_style(x) for x in errors) + '\'.') if errors else '.'
+        qbar.desc = (f'All {thread_str} threads ended with {sample_str} samples, {error_str0} errors{error_str1}')
     pickle_dump(join(save_to_dir, 'info.pkl'), length_stat)
     tok_file = join(save_to_dir, 'vocab.word')
     tag_file = join(save_to_dir, 'vocab.tag' )
@@ -187,14 +227,10 @@ def build(save_to_dir,
     for o in E_CNF:
         save_vocab(join(save_to_dir, f'stat.xtype.{o}'), xtype_cnts[o])
         save_vocab(join(save_to_dir, f'stat.label.{o}'), label_cnts[o])
-    index_cnn = join(save_to_dir, 'index.cnn')
-    if isfile(index_cnn):
-        remove(index_cnn)
     return (ts, ps, xs, ss)
 
 def check_data(save_dir, valid_sizes):
     try:
-        # 44386 47074 47 8 99 20
         ts, ps, xs, ss = valid_sizes
     except Exception as e:
         from sys import stderr
@@ -204,10 +240,10 @@ def check_data(save_dir, valid_sizes):
     vocab_files = 'vocab.word vocab.tag vocab.xtype vocab.label'.split()
     from data.io import check_vocab
     safe = all(check_vocab(join(save_dir, vf), vs) for vf, vs in zip(vocab_files, valid_sizes))
-    index_cnn = join(save_dir, 'index.cnn')
+    index_cnn = join(parpath(save_dir), 'index.cnn')
     if safe:
-        from data.tiger import TigerReader
-        tiger = TigerReader(save_dir, None, True, train_indexing_cnn = True)
+        from data.disco import DiscoReader
+        tiger = DiscoReader(save_dir, None, True, train_indexing_cnn = True)
         tiger.indexing_model()
     elif isfile(index_cnn):
         print('Delete obsoleted Index-CNN: ' + index_cnn)
