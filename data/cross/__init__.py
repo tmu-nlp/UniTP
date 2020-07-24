@@ -35,7 +35,9 @@ def _read_graph(graph):
     for t in graph[0]:
         bottom.append((t.get('id'), t.get('word'), t.get('pos')))
 
-    return bottom, top_down
+    # CHECKED: p_node is the root_id
+    validate(bottom, top_down, p_node)
+    return bottom, top_down, p_node
 
 _CMD_TAG = 0
 _CMD_BOL = 1
@@ -123,49 +125,8 @@ def is_a_child(top_down, pid, cid):
         cids = []
     return False
 
-def validate_and_maintain(bottom_info, top_down, root_id, remove_cids, trace_dst):
-    bottom_up = {}
-    checked_nids = set()
-    cids = set()
-    bids = set()
-    nids = [root_id]
-    while nids:
-        for nid in nids:
-            if nid < 500:
-                bids.add(nid)
-            elif nid not in top_down:
-                raise ValueError(f'nid({nid}) not in top_down[\'{set(top_down)}\']')
-            checked_nids.add(nid)
-            for cid in top_down[nid].children:
-                if cid < 500:
-                    bids.add(cid)
-                else:
-                    cids.add(cid)
-                bottom_up[cid] = nid
-        nids = cids
-        cids = set()
-    remove_bids = (bid for bid, _, tag in bottom_info if tag == '-NONE-')
-    remove_bids = sorted(remove_bids, reverse = True)
-    for cid in remove_cids + remove_bids:
-        if cid in remove_bids:
-            bid = cid - sum(td.bid < cid for td in trace_dst)
-            assert bottom_info.pop(bid)[2] == '-NONE-'
-            bids.remove(cid)
-        else:
-            top_down.pop(cid)
-            checked_nids.remove(cid)
-        pid = bottom_up.pop(cid)
-        top_down[pid].children.pop(cid)
-        while not top_down[pid].children: # empty again
-            top_down.pop(pid)
-            cid = pid
-            checked_nids.remove(cid)
-            pid = bottom_up.pop(cid)
-            top_down[pid].children.pop(cid)
-    to_be_bids = set(bids)
-    being_bids = set(bid for bid, _, _ in bottom_info)
+def __validate(being_bids, to_be_bids, top_down, checked_nids):
     redundant_bids = being_bids - to_be_bids
-    checked_nids = set(checked_nids)
     redundant_nids = top_down.keys() - checked_nids
     if to_be_bids ^ being_bids:
         if to_be_bids - being_bids:
@@ -193,6 +154,70 @@ def validate_and_maintain(bottom_info, top_down, root_id, remove_cids, trace_dst
         else:
             msg = f'Redundant nids: {redundant_nids}'
         raise ValueError(msg)
+
+def validate(bottom_info, top_down, root_id):
+    cids = set()
+    nids = [root_id]
+    to_be_bids = set()
+    being_bids = set(bid for bid, _, _ in bottom_info)
+    checked_nids = set()
+    while nids:
+        for nid in nids:
+            if nid in being_bids:
+                to_be_bids.add(nid)
+            elif nid not in top_down:
+                raise ValueError(f'nid({nid}) not in top_down[\'{set(top_down)}\']')
+            checked_nids.add(nid)
+            for cid in top_down[nid].children:
+                if cid in being_bids:
+                    to_be_bids.add(cid)
+                else:
+                    cids.add(cid)
+        nids = cids
+        cids = set()
+    __validate(being_bids, to_be_bids, top_down, checked_nids)
+
+def validate_and_maintain(bottom_info, top_down, root_id, remove_cids, trace_dst):
+    cids = set()
+    nids = [root_id]
+    bottom_up = {}
+    to_be_bids = set()
+    being_bids = set(bid for bid, _, _ in bottom_info)
+    checked_nids = set()
+    while nids:
+        for nid in nids:
+            if nid < 500:
+                to_be_bids.add(nid)
+            elif nid not in top_down:
+                raise ValueError(f'nid({nid}) not in top_down[\'{set(top_down)}\']')
+            checked_nids.add(nid)
+            for cid in top_down[nid].children:
+                if cid < 500:
+                    to_be_bids.add(cid)
+                else:
+                    cids.add(cid)
+                bottom_up[cid] = nid
+        nids = cids
+        cids = set()
+    remove_bids = (bid for bid, _, tag in bottom_info if tag == '-NONE-')
+    remove_bids = sorted(remove_bids, reverse = True)
+    for cid in remove_cids + remove_bids:
+        if cid in remove_bids:
+            bid = cid - sum(td.bid < cid for td in trace_dst)
+            assert bottom_info.pop(bid)[2] == '-NONE-'
+            to_be_bids.remove(cid)
+        else:
+            top_down.pop(cid)
+            checked_nids.remove(cid)
+        pid = bottom_up.pop(cid)
+        top_down[pid].children.pop(cid)
+        while not top_down[pid].children: # empty again
+            top_down.pop(pid)
+            cid = pid
+            checked_nids.remove(cid)
+            pid = bottom_up.pop(cid)
+            top_down[pid].children.pop(cid)
+    __validate(being_bids, to_be_bids, top_down, checked_nids)
 
 
 TraceSrc = namedtuple('TraceSrc', 'pid, cid, lhs, rhs')
@@ -331,7 +356,37 @@ def _read_dpenn(tree):
     validate_and_maintain(bottom, top_down, nid, remove_cids, trace_dst)
     vroot = top_down.pop(nid)
     assert vroot.label == 'VROOT'
-    return bottom, top_down
+    return bottom, top_down, get_sole_key(vroot.children)
+
+def gap_degree(bottom, top_down, nid, bottom_is_bid = True):
+    finally_return = True
+    if isinstance(bottom, dict):
+        if nid in bottom:
+            return 0, set({bottom[nid]})
+        finally_return = False
+    elif bottom_is_bid:
+        bottom = {bid: eid for eid, bid in enumerate(bottom)}
+    else:
+        bottom = {bid: eid for eid, (bid, _, _) in enumerate(bottom)}
+
+    max_gap_num = 0
+    coverage = set()
+    for cid in top_down[nid].children:
+        gap_num, child_coverage = gap_degree(bottom, top_down, cid)
+        max_gap_num = max(gap_num, max_gap_num)
+        coverage |= child_coverage
+
+    if finally_return:
+        return max_gap_num
+
+    gap_num = 0
+    last_nid = min(coverage) - 1
+    for nid in sorted(coverage):
+        if nid - last_nid > 1: # discontinuous
+            gap_num += 1
+        last_nid = nid
+    max_gap_num = max(gap_num, max_gap_num)
+    return max_gap_num, coverage
 
 def _pre_proc(bottom_info, top_down, unary_join_mark = '+'):
     bu_nodes = [p_node for p_node, (_, children) in top_down.items() if len(children) == 1]
@@ -549,11 +604,11 @@ def cross_signals(bottom_info, top_down, cnf_right,
     return word, bottom_tag, layers_of_label, layers_of_right, layers_of_joint, layers_of_direc
 
 def read_tiger_graph(graph, cnf_right):
-    bottom_info, top_down = _read_graph(graph[0])
+    bottom_info, top_down, _ = _read_graph(graph[0])
     return cross_signals(bottom_info, top_down, cnf_right)
 
 def read_disco_penn(tree, cnf_right):
-    bottom_info, top_down = _read_dpenn(tree)
+    bottom_info, top_down, _ = _read_dpenn(tree)
     bottom_info = [(f'n_{bid}', w, t) for bid, w, t in bottom_info]
     new_top_down = {}
     for nid, td in top_down.items():

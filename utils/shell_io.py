@@ -17,7 +17,7 @@ def byte_style(content, fg_color = '7', bg_color = '0', bold = False, dim = Fals
         prefix += '5;'
 
     prefix += f'3{fg_color};4{bg_color}m'
-    return prefix + content + '\033[0;37;40m'
+    return prefix + content + '\033[m'
 
 def call_fasttext(fasttext, wfile, vfile, ft_bin, ft_lower): # TODO: async
     # import pdb; pdb.set_trace()

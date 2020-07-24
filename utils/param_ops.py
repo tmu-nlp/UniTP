@@ -125,10 +125,8 @@ def less_kwargs(base, key, default_value):
     return default_value
 
 def get_sole_key(dic):
-    shake = iter(dic.keys())
-    sole = next(shake)
-    try:
-        next(shake)
-        raise f'{sole} is not the sole key in {dic}'
-    except StopIteration:
-        return sole
+    # prev iter & next was used, catch an exception is necessary.
+    shake = set(dic)
+    sole = shake.pop()
+    assert not shake, f'{sole} is not the sole key in {dic}'
+    return sole

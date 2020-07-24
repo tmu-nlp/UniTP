@@ -1,8 +1,8 @@
 from data.backend import LengthOrderedDataset, np, torch, token_first
 from data.delta import s_index
 from utils.file_io import read_data
+from utils.shell_io import byte_style
 from tqdm import tqdm
-from time import time
 from data.delta import write_tensors, E_XDIM
 
 fields = 'token', 'tag', 'ftag'
@@ -26,26 +26,34 @@ class TriangularDataset(LengthOrderedDataset):
         if 'label' in field_v2is or 'polar' in field_v2is:
             field_v2is = field_v2is.copy()
             field_v2is['xtype'] = (len(E_XDIM), int)
-
-        for field, v2i in token_first(field_v2is):
-            start = time()
-            heads.append(field)
-            if field in fields: # token /tag / ftag / finc
-                print(f'Load Dataset {prefix}.{field}', end = ' ', flush = True)
-                if field == 'token':
-                    column, lengths, text = read_data(dir_join(f'{prefix}.word'), v2i, True)
-                else:
-                    column = read_data(dir_join(f'{prefix}.{field}'), v2i, False)
-                columns[field] = column
-            elif factors is None:
-                with tqdm(total = len(lengths), desc = f'Load Dataset {prefix}.{field}') as qbar:
-                    columns[field] = read_data(dir_join(f'{prefix}.{field}'), v2i, qbar = qbar)
+        field_v2is = token_first(field_v2is)
+        num_fields_left = -1
+        field_names = []
+        for f, _ in field_v2is:
+            if f in fields:
+                field_names.append(f)
+                num_fields_left += 1
             else:
-                for factor, prob in factors.items():
-                    with tqdm(total = len(lengths), desc = f'Load Dataset {prefix}.{field}.{factor}') as qbar:
-                        column = read_data(dir_join(f'{prefix}.{field}.{factor}'), v2i, qbar = qbar)
-                    columns[(field, factor)] = column
-            print(f'in {time() - start:.2f}s')
+                num_factors = len(factors)
+                field_names.append(f + f'({num_factors})')
+                num_fields_left += num_factors
+        
+        with tqdm(desc = 'Load Datasets: ' + ', '.join(field_names)) as qbar:
+            for field, v2i in field_v2is:
+                qbar.desc = 'Load Datasets: \033[32m' + ', '.join((f + '\033[m') if f.startswith(field) else f for f in field_names)
+                if field in fields: # token /tag / ftag / finc
+                    if field == 'token':
+                        column, lengths, text = read_data(dir_join(f'{prefix}.word'), v2i, True)
+                        qbar.total = num_fields_left * len(lengths)
+                    else:
+                        column = read_data(dir_join(f'{prefix}.{field}'), v2i, qbar = qbar)
+                    columns[field] = column
+                elif factors is None:
+                    columns[field] = read_data(dir_join(f'{prefix}.{field}'), v2i, qbar = qbar)
+                else:
+                    for factor in factors:
+                        columns[(field, factor)] = read_data(dir_join(f'{prefix}.{field}.{factor}'), v2i, qbar = qbar)
+                heads.append(field)
         assert all(len(lengths) == len(col) for col in columns.values())
         
         if extra_text_helper:

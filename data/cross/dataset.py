@@ -1,6 +1,6 @@
 from data.backend import LengthOrderedDataset, np, torch, token_first
 from utils.file_io import read_data
-from time import time
+from utils.shell_io import byte_style
 from tqdm import tqdm
 from data.delta import E_XDIM
 from data.cross import unzip_xlogit, targets
@@ -20,28 +20,43 @@ class CrossDataset(LengthOrderedDataset):
                  max_len  = None,
                  extra_text_helper = None,
                  train_indexing_cnn = False):
+
         columns = {}
         factored_indices = {}
         if 'label' in field_v2is:
             field_v2is = field_v2is.copy()
             if train_indexing_cnn:
+                field_v2is.pop('tag')
                 field_v2is.pop('label')
             field_v2is['xtype'] = (len(E_XDIM), int)
 
-        for field, v2i in token_first(field_v2is):
-            start = time()
-            if field in fields:
-                print(f'Load Dataset {prefix}.{field}', end = ' ', flush = True)
-                if field == 'token':
-                    column, lengths, text = read_data(dir_join(f'{prefix}.word'), v2i, True)
-                else:
-                    column = read_data(dir_join(f'{prefix}.{field}'), v2i, False)
-                columns[field] = column
+        field_v2is = token_first(field_v2is)
+        num_fields_left = -1
+        field_names = []
+        for f, _ in field_v2is:
+            if f in fields:
+                field_names.append(f)
+                num_fields_left += 1
             else:
-                for factor in factors:
-                    if factor not in factored_indices:
-                        factored_indices[factor] = read_data(dir_join(f'{prefix}.index.{factor}'), (2, int)) # 2-byte/512 > 500
-                    with tqdm(total = len(lengths), desc = f'Load Dataset {prefix}.{field}.{factor}') as qbar:
+                num_factors = len(factors)
+                field_names.append(f + f'({num_factors})')
+                num_fields_left += num_factors
+
+        with tqdm(desc = 'Load Datasets: ' + ', '.join(field_names)) as qbar:
+            for field, v2i in field_v2is:
+                qbar.desc = 'Load Datasets: \033[32m' + ', '.join((f + '\033[m') if f.startswith(field) else f for f in field_names)
+                if field in fields: # token /tag / ftag / finc
+                    if field == 'token':
+                        column, lengths, text = read_data(dir_join(f'{prefix}.word'), v2i, True)
+                        qbar.total = num_fields_left * len(lengths)
+                    else:
+                        column = read_data(dir_join(f'{prefix}.{field}'), v2i, qbar = qbar)
+                    columns[field] = column
+                else:
+                    for factor in factors:
+                        if factor not in factored_indices:
+                            factored_indices[factor] = read_data(dir_join(f'{prefix}.index.{factor}'), (2, int)) # 2-byte/512 > 500
+                        
                         flatten = read_data(dir_join(f'{prefix}.{field}.{factor}'), v2i)
                         if field == 'label':
                             column = []
@@ -74,7 +89,6 @@ class CrossDataset(LengthOrderedDataset):
                         else:
                             raise ValueError('Unknown field: ' + field)
                     
-            print(f'in {time() - start:.2f}s')
         assert all(len(lengths) == len(col) for col in columns.values())
 
         for factor, column in factored_indices.items():

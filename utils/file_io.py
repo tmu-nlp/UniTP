@@ -55,10 +55,6 @@ def read_data(fname, v2i, lengths_and_lines = False, qbar = None):
     while v_size:
         byte += 1
         v_size >>= 8
-    if qbar:
-        qbar.desc += f' ({byte}-byte)'
-    else:
-        print(f'({byte}-byte)', end = ' ')
     if byte == 1:
         byte = 'B'
     elif byte == 2:

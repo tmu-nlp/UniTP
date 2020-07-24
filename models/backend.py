@@ -24,7 +24,7 @@ activation_type = BaseType(0, as_index = True, as_exception = True, default_set 
                                                                                    nn.Tanh, nn.Softsign, nn.Hardtanh, # -<0<+
                                                                                    nn.Tanhshrink, nn.Softshrink, nn.Hardshrink)) # -0+
 
-from models.combine import get_combinator, combine_type
+from models.combine import get_combinator, get_components, combine_type, valid_trans_compound
 stem_config = dict(orient_dim   = orient_dim,
                    combine_type = combine_type,
                    num_layers   = num_ori_layer,
