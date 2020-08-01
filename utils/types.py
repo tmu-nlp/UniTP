@@ -123,7 +123,9 @@ num_threads = (os.cpu_count() - 2) if os.cpu_count() > 2 else 1
 
 frac_7 = BaseType(0.7, frac_close)
 frac_1 = BaseType(0.1, frac_close)
+frac_3 = BaseType(0.3, frac_close)
 binarization = {O_LFT: frac_7,
                 O_RGT: frac_1,
                 O_MIN: frac_1,
                 O_MOT: frac_1}
+binarization_cnf = {O_LFT: frac_7, O_RGT: frac_3}

@@ -5,6 +5,9 @@ subword_proc = BaseType(0, as_index = True, default_set = E_SUB)
 from models.utils import condense_helper, condense_left
 from models.backend import torch, nn
 class XLNetLeaves(nn.Module):
+
+    has_static_pca = False # class property
+
     def __init__(self,
                  model_dim,
                  contextual,
@@ -48,6 +51,7 @@ class XLNetLeaves(nn.Module):
         return self._word_dim
 
     def forward(self, word_idx, offset, xl_ids, xl_start, tune_pre_trained = False):
+        batch_size, batch_len = word_idx.shape # just provide shape and nil info
 
         if tune_pre_trained:
             xl_hidden = self._xlnet_model(xl_ids)[0]
@@ -83,17 +87,17 @@ class XLNetLeaves(nn.Module):
             else:
                 xl_pointer = torch.cat([xl_start[:, 1:], torch.ones_like(xl_start[:, :1])], dim = 1)
             helper = condense_helper(xl_pointer, as_existence = True, offset = offset, get_rid_of_last_k = 1)
-            xl_hidden = condense_left(xl_hidden, helper, out_len = word_idx.shape[1])
+            xl_hidden = condense_left(xl_hidden, helper, out_len = batch_len)
             xl_base = transform_dim(xl_hidden) # use left most sub-word to save precious time!
         else:
             word_hidden = transform_dim(xl_hidden)
             helper = condense_helper(xl_start, as_existence = False, offset = offset, get_rid_of_last_k = 1)
             if self._subword_proc == S_AVG:
-                xl_base, xl_cumu = condense_left(word_hidden, helper, out_len = word_idx.shape[1], get_cumu = True)
+                xl_base, xl_cumu = condense_left(word_hidden, helper, out_len = batch_len, get_cumu = True)
                 xl_cumu[xl_cumu < 1] = 1 # prevent 0
                 xl_base = xl_base / xl_cumu
             else:
-                xl_base = condense_left(word_hidden, helper, out_len = word_idx.shape[1])
+                xl_base = condense_left(word_hidden, helper, out_len = batch_len)
         
         if self._paddings: # will overwrite [cls][sep]
             bos, eos = self._paddings['word']
@@ -103,11 +107,12 @@ class XLNetLeaves(nn.Module):
             eos.unsqueeze_(dim = 2)
             xl_base = torch.where(bos, self._bos.expand_as(xl_base), xl_base) # 不要让nn做太多离散的决定，人来做！
             xl_base = torch.where(eos, self._eos.expand_as(xl_base), xl_base)
+            non_nil = torch.ones(batch_size, batch_len, 1, dtype = torch.bool, device = word_idx.device)
         else:
             non_nil = (word_idx > 0)
             non_nil.unsqueeze_(dim = 2)
             xl_base = xl_base * non_nil # in-place fails at FloatTensor
-        return None, xl_base # just dynamic
+        return batch_size, batch_len, xl_base, non_nil # just dynamic
 
 
 model_key_name = 'xlnet-base-cased'

@@ -7,8 +7,8 @@ from utils.math_ops import harmony, is_bin_times
 from data.penn_types import C_ABSTRACT
 from time import time
 from math import log
-from models.utils import PCA, fraction, hinge_score
-from models.loss import binary_cross_entropy, hinge_loss, big_endian_height_mask
+from models.utils import PCA, fraction, hinge_score, eos_mask
+from models.loss import binary_cross_entropy, hinge_loss
 from experiments.helper import warm_adam
 from experiments.t_lstm_tokenize.types import D_NOISE, D_CLEAN
 
@@ -40,7 +40,7 @@ class TokenizerOperator(Operator):
         batch_time = time()
         token_ids, offset, length = (batch[key] for key in ('token', 'offset', 'length'))
         if ds_name == D_NOISE:
-            (batch_size, batch_len, static, dynamic,
+            (batch_size, batch_len, static,
              existence, validity_logit) = self._model(token_ids, None, None, noise_mode = True)
             batch_time = time() - batch_time
 
@@ -77,7 +77,7 @@ class TokenizerOperator(Operator):
                 self._vis[ds_name][0].process(batch_id, accu, racy, batch_len, offset, length, toke, vali)
 
         else:
-            (batch_size, batch_len, static, dynamic,
+            (batch_size, batch_len, static,
              layers_of_exist, layers_of_input,
              layers_of_right, layers_of_valid,
              layers_of_right_gold, layers_of_valid_gold,
@@ -99,7 +99,7 @@ class TokenizerOperator(Operator):
             layers_of_exist.squeeze_(dim = 2)
             single_unit = segment[None] * (seg_length <= 1)
             single_unit = single_unit.sum(dim = 1)
-            right_existence = big_endian_height_mask(right.shape[1], single_unit)
+            right_existence = eos_mask(right.shape[1], single_unit) # Model format
             right_existence &= layers_of_exist
 
             if mode == M_TRAIN:

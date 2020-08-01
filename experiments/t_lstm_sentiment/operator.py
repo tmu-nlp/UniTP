@@ -3,9 +3,11 @@ from data.stan_types import C_SSTB
 from utils.types import M_TRAIN, rate_5, NIL
 from time import time
 from models.utils import PCA, fraction, hinge_score, torch
-from models.loss import binary_cross_entropy, hinge_loss, cross_entropy
+from models.loss import binary_cross_entropy, hinge_loss
 from data.delta import get_rgt, get_dir, s_index
 from utils.math_ops import is_bin_times, f_score
+from utils.shell_io import byte_style
+from sys import stderr
 
 train_type = train_type.copy()
 train_type['loss_weight'] = train_type['loss_weight'].copy()
@@ -25,7 +27,7 @@ class StanOperator(PennOperator):
             batch['is_sentiment'] = True
 
             batch_time = time()
-            (batch_size, batch_len, static, dynamic, top3_polar_logits,
+            (batch_size, batch_len, static, top3_polar_logits,
              layers_of_base, _, existences, orient_logits, _, _, trapezoid_info,
              polar_logits) = self._model(batch['token'], self._tune_pre_trained, **batch)
             batch_time = time() - batch_time
@@ -50,9 +52,7 @@ class StanOperator(PennOperator):
                 else:
                     height_mask = batch['mask_length'] # ?? negative effect ???
 
-                polar_loss = self._model.get_polar_loss(polar_logits, batch, height_mask)
-                if top3_polar_logits is not None:
-                    polar_loss += cross_entropy(top3_polar_logits, batch['top3_polar'], None)
+                polar_loss = self._model.get_polar_loss(polar_logits, top3_polar_logits, batch, height_mask)
 
                 if self._train_config.orient_hinge_loss:
                     orient_loss = hinge_loss(orient_logits, gold_orients, orient_weight)
@@ -74,24 +74,32 @@ class StanOperator(PennOperator):
                     self._writer.add_scalar('Batch/PolarHeight', len(batch['segment']), gs)
             else:
                 vis, _, _ = self._vis_mode
-                mpc_token = mpc_label = None
                 if vis.save_tensors:
-                    if hasattr(self._model._input_layer, 'pca'):
-                        if dynamic is not None: # even dynamic might be None, being dynamic is necessary to train a good model
-                            mpc_token = self._model._input_layer.pca(static)
+                    if self._model._input_layer.has_static_pca:
+                        mpc_token = self._model._input_layer.pca(static)
                         mpc_label = self._model._input_layer.pca(layers_of_base)
+                        b_mpcs = (mpc_token.type(torch.float16), mpc_label.type(torch.float16))
                     else:
-                        mpc_label = PCA(layers_of_base[:, -batch_len:].reshape(-1, layers_of_base.shape[2]))(layers_of_base)
+                        try:
+                            pca = PCA(layers_of_base.reshape(-1, layers_of_base.shape[2]))
+                            mpc_token = pca(static)
+                            mpc_label = pca(layers_of_base)
+                            b_mpcs = (mpc_token.type(torch.float16), mpc_label.type(torch.float16))
+                        except RuntimeError:
+                            b_mpcs = 'RuntimeError catched:\n'
+                            b_mpcs += 'Maybe you have used an activation function without any negative output,\n'
+                            b_mpcs += '  e.g. ReLU, Softplus, and Sigmoid!\n'
+                            b_mpcs += 'Visualization is disabled, while (bad) results keep generating.'
+                            print(byte_style(b_mpcs, '1'), file = stderr)
+                            b_mpcs = (None, None)
 
                     polar_scores, polars = self._model.get_polar_decisions_with_values(polar_logits)
                     if self._train_config.orient_hinge_loss: # otherwise with sigmoid
                         hinge_score(orient_logits, inplace = True)
-                    b_mpcs = (None if mpc_token is None else mpc_token.type(torch.float16), mpc_label.type(torch.float16))
                     b_scores = (polar_scores.type(torch.float16), orient_logits.type(torch.float16))
                 else:
                     polars = self._model.get_polar_decisions(polar_logits)
-                    b_mpcs = (mpc_token, mpc_label)
-                    b_scores = (None, None)
+                    b_mpcs = b_scores = (None, None)
 
                 b_size = (batch_len,)
                 b_head = tuple(batch[x] for x in 'offset length token'.split())
@@ -234,7 +242,7 @@ class StanVis(BaseVis):
         else:
             bin_width = None
 
-        fpath = self._work_dir if self.save_tensors else None
+        fpath = self._work_dir if self.save_tensors and (mpc_token is not None or mpc_label is not None) else None
         n__d = set_data(fpath, batch_id, size, self.epoch,
                         h_offset, h_length, h_token, None, d_polar, h_right, # d_right,
                         mpc_token, mpc_label,
@@ -251,33 +259,10 @@ class StanVis(BaseVis):
                 fd += d
 
     def _after(self):
-        # call evalb to data.emm.rpt return the results, and time counted
-        # provide key value in results
         if self._head_tree:
             self._head_tree.close()
         self._data_tree.close()
         
-        # fname = None
-        # if num_errors:
-        #     self._logger(f'  {num_errors} errors from evalb')
-        #     if num_errors < 10:
-        #         for e, error in enumerate(errors):
-        #             self._logger(f'    {e}. ' + error)
-        #         fname = f'data.{self.epoch}.rpt'
-
-
-        # if self.length_bins is not None and self._scores_of_bins:
-        #     fname = f'data.{self.epoch}.rpt'
-        #     with open(join(self._work_dir, f'{self.epoch}.scores'), 'w') as fw:
-        #         fw.write('wbin,num,lp,lr,f1,ta\n')
-        #         for wbin in self.length_bins:
-        #             fhead = join(self._work_dir, f'head.bin_{wbin}.tree')
-        #             fdata = join(self._work_dir, f'data.bin_{wbin}.tree')
-        #             proc = parseval(self._evalb, fhead, fdata)
-        #             smy = rpt_summary(proc.stdout.decode(), False, True)
-        #             fw.write(f"{wbin},{smy['N']},{smy['LP']},{smy['LR']},{smy['F1']},{smy['TA']}\n")
-        #             remove(fhead)
-        #             remove(fdata)
         if self._final_dn is None:
             fn, fd = calc_stan_accuracy(*self._fnames, self.epoch, self._logger)[-1]
         else:

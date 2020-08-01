@@ -10,19 +10,20 @@ build_params = {C_DPTB: split_dict(   '2-21',          '22',          '23'),
 ft_bin = {C_DPTB: 'en', C_TGR: 'de'}
 call_fasttext = make_call_fasttext(ft_bin)
 
-from utils.types import none_type, false_type, true_type, binarization, NIL
+from utils.types import none_type, false_type, true_type, binarization_cnf, NIL
 from utils.types import train_batch_size, train_max_len, train_bucket_len, vocab_size
-data_config = dict(vocab_size     = vocab_size,
-                   binarization   = binarization,
-                   batch_size     = train_batch_size,
-                   max_len        = train_max_len,
-                   bucket_len     = train_bucket_len,
-                   unify_sub      = true_type,
-                   sort_by_length = false_type)
+disco_config = dict(vocab_size     = vocab_size,
+                    binarization   = binarization_cnf,
+                    batch_size     = train_batch_size,
+                    max_len        = train_max_len,
+                    bucket_len     = train_bucket_len,
+                    unify_sub      = true_type,
+                    sort_by_length = false_type)
 
 # tree = '/Users/zchen/KK/corpora/tiger_release_aug07.corrected.16012013.xml'
 
 from utils.file_io import join, remove, isfile, parpath
+from sys import stderr
 def build(save_to_dir,
           corp_path,
           corp_name,
@@ -37,7 +38,7 @@ def build(save_to_dir,
     from collections import Counter, defaultdict
     from itertools import count, tee
     from data.io import save_vocab, sort_count
-    from utils.str_ops import strange_to # histo_count, str_percentage
+    from utils.str_ops import strange_to, histo_count
     from utils.pickle_io import pickle_dump
     from utils.shell_io import byte_style
     from data.io import SourcePool, distribute_jobs
@@ -56,38 +57,40 @@ def build(save_to_dir,
             errors   = []
             word_cnt = Counter()
             tag_cnt  = Counter()
+            gap_cnt  = []
             label_cnts = {o: Counter() for o in E_CNF}
             xtype_cnts = {o: Counter() for o in E_CNF}
             q, sents, read_func = self._args
             for sent_tag, sent in sents:
+                try:
+                    wd, bt, cnf_layers, gd = read_func(sent)
+                except (ValueError, AssertionError):
+                    errors.append(sent_tag)
+                    continue
+                except UnboundLocalError: # No
+                    # if len(sent[0][0]) > 1 and len(sent[0][1]) > 0:
+                    errors.append('NoNT')
+                    continue
+
                 cnf_bundle = {}
-                inst_label_cnts = {}
-                inst_xtype_cnts = {}
-                for cnf_factor in E_CNF:
-                    try:
-                        wd, bt, lls, lrs, ljs, lds = read_func(sent, cnf_factor == O_RGT)
-                    except ValueError:
-                        errors.append(sent_tag)
-                        break
+                for cnf_factor, (lls, lrs, ljs, lds) in cnf_layers.items():
                     cindex, labels, xtypes = zip_to_logit(lls, lrs, ljs, lds)
-                    inst_label_cnts[cnf_factor] = Counter(labels)
-                    inst_xtype_cnts[cnf_factor] = Counter(logits_to_xtype(x) for x in xtypes)
+                    label_cnts[cnf_factor] += Counter(labels)
+                    xtype_cnts[cnf_factor] += Counter(logits_to_xtype(x) for x in xtypes)
                     cindex = ' '.join(str(x) for x in cindex) + '\n'
                     labels = ' '.join(labels) + '\n'
                     xtypes = ' '.join(str(x) for x in xtypes) + '\n'
                     cnf_bundle[cnf_factor] = cindex, labels, xtypes
 
-                if all(o in cnf_bundle for o in E_CNF):
-                    for o in E_CNF:
-                        label_cnts[o] += inst_label_cnts[o]
-                        xtype_cnts[o] += inst_xtype_cnts[o]
-                    word_cnt += Counter(wd)
-                    tag_cnt  += Counter(bt)
-                    wd = ' '.join(wd) + '\n'
-                    bt = ' '.join(bt) + '\n'
-                    bundle = sent_tag, len(wd), wd, bt, cnf_bundle
-                    q.put(bundle)
-            bundle = len(sents) - len(errors), errors, word_cnt, tag_cnt, label_cnts, xtype_cnts
+                gap_cnt.append(gd)
+                word_cnt += Counter(wd)
+                tag_cnt  += Counter(bt)
+                wd = ' '.join(wd) + '\n'
+                bt = ' '.join(bt) + '\n'
+                bundle = sent_tag, len(wd), wd, bt, cnf_bundle
+                q.put(bundle)
+
+            bundle = len(sents) - len(errors), errors, word_cnt, tag_cnt, label_cnts, xtype_cnts, Counter(gap_cnt)
             q.put(bundle)
 
     if corp_name == C_DPTB:
@@ -142,6 +145,7 @@ def build(save_to_dir,
     thread_join_cnt = 0
     word_cnt = Counter()
     tag_cnt  = Counter()
+    gap_cnt  = Counter()
     label_cnts = {o: Counter() for o in E_CNF}
     xtype_cnts = {o: Counter() for o in E_CNF}
     length_stat = dict(tlc = defaultdict(int), vlc = defaultdict(int), _lc = defaultdict(int))
@@ -162,7 +166,7 @@ def build(save_to_dir,
         f_ls = { o:stack.enter_context(open(join(save_to_dir, f'{M_TEST}.label.{o}' ), 'w')) for o in E_CNF}
         f_is = { o:stack.enter_context(open(join(save_to_dir, f'{M_TEST}.index.{o}' ), 'w')) for o in E_CNF}
         
-        for instance_cnt in count(): # Yes! this edition works fine!
+        for _ in count(): # Yes! this edition works fine!
             if q.empty():
                 sleep(0.01)
             else:
@@ -170,14 +174,14 @@ def build(save_to_dir,
                 if len(t) == 5:
                     sent_tag, sent_len, wd, bt, cnf_bundle = t
                     if in_devel_set(sent_tag):
-                        length_stat['vlc'][sent_tag] += 1
+                        length_stat['vlc'][sent_len] += 1
                         fw, ft, fxs, fls, fis = fvw, fvp, fvxs, fvls, fvis
                     elif in_test_set(sent_tag):
-                        length_stat['_lc'][sent_tag] += 1
+                        length_stat['_lc'][sent_len] += 1
                         fw, ft, fxs, fls, fis = f_w, f_p, f_xs, f_ls, f_is
                     else:
                         assert in_train_set(sent_tag)
-                        length_stat['tlc'][sent_tag] += 1
+                        length_stat['tlc'][sent_len] += 1
                         fw, ft, fxs, fls, fis = ftw, ftp, ftxs, ftls, ftis
                     fw.write(wd)
                     ft.write(bt)
@@ -186,18 +190,17 @@ def build(save_to_dir,
                         fls[cnf_factor].write(labels)
                         fxs[cnf_factor].write(xtypes)
                     qbar.update(1)
-                elif len(t) == 6:
+                elif len(t) == 7:
                     thread_join_cnt += 1
-                    ic, es, wc, tc, lcs, xcs = t
+                    ic, es, wc, tc, lcs, xcs, gc = t
                     if qbar.total:
                         qbar.total += ic
                     else:
                         qbar.total = ic
                     errors.extend(es)
-                    if '\n' in wc:
-                        import pdb; pdb.set_trace()
                     word_cnt += wc
                     tag_cnt  += tc
+                    gap_cnt  += gc
                     for o in E_CNF:
                         label_cnts[o] += lcs[o]
                         xtype_cnts[o] += xcs[o]
@@ -212,8 +215,17 @@ def build(save_to_dir,
         thread_str = byte_style(f'{num_threads}', '3')
         sample_str = byte_style(f'{qbar.total}', '2')
         error_str0 = byte_style(f'{sum(errors.values())}' if errors else 'No', '1' if errors else '2')
-        error_str1 = (' from \'' + ', '.join(byte_style(x) for x in errors) + '\'.') if errors else '.'
+        error_str1 = (' from \'' + ', '.join(byte_style(x, '3') for x in errors) + '\'.') if errors else '.'
         qbar.desc = (f'All {thread_str} threads ended with {sample_str} samples, {error_str0} errors{error_str1}')
+        instance_cnt = qbar.total
+
+    non_gap = gap_cnt.pop(0)
+    non_gap_percentage = byte_style(f'{100 - non_gap / instance_cnt * 100:.2f} % ({instance_cnt - non_gap})', '2')
+    print(f'Gap degree distribution among {non_gap_percentage} trees which contain gaps:', file = stderr)
+    print(histo_count(gap_cnt, bin_size = 1 if corp_name == C_DPTB else 2), file = stderr)
+    gap_cnt[0] = non_gap
+
+    length_stat['gap'] = gap_cnt
     pickle_dump(join(save_to_dir, 'info.pkl'), length_stat)
     tok_file = join(save_to_dir, 'vocab.word')
     tag_file = join(save_to_dir, 'vocab.tag' )
@@ -227,6 +239,11 @@ def build(save_to_dir,
     for o in E_CNF:
         save_vocab(join(save_to_dir, f'stat.xtype.{o}'), xtype_cnts[o])
         save_vocab(join(save_to_dir, f'stat.label.{o}'), label_cnts[o])
+    from data.disco import DiscoReader
+    try:
+        DiscoReader(save_to_dir, None, True)
+    except (KeyboardInterrupt, Exception, AssertionError) as err:
+        print(err, file = stderr)
     return (ts, ps, xs, ss)
 
 def check_data(save_dir, valid_sizes):
@@ -239,13 +256,4 @@ def check_data(save_dir, valid_sizes):
     valid_sizes = ts, ps, xs, ss
     vocab_files = 'vocab.word vocab.tag vocab.xtype vocab.label'.split()
     from data.io import check_vocab
-    safe = all(check_vocab(join(save_dir, vf), vs) for vf, vs in zip(vocab_files, valid_sizes))
-    index_cnn = join(parpath(save_dir), 'index.cnn')
-    if safe:
-        from data.disco import DiscoReader
-        tiger = DiscoReader(save_dir, None, True, train_indexing_cnn = True)
-        tiger.indexing_model()
-    elif isfile(index_cnn):
-        print('Delete obsoleted Index-CNN: ' + index_cnn)
-        remove(index_cnn)
-    return safe
+    return all(check_vocab(join(save_dir, vf), vs) for vf, vs in zip(vocab_files, valid_sizes))

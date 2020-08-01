@@ -1,19 +1,18 @@
 import torch
 from torch.nn import functional as F
+from models.utils import bos_mask, eos_mask
 
-original_cross_entropy = F.cross_entropy
-
-def cross_entropy(x_, y_, w_):
+def cross_entropy(x_, y_, *big_endian_w):
     b_, t_, c_ = x_.shape
     losses = F.cross_entropy(x_.view(-1, c_), y_.view(-1), reduction = 'none')
-    if w_ is not None:
-        w_ = big_endian_height_mask(t_, w_)
+    if big_endian_w:
+        big_endian, w_ = big_endian_w
+        if big_endian:
+            w_ = eos_mask(t_, w_)
+        else:
+            w_ = bos_mask(t_, w_)
         losses = losses * w_.view(-1)
     return losses.sum() # TODO turn off non-train gradient tracking
-
-def big_endian_height_mask(t_, w_):
-    p_ = torch.arange(t_, device = w_.device)[None, :]
-    return p_ >= w_[:, None]
 
 def binary_cross_entropy(x, y, w):
     losses = F.binary_cross_entropy(x, y.type(x.dtype), reduction = 'none')
@@ -27,7 +26,10 @@ def hinge_loss(x, y, w):
     losses = 1 - (x * y)
     hinge = losses < 0
     if w is not None:
-        hinge |= ~ w
+        if w.is_floating_point():
+            losses = losses * w
+        else:
+            hinge |= ~ w
     losses[hinge] = 0
     return losses.sum()
 
@@ -48,20 +50,24 @@ def sorted_decisions(argmax, topk, logits):
 def sorted_decisions_with_values(score_fn, topk, logits):
     return score_fn(logits).topk(topk)
 
-def get_loss(argmax, logits, batch, *net_height_mask_key):
+def get_loss(net, argmax, logits, batch, *big_endian_height_mask_key):
     if argmax:
-        if len(net_height_mask_key) == 1:
-            return cross_entropy(logits, batch['tag'], None)
-        _, height_mask, key = net_height_mask_key
-        return cross_entropy(logits, batch[key], height_mask)
-        
+        if len(big_endian_height_mask_key) == 1:
+            key, = big_endian_height_mask_key
+            return cross_entropy(logits, batch[key]) # endian does not matter
+        big_endian, height_mask, key = big_endian_height_mask_key
+        return cross_entropy(logits, batch[key], big_endian, height_mask)
 
-    if len(net_height_mask_key) == 1:
-        net, = net_height_mask_key
-        distance = net.distance(logits, batch['tag'])
+    if len(big_endian_height_mask_key) == 1:
+        key, = big_endian_height_mask_key
+        distance = net.distance(logits, batch[key])
     else:
-        net, height_mask, key = net_height_mask_key
+        big_endian, height_mask, key = big_endian_height_mask_key
+        if big_endian:
+            height_mask = eos_mask(logits.shape[1], height_mask)
+        else:
+            height_mask = bos_mask(logits.shape[1], height_mask)
         distance = net.distance(logits, batch[key]) # [b, s]
-        distance *= big_endian_height_mask(distance.shape[1], height_mask)
+        distance = distance * height_mask
 
     return distance.sum() + net.repulsion()

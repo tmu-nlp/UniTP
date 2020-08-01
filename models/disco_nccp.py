@@ -2,23 +2,44 @@ import torch
 from torch import nn, Tensor
 from models.backend import Stem, activation_type, logit_type
 
-from utils.types import hidden_dim, frac_4
+from utils.types import orient_dim, hidden_dim, num_ori_layer, true_type, frac_2, frac_4
 
-multi_class = dict(hidden_dim = hidden_dim,
-                   activation = activation_type,
-                   logit_type = logit_type,
-                   drop_out   = frac_4)
+from models.combine import get_combinator, get_components, combine_type, valid_trans_compound
+stem_config = dict(orient_dim   = orient_dim,
+                   combine_type = combine_type,
+                   joint_act    = activation_type,
+                   num_layers   = num_ori_layer,
+                   rnn_drop_out = frac_2,
+                   drop_out     = frac_4,
+                   trainable_initials = true_type)
 
-from models.backend import stem_config
-penn_tree_config = dict(orient_layer    = stem_config,
-                        tag_label_layer = multi_class)
-from models.utils import get_logit_layer
-from models.loss import get_decision, get_decision_with_value, get_loss
+from models.utils import condense_splitter, condense_left
+def diff_integer_indice(right_layer, joint_layer, existence, test = False):
+    lhs_helper, rhs_helper, _, swap, bool_pads = condense_splitter(right_layer, joint_layer, existence)
+    lhs_diff = torch.cat([swap, bool_pads, bool_pads], dim = 1)
+    mid_diff = torch.cat([bool_pads, swap, bool_pads], dim = 1)
+    rhs_diff = torch.cat([bool_pads, bool_pads, swap], dim = 1)
+    diff_indices = 1 * lhs_diff - 2 * mid_diff + 1 * rhs_diff
+    # assert diff_indices.sum() == 0 # TODO: CHECKED
+    diff_indices = diff_indices[:, :-1] * existence + existence
+    if test:
+        return diff_indices
+    return lhs_helper, rhs_helper, torch.cumsum(diff_indices, dim = 1)
+
+def split(hidden, right_layer, joint_layer, existence):
+    lhs_helper, rhs_helper, indices = diff_integer_indice(right_layer, joint_layer, existence)
+    lhs_indices = condense_left(indices, lhs_helper, skip_dump0 = False)
+    rhs_indices = condense_left(indices, rhs_helper, skip_dump0 = False)
+    indices = torch.arange(hidden.shape[0], device = indices.device)[:, None]
+    lhs_indices[:, 0] = 0
+    rhs_indices[:, 0] = 0
+    lhs_hidden = hidden[indices, lhs_indices]
+    rhs_hidden = hidden[indices, rhs_indices]
+    return lhs_hidden, rhs_hidden, rhs_indices > 0, lhs_indices + rhs_indices
 
 class DiscoStem(nn.Module):
     def __init__(self,
                  model_dim,
-                 index_cnn,
                  orient_dim,
                  combine_type,
                  joint_act,
@@ -38,7 +59,6 @@ class DiscoStem(nn.Module):
         self._jnt_bse = nn.Conv1d(model_dim, orient_dim, 2, 1, 0)
         self._jnt_act = joint_act()
         self._jnt_lgt = nn.Linear(orient_dim, 1)
-        self._idx_cnn = index_cnn
         self.combine = get_combinator(combine_type, model_dim)
         if trainable_initials:
             c0 = torch.randn(num_layers * 2, 1, hidden_size)
@@ -74,36 +94,45 @@ class DiscoStem(nn.Module):
         return self._jnt_lgt(joint_hidden.transpose(1, 2)).squeeze(dim = 2)
     
     def forward(self,
-                unit_idx,
                 unit_emb,
+                existence,
                 supervised_right = None,
                 supervised_joint = None,
                 **kw_args):
-        batch_size, seg_len = unit_idx.shape
+        batch_size, seg_len = existence.shape
         h0c0 = self.get_h0c0(batch_size)
+        # existence.squeeze_(dim = 2) # in-place is a pandora box
 
         layers_of_joint = []
         layers_of_u_emb = []
         layers_of_right_direc = []
+        layers_of_existence = []
         teacher_forcing = isinstance(supervised_right, Tensor)
         if teacher_forcing:
+            assert isinstance(supervised_joint, Tensor)
             ori_start = 0
             jnt_start = 0
         segment, seg_length = [], []
-        last_unit_idx = None
+        history = []
 
-        for _ in range(50): # max_iter | max_tree_high
-            existence = unit_idx > 0
+        for l_cnt in range(50): # max_iter | max_tree_high (unit_emb ** 2).sum().backward()
+            # existence = unit_idx > 0
             if not teacher_forcing:
                 segment   .append(seg_len)
                 seg_length.append(existence.sum(dim = 1))
 
             right_direc = self.predict_orient_direc(unit_emb, h0c0)
-            joint = self.predict_joint(unit_emb)
-            layers_of_joint.append(joint)
             layers_of_u_emb.append(unit_emb)
             layers_of_right_direc.append(right_direc)
-            if seg_len == 2 or last_unit_idx is not None and last_unit_idx.shape == unit_idx.shape and (last_unit_idx == unit_idx).all(): break
+            layers_of_existence.append(existence)
+            if seg_len == 2:
+                break # teacher forcing or a good model
+            elif len(history) > 1:
+                prev, curr = history
+                if prev.shape == curr.shape and (prev == curr).all():
+                    break
+            joint = self.predict_joint(unit_emb)
+            layers_of_joint.append(joint)
 
             if teacher_forcing:
                 ori_end   = ori_start + seg_len
@@ -115,24 +144,42 @@ class DiscoStem(nn.Module):
             else:
                 right = right_direc[:, :, 0] > 0
                 joint = joint > 0
-            right.unsqueeze_(dim = 2)
 
-            lhs, rhs, jnt, ids = self._idx_cnn.split(self, unit_emb, right, joint, existence)
-            unit_emb = self.combine(lhs, rhs, jnt)
-            seg_len = unit_emb.shape[1]
-            last_unit_idx = unit_idx
-            unit_idx      = ids
+            lhs, rhs, jnt, ids = split(unit_emb, right, joint, existence)
+            unit_emb = self.combine(lhs, rhs, jnt.unsqueeze(dim = 2))
+            seg_len  = unit_emb.shape[1]
+            existence = ids > 0
 
-        if not teacher_forcing:
-            segment    = torch.cat(segment,    dim = 1)
-            seg_length = torch.cat(seg_length, dim = 1)
+            if not teacher_forcing:
+                history.append(ids)
+                if len(history) > 2:
+                    history.pop(0)
+
+            if l_cnt == 49: print('Unknown action')
 
         embeddings  = torch.cat(layers_of_u_emb,       dim = 1)
         right_direc = torch.cat(layers_of_right_direc, dim = 1)
         joint       = torch.cat(layers_of_joint,       dim = 1)
+        existence   = torch.cat(layers_of_existence,   dim = 1)
 
-        return embeddings, right_direc, joint, segment, seg_length
+        if teacher_forcing:
+            assert joint.shape[1] == supervised_joint.shape[1]
+            assert right_direc.shape[1] == supervised_right.shape[1]
+        else:
+            # segment    = torch.stack(segment,    dim = 0)
+            seg_length = torch.stack(seg_length, dim = 1)
 
+        return existence, embeddings, right_direc, joint, segment, seg_length
+
+multi_class = dict(hidden_dim = hidden_dim,
+                   activation = activation_type,
+                   logit_type = logit_type,
+                   drop_out   = frac_4)
+
+model_type = dict(orient_layer    = stem_config,
+                  tag_label_layer = multi_class)
+from models.utils import get_logit_layer
+from models.loss import get_decision, get_decision_with_value, get_loss
 
 class BaseRnnTree(nn.Module):
     def __init__(self,
@@ -144,7 +191,7 @@ class BaseRnnTree(nn.Module):
                  **kw_args):
         super().__init__(**kw_args)
 
-        self._stem_layer = Stem(model_dim, **orient_layer)
+        self._stem_layer = DiscoStem(model_dim, **orient_layer)
 
         hidden_dim = tag_label_layer['hidden_dim']
         if hidden_dim:
@@ -166,11 +213,8 @@ class BaseRnnTree(nn.Module):
                 bottom_existence,
                 ingore_logits = False,
                 **kw_args):
-
-        (layers_of_base, layers_of_orient, layers_of_existence,
-         trapezoid_info) = self._stem_layer(bottom_existence,
-                                            base_inputs, # dynamic can be none
-                                            **kw_args)
+        (layers_of_existence, layers_of_base, layers_of_right_direc, layers_of_joint, segment,
+         seg_length) = self._stem_layer(base_inputs, bottom_existence, **kw_args)
 
         if self._hidden_dim:
             layers_of_hidden = self._shared_layer(layers_of_base)
@@ -182,7 +226,7 @@ class BaseRnnTree(nn.Module):
                 tags = None
             else:
                 _, batch_len, _ = base_inputs.shape
-                tags = self._tag_layer(layers_of_hidden[:, -batch_len:])
+                tags = self._tag_layer(layers_of_hidden[:, :batch_len]) # diff small endian
             
             if self._label_layer is None or ingore_logits:
                 labels = None
@@ -191,7 +235,7 @@ class BaseRnnTree(nn.Module):
         else:
             layers_of_hidden = tags = labels = None
 
-        return layers_of_base, layers_of_hidden, layers_of_existence, layers_of_orient, tags, labels, trapezoid_info
+        return layers_of_existence, layers_of_base, layers_of_hidden, layers_of_right_direc, layers_of_joint, tags, labels, segment, seg_length
 
     @property
     def model_dim(self):
@@ -210,7 +254,11 @@ class BaseRnnTree(nn.Module):
     def get_decision_with_value(self, logits):
         return get_decision_with_value(self._score_fn, logits)
 
-    def get_loss(self, logits, batch, height_mask):
-        if height_mask is None:
-            return get_loss(self._logit_max, logits, batch, self._tag_layer)
-        return get_loss(self._logit_max, logits, batch, self._label_layer, height_mask, 'label')
+    def get_losses(self, batch, tag_logits, top3_label_logits, label_logits):
+        height_mask = batch['segments'][None] * (batch['seq_len'] > 0)
+        height_mask = height_mask.sum(dim = 1)
+        tag_loss   = get_loss(self._tag_layer,   self._logit_max, tag_logits,   batch, 'tag')
+        label_loss = get_loss(self._label_layer, self._logit_max, label_logits, batch, False, height_mask, 'label')
+        if top3_label_logits is not None:
+            tag_loss += get_loss(self._label_layer, self._logit_max, top3_label_logits, batch, 'top3_label')
+        return tag_loss, label_loss

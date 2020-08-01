@@ -28,6 +28,15 @@ def f_score(t1, t2, beta = 1):
         return (1 + b) * (t1 * t2) / d
     return 0
 
+def bit_fanout(bits):
+    prev, result = bits, 0
+    while bits:
+        bits &= bits - 1
+        if ((prev - bits) << 1) & prev == 0:
+            result += 1
+        prev = bits
+    return result
+
 if __name__ == '__main__1':
     def max_nil_relay(n):
         if n < 3:

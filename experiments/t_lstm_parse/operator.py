@@ -8,7 +8,7 @@ from time import time
 from utils.math_ops import is_bin_times
 from utils.types import M_TRAIN, BaseType, frac_open_0, true_type, tune_epoch_type, frac_06
 from models.utils import PCA, fraction, hinge_score
-from models.loss import binary_cross_entropy, hinge_loss, cross_entropy
+from models.loss import binary_cross_entropy, hinge_loss
 from experiments.helper import warm_adam
 
 train_type = dict(loss_weight = dict(tag    = BaseType(0.3, validator = frac_open_0),
@@ -56,7 +56,7 @@ class PennOperator(Operator):
             #(batch['offset'], batch['length'])
 
         batch_time = time()
-        (batch_size, batch_len, static, dynamic, top3_label_logits,
+        (batch_size, batch_len, static, top3_label_logits,
          layers_of_base, _, existences, orient_logits, tag_logits, label_logits,
          trapezoid_info) = self._model(batch['token'], self._tune_pre_trained, **batch)
         batch_time = time() - batch_time
@@ -85,10 +85,7 @@ class PennOperator(Operator):
             else:
                 height_mask = batch['mask_length'] # ?? negative effect ???
 
-            tag_loss   = self._model.get_loss(tag_logits,   batch, None)
-            label_loss = self._model.get_loss(label_logits, batch, height_mask)
-            if top3_label_logits is not None:
-                tag_loss += cross_entropy(top3_label_logits, batch['top3_label'], None)
+            tag_loss, label_loss = self._model.get_losses(batch, tag_logits, top3_label_logits, label_logits, height_mask)
 
             if self._train_config.orient_hinge_loss:
                 orient_loss = hinge_loss(orient_logits, gold_orients, orient_weight)
@@ -114,14 +111,14 @@ class PennOperator(Operator):
                 self._writer.add_scalar('Batch/Height', len(batch['segment']), gs)
         else:
             vis, _, _ = self._vis_mode
-            mpc_token = mpc_label = None
             if vis.save_tensors:
-                if hasattr(self._model._input_layer, 'pca'):
-                    if dynamic is not None: # even dynamic might be None, being dynamic is necessary to train a good model
-                        mpc_token = self._model._input_layer.pca(static)
+                if self._model._input_layer.has_static_pca:
+                    mpc_token = self._model._input_layer.pca(static)
                     mpc_label = self._model._input_layer.pca(layers_of_base)
                 else:
-                    mpc_label = PCA(layers_of_base[:, -batch_len:].reshape(-1, layers_of_base.shape[2]))(layers_of_base)
+                    pca = PCA(layers_of_base.reshape(-1, layers_of_base.shape[2]))
+                    mpc_token = pca(static)
+                    mpc_label = pca(layers_of_base)
 
                 tag_scores,   tags   = self._model.get_decision_with_value(tag_logits)
                 label_scores, labels = self._model.get_decision_with_value(label_logits)
@@ -130,6 +127,7 @@ class PennOperator(Operator):
                 b_mpcs = (None if mpc_token is None else mpc_token.type(torch.float16), mpc_label.type(torch.float16))
                 b_scores = (tag_scores.type(torch.float16), label_scores.type(torch.float16), orient_logits.type(torch.float16))
             else:
+                mpc_token = mpc_label = None
                 tags   = self._model.get_decision(tag_logits  )
                 labels = self._model.get_decision(label_logits)
                 b_mpcs = (mpc_token, mpc_label)
@@ -163,8 +161,8 @@ class PennOperator(Operator):
             save_tensors = is_bin_times(int(float(epoch)) - 1)
             scores_of_bins = False
 
-        if hasattr(self._model._input_layer, "has_only_dynamic") and self._model._input_layer.has_only_dynamic:
-            self._model._input_layer.flush_pc()
+        if self._model._input_layer.has_static_pca:
+            self._model._input_layer.flush_pc_if_emb_is_tuned()
 
         vis = PennVis(epoch,
                       self.recorder.create_join(folder),

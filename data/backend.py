@@ -44,6 +44,9 @@ class _BaseReader:
             to_model = self._to_model
         to_model.update({f'num_{k}s':v[0] for k,v in v2is.items()})
 
+    def update_to_model(self, **kw_args):
+        self._to_model.update(kw_args)
+
     def change_oovs(self, field, offset):
         if field in self._oovs:
             self._oovs[field] += offset

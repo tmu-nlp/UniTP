@@ -21,21 +21,12 @@ class XLNetPennTree(BaseRnnTree):
                  **base_config):
         super().__init__(model_dim, **base_config)
         self._input_layer = XLNetLeaves(model_dim, paddings = paddings, **input_layer)
-        self._paddings    = paddings
 
     def forward(self,
                 word_idx,
                 tune_pre_trained,
                 offset, xl_ids, xl_start, 
                 ingore_logits = False, **kw_args):
-        batch_size, batch_len = word_idx.shape
-        static, dynamic = self._input_layer(word_idx, offset, xl_ids, xl_start, tune_pre_trained)
-
-        if self._paddings:
-            bottom_existence = torch.ones(batch_size, batch_len,
-                                          dtype  = torch.bool,
-                                          device = word_idx.device)
-        else:
-            bottom_existence = word_idx > 0
-        base_returns = super().forward(dynamic, bottom_existence, ingore_logits, **kw_args)
-        return (batch_size, batch_len, static, dynamic, None) + base_returns
+        batch_size, batch_len, base_inputs, bottom_existence = self._input_layer(word_idx, offset, xl_ids, xl_start, tune_pre_trained)
+        base_returns = super().forward(base_inputs, bottom_existence, ingore_logits, **kw_args)
+        return (batch_size, batch_len, base_inputs, None) + base_returns

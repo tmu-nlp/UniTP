@@ -88,9 +88,7 @@ class Stem(nn.Module):
                 unit_hidden,
                 height = 0,
                 **kw_args):
-        batch_size, seq_len = existence.shape
-        existence.unsqueeze_(dim = -1)
-        unit_hidden *= existence
+        batch_size, seq_len, _ = existence.shape
         h0c0 = self.get_h0c0(batch_size)
 
         if height == 0:
@@ -219,72 +217,95 @@ class InputLeaves(nn.Module):
                  model_dim,
                  num_tokens,
                  initial_weight,
+                 nil_as_pad,
                  pre_trained,
                  activation,
                  drop_out):
         super().__init__()
 
-        fixed_mutable_bound = 0
-        fixed_emb_layer = mutable_emb_layer = None
-        if pre_trained:
-            num_special_tokens = num_tokens - initial_weight.shape[0]
+        if initial_weight is None: # tokenization without <nil>, <bos> & <eos> are included tuned with others
+            fixed_dim = model_dim
+            assert not pre_trained
+        else: # parsing / sentiment analysis
+            # 0: no special; 1: <unk>; 2: <bos> <eos> (w/o <nil>); 3: 1 and 2 (w/o <nil>)
+            fixed_num, fixed_dim = initial_weight.shape
+            num_special_tokens   = num_tokens - fixed_num
             assert num_special_tokens >= 0
-            # import pdb; pdb.set_trace()
-            if num_special_tokens > 0: # bos eos
-                assert model_dim == initial_weight.shape[1]
-                fixed_mutable_bound = initial_weight.shape[0]
-                fixed_emb_layer     = nn.Embedding.from_pretrained(torch.as_tensor(initial_weight), freeze = False)
-                mutable_emb_layer   = nn.Embedding(num_special_tokens, model_dim)
-            else: # nil nil
-                fixed_emb_layer = nn.Embedding.from_pretrained(torch.as_tensor(initial_weight), freeze = True)
+
+        main_extra_bound = 0
+        main_emb_layer = extra_emb_layer = None
+        if pre_trained:
+            if num_special_tokens > 0: # unk | bos + eos | no <nil>
+                main_extra_bound = initial_weight.shape[0]
+                main_emb_layer  = nn.Embedding.from_pretrained(torch.as_tensor(initial_weight), freeze = False)
+                extra_emb_layer = nn.Embedding(num_special_tokens, fixed_dim)
+            else: # <nil> ... |
+                main_emb_layer = nn.Embedding.from_pretrained(torch.as_tensor(initial_weight), freeze = False)
         else: # nil ... unk | ... unk bos eos
-            mutable_emb_layer = nn.Embedding(num_tokens, model_dim)
+            main_emb_layer = nn.Embedding(num_tokens, fixed_dim)
+        static_pca = fixed_dim == model_dim
 
         if activation is None:
             self._act_pre_trained = None
         else:
             self._act_pre_trained = activation()
+        
         self._dp_layer = nn.Dropout(drop_out)
-        self._model_dim = model_dim
-        self._fixed_mutable_bound = fixed_mutable_bound
-        self._fixed_emb_layer = fixed_emb_layer
-        self._mutable_emb_layer = mutable_emb_layer
-        self._pca_base = None
+        self._main_extra_bound_pad = main_extra_bound, nil_as_pad
+        self._input_dim = fixed_dim
+        self._main_emb_layer  = main_emb_layer
+        self._extra_emb_layer = extra_emb_layer
+        self._pca_base = None, static_pca
+        self._main_emb_tuned = True
 
     @property
-    def has_only_dynamic(self):
-        return self._fixed_emb_layer is None
+    def input_dim(self):
+        return self._input_dim
 
-    def flush_pc(self):
-        self._pca_base = PCA(self._mutable_emb_layer.weight)
+    @property
+    def has_static_pca(self):
+        return self._pca_base[1]
+
+    def flush_pc_if_emb_is_tuned(self):
+        pca_base, static = self._pca_base
+        assert static, 'has_no_static_pca'
+        if self._main_emb_tuned or pca_base is None:
+            self._pca_base = PCA(self._main_emb_layer.weight), True
+            self._main_emb_tuned = False
 
     def pca(self, word_emb):
-        if self._fixed_emb_layer is not None and self._pca_base is None:
-            self._pca_base = PCA(self._fixed_emb_layer.weight)
-        return self._pca_base(word_emb)
+        pca_base, static = self._pca_base
+        assert static, 'has_no_static_pca'
+        return pca_base(word_emb)
 
     def forward(self, word_idx, tune_pre_trained):
-        if self._fixed_mutable_bound > 0: # [nil] vocab | UNK | BOS EOS
-            b_ = self._fixed_mutable_bound
-            c_ = word_idx < b_
-            f0_idx = torch.where(c_, word_idx, torch.zeros_like(word_idx))
-            fb_idx = torch.where(c_, torch.zeros_like(word_idx), word_idx - b_)
+        bound, nil_as_pad = self._main_extra_bound_pad
+        if bound > 0: # [nil] vocab | UNK | BOS EOS
+            fix_mask = word_idx < bound
+            f0_idx = fix_mask * word_idx
+            fb_idx =~fix_mask * (word_idx - bound)
             if tune_pre_trained:
-                f0_emb = self._fixed_emb_layer(f0_idx)
+                f0_emb = self._main_emb_layer(f0_idx)
             else:
                 with torch.no_grad():
-                    f0_emb = self._fixed_emb_layer(f0_idx)
-            fb_emb = self._mutable_emb_layer(fb_idx)
-            static_emb = torch.where(c_.unsqueeze(-1), f0_emb, fb_emb)
-            bottom_existence = torch.ones_like(word_idx, dtype = torch.bool)
+                    f0_emb = self._main_emb_layer(f0_idx)
+            fb_emb = self._extra_emb_layer(fb_idx) # UNK BOS EOS must be tuned
+            static_emb = torch.where(fix_mask.unsqueeze(-1), f0_emb, fb_emb)
         else:
-            emb_layer = self._fixed_emb_layer or self._mutable_emb_layer
+            emb_layer = self._main_emb_layer or self._extra_emb_layer
             if tune_pre_trained:
                 static_emb = emb_layer(word_idx)
             else:
                 with torch.no_grad():
                     static_emb = emb_layer(word_idx)
+        if nil_as_pad:
             bottom_existence = word_idx > 0
+            bottom_existence.unsqueeze_(dim = 2)
+            static_emb = static_emb * bottom_existence
+        else:
+            bottom_existence = torch.ones_like(word_idx, dtype = torch.bool)
+            bottom_existence.unsqueeze_(dim = 2)
+        self._main_emb_tuned = self.training and tune_pre_trained
 
         static_emb = self._dp_layer(static_emb)
         if self._act_pre_trained is not None:
@@ -302,6 +323,7 @@ contextual_config = dict(num_layers   = num_ctx_layer,
 
 class Contextual(nn.Module):
     def __init__(self,
+                 input_dim,
                  model_dim,
                  hidden_dim,
                  num_layers,
@@ -311,9 +333,10 @@ class Contextual(nn.Module):
                  ):
         super().__init__()
         if num_layers:
+            assert input_dim % 2 == 0
             assert model_dim % 2 == 0
             rnn_drop_out = rnn_drop_out if num_layers > 1 else 0
-            self._contextual = rnn_type(model_dim,
+            self._contextual = rnn_type(input_dim,
                                         model_dim // 2,
                                         num_layers,
                                         bidirectional = True,
@@ -334,30 +357,32 @@ class Contextual(nn.Module):
         else:
             self._contextual = None
 
+    @property
+    def is_useless(self):
+        return self._contextual is None
+
     def forward(self, static_emb):
-        if self._contextual is None:
-            dynamic_emb = final_state = None
+        dynamic_emb, final_state = self._contextual(static_emb)
+
+        if self._state_config is None:
+            top_3 = None
         else:
-            dynamic_emb, final_state = self._contextual(static_emb)
-            dynamic_emb = dynamic_emb + static_emb # += does bad to gpu
-            if self._state_config is None:
-                final_state = None
-            else:
-                num_layers, use_cell_as_state, state_none_num_sum_weight, hidden_dim = self._state_config
-                if isinstance(final_state, tuple):
-                    final_state = final_state[use_cell_as_state]
-                batch_size, _, model_dim = dynamic_emb.shape
-                final_state = final_state.view(num_layers, 2, batch_size, model_dim // 2)
-                if isinstance(state_none_num_sum_weight, int): # some spec layer
-                    final_state = final_state[state_none_num_sum_weight]
-                else: # sum dim = 0
-                    if state_none_num_sum_weight == 'weight_layers':
-                        layer_weights = self._layer_softmax(self._layer_weights)
-                        final_state = final_state * layer_weights
-                    final_state = final_state.sum(dim = 0)
-                # final_state: [batch, model_dim]
-                final_state = final_state.transpose(0, 1).reshape(batch_size, model_dim)
-                if use_cell_as_state:
-                    final_state = torch.tanh(final_state)
-                final_state = self._state_to_top3(final_state).reshape(batch_size, 3, hidden_dim)
-        return dynamic_emb, final_state
+            num_layers, use_cell_as_state, state_none_num_sum_weight, hidden_dim = self._state_config
+            if isinstance(final_state, tuple):
+                final_state = final_state[use_cell_as_state]
+            batch_size, _, model_dim = dynamic_emb.shape
+            final_state = final_state.view(num_layers, 2, batch_size, model_dim // 2)
+            if isinstance(state_none_num_sum_weight, int): # some spec layer
+                final_state = final_state[state_none_num_sum_weight]
+            else: # sum dim = 0
+                if state_none_num_sum_weight == 'weight_layers':
+                    layer_weights = self._layer_softmax(self._layer_weights)
+                    final_state = final_state * layer_weights
+                final_state = final_state.sum(dim = 0)
+            # final_state: [batch, model_dim]
+            final_state = final_state.transpose(0, 1).reshape(batch_size, model_dim)
+            if use_cell_as_state:
+                final_state = torch.tanh(final_state)
+            top_3 = self._state_to_top3(final_state).reshape(batch_size, 3, hidden_dim)
+
+        return dynamic_emb, top_3

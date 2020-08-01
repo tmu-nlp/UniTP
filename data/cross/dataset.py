@@ -42,9 +42,9 @@ class CrossDataset(LengthOrderedDataset):
                 field_names.append(f + f'({num_factors})')
                 num_fields_left += num_factors
 
-        with tqdm(desc = 'Load Datasets: ' + ', '.join(field_names)) as qbar:
+        with tqdm(desc = f'Load {prefix.title().ljust(5)}Set: ' + ', '.join(field_names)) as qbar:
             for field, v2i in field_v2is:
-                qbar.desc = 'Load Datasets: \033[32m' + ', '.join((f + '\033[m') if f.startswith(field) else f for f in field_names)
+                qbar.desc = f'Load {prefix.title().ljust(5)}Set: \033[32m' + ', '.join((f + '\033[m') if f.startswith(field) else f for f in field_names)
                 if field in fields: # token /tag / ftag / finc
                     if field == 'token':
                         column, lengths, text = read_data(dir_join(f'{prefix}.word'), v2i, True)
@@ -124,36 +124,33 @@ class CrossDataset(LengthOrderedDataset):
             if field == 'length':
                 batch_size = len(column)
                 lengths = np.asarray(column, np.int32)
-                max_len = np.max(lengths) + pad_len # BOS and EOS
-                offsets = (max_len - lengths) // 2
-                field_columns['offset'] = offsets
+                max_len = np.max(lengths) + pad_len # <nil>s as BOS
                 tensor = lengths
             elif field in fields: # token or tags
                 tensor = np.zeros([batch_size, max_len], np.int32)
-                for i, (values, offset, length) in enumerate(zip(column, offsets, lengths)):
-                    end = offset + length
-                    tensor[i, offset:end] = values
+                for i, (values, length) in enumerate(zip(column, lengths)):
+                    tensor[i, pad_len: pad_len + length] = values
             elif field == 'seq_len':
                 seq_len = zip(*zip_longest(*column, fillvalue = 0))
                 seq_len = np.asarray(list(seq_len))
                 segments = np.max(seq_len, axis = 0)
+                segments += pad_len
                 field_columns['seq_len']  = seq_len
                 field_columns['segments'] = segments
                 continue
             else:
                 dtype = np.int32 if field in ('label', 'target') else np.bool
                 size_adjust = 0
-                is_right_field = field == 'right'
                 if field != 'joint':
                     sizes = seq_len
-                    slens = segments + pad_len
+                    slens = segments
                 elif cat_joint:
                     sizes = seq_len[:, :-1] - 1
-                    slens = segments + pad_len
+                    slens = segments
                     size_adjust -= 1
                 else:
                     sizes = seq_len[:, :-1] - 1
-                    slens = segments[:-1] - 1 + pad_len
+                    slens = segments[:-1] - 1
                 tensor = np.zeros([batch_size, np.sum(slens) + size_adjust], dtype)
                 for i, inst_size in enumerate(zip(column, sizes)):
                     l_start = 0
@@ -162,14 +159,12 @@ class CrossDataset(LengthOrderedDataset):
                             start = l_start + pad_len
                             end   = start + size
                             tensor[i, start:end] = layer
-                            if is_right_field:
-                                tensor
                             l_start += slen
 
             field_columns[field] = tensor
 
         if cat_joint: # target -= 1 would make any difference
-            slens = segments + pad_len
+            slens = segments
             tensor = np.zeros([batch_size, np.sum(slens)], np.bool)
             for i, layer_lens in enumerate(seq_len):
                 l_start = 0
@@ -182,7 +177,7 @@ class CrossDataset(LengthOrderedDataset):
             field_columns['existence'] = tensor
 
         for f, column in field_columns.items():
-            if f in ('length', 'offset', 'target', 'segments', 'seq_len'):
+            if f in ('length', 'target', 'segments', 'seq_len'):
                 dtype = torch.int32
             elif f in ('token', 'tag', 'label'):
                 dtype = torch.long

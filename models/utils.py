@@ -13,7 +13,7 @@ class PCA:
         pc = torch.matmul(emb, self._bases)
         return torch.cat([m_, pc], -1)
 
-def fraction(cnt_n, cnt_d, dtype = torch.float32):
+def fraction(cnt_n, cnt_d = None, dtype = torch.float32):
     if cnt_d is None:
         return cnt_n.sum().type(dtype) / cnt_n.nelement()
     return cnt_n.sum().type(dtype) / cnt_d.sum().type(dtype)
@@ -142,10 +142,12 @@ def eos_mask(seq_len, length):
 
 def condense_splitter(right_layer, joint_layer, existence):
     batch_size, old_batch_len = existence.shape
-    physical_joint = right_layer[:, :-1] # lhs2r
-    physical_joint &= right_layer[:, 1:].logical_not() # rhs2l
-    physical_joint &= joint_layer
-    rhs_exist = torch.cat([torch.zeros(batch_size, 1, dtype = physical_joint.dtype), physical_joint], dim = 1)
+    agree_orient = right_layer[:, :-1] # lhs2r
+    agree_orient &= right_layer[:, 1:].logical_not() # rhs2l
+    swapping_spot = agree_orient & existence[:, 1:] & joint_layer.logical_not()
+    physical_joint = agree_orient & joint_layer
+    bool_pads = torch.zeros(batch_size, 1, dtype = physical_joint.dtype, device = physical_joint.device)
+    rhs_exist = torch.cat([bool_pads, physical_joint], dim = 1)
     lhs_exist = rhs_exist.logical_not()
     lhs_exist &= existence
     rhs_exist &= existence
@@ -156,7 +158,7 @@ def condense_splitter(right_layer, joint_layer, existence):
     max_len = lhs_seq_idx.max() + 1
     lhs_helper = lhs_seq_idx, max_len, True
     rhs_helper = rhs_seq_idx, max_len, True
-    return lhs_helper, rhs_helper, physical_joint
+    return lhs_helper, rhs_helper, physical_joint, swapping_spot, bool_pads
 
 def condense_helper(existence_or_start,
                     as_existence      = False,

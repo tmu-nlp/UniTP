@@ -46,7 +46,8 @@ class RnnTokenizer(nn.Module):
 
         input_layer['pre_trained'] = False
         self._input_layer = InputLeaves(model_dim, num_tokens, None, **input_layer)
-        self._contextual_layer = Contextual(model_dim, 'hidden_never_used', **contextual_layer)
+        contextual_layer = Contextual(model_dim, model_dim, 'hidden_never_used', **contextual_layer)
+        self._contextual_layer = None if contextual_layer.is_useless else contextual_layer
         self._discriminator = VectorDiscriminator(model_dim, **discrim_layer)
         self._discr_sigmoid = nn.Sigmoid()
         self._orient_layer = Stem(model_dim, **orient_layer)
@@ -55,15 +56,15 @@ class RnnTokenizer(nn.Module):
     def forward(self, char_idx, offset, length, noise_mode, train_clean = False, **kw_args):
         batch_size, batch_len = char_idx.shape
         static, bottom_existence = self._input_layer(char_idx)
-        dynamic, _ = self._contextual_layer(static)
 
-        if dynamic is None:
+        if self._contextual_layer is None:
             bottom_input = static
         else:
-            bottom_input = dynamic
+            dynamic, _ = self._contextual_layer(static)
+            bottom_input = static + dynamic
 
         bottom_existence.unsqueeze_(dim = 2)
-        base_return = batch_size, batch_len, static, dynamic
+        base_return = batch_size, batch_len, static
 
         if noise_mode:
             second_existence, second_input = self._orient_layer.blind_combine(bottom_input, bottom_existence)

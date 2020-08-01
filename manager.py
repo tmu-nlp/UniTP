@@ -16,7 +16,8 @@ from utils.str_ops import strange_to
 from utils.shell_io import call_fasttext, byte_style
 from collections import defaultdict
 from datetime import datetime
-from data.penn_types import E_PENN, C_ABSTRACT
+from data.penn_types import E_PENN, C_ABSTRACT as C_PENN_ABS
+from data.disco_types import E_DISCO, C_ABSTRACT as C_DISCO_ABS
 import pdb
 
 _mfile = 'manager.yaml'
@@ -196,7 +197,7 @@ class Manager:
                 ds_ready = True
                 if ft_ready:
                     ready_paths[corp_name] = elp
-                    print(f"*local dataset '{corp_name}' is ready", file = sys.stderr)
+                    print(f"*local dataset '{byte_style(corp_name, '3')}' is ready", file = sys.stderr)
                     continue # ready, no need to build
             elif build_if_not_yet:
                 print(f"(Re)build local dataset '{corp_name}'", file = sys.stderr)
@@ -319,10 +320,12 @@ class Manager:
         
         if None in exp_ids: # train new
             if corp_name in E_PENN: # only happen at penn data
-                change_key(data_config, C_ABSTRACT, corp_name)
+                change_key(data_config, C_PENN_ABS, corp_name)
+            elif corp_name in E_DISCO:
+                change_key(data_config, C_DISCO_ABS, corp_name)
             for d, c in data_config.items():
                 if d not in ready_paths:
-                    print(f"{d} is an abstract data, you might mean: {' or '.join(ready_paths.keys())}", file = sys.stderr)
+                    print(f"/{d} is an abstract data, you might mean: {' or '.join(ready_paths.keys())}", file = sys.stderr)
                     exit()
                 if c is None:
                     data_config[d] = dict(data_path = ready_paths[d])

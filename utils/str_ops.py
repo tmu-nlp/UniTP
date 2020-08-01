@@ -49,23 +49,26 @@ def swap_ptr(base, low, high, length):
     high_end = high + length
     return base[:low] + base[high:high_end] + base[low_end:high] + base[low:low_end] + base[high_end:]
 
-def histo_count(cnt, num_bin = None, bin_size = None, sep = '\n'):
+def histo_count(cnt, num_bin = None, bin_size = None, bin_start = None, sep = '\n'):
+    if bin_start is None:
+        bin_start = min(cnt.keys())
     if bin_size is None:
-        max_cnt = max(cnt.keys())
-        bin_size = max_cnt / num_bin
+        bin_size = (max(cnt.keys()) - bin_start) / num_bin
 
     info = []
     stat = defaultdict(int)
     total = 0
     if isinstance(bin_size, int):
         fmt1 = '%d ~ %d: '
+        minx = 1
     else:
         fmt1 = '%.2f ~ %.2f'
+        minx = 0.01
     for k,v in cnt.items():
-        stat[k//bin_size] += v
+        stat[(k - bin_start)//bin_size] += v
         total += v
     for k in sorted(stat.keys()):
-        s1 = fmt1 % (k*bin_size, (k+1)*bin_size)
+        s1 = fmt1 % (k*bin_size + bin_start, (k+1)*bin_size + bin_start - minx)
         s1 = s1.rjust(15)
         s2 = str_percentage(stat[k] / total)
         s2 = s2.rjust(8)

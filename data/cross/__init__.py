@@ -14,10 +14,14 @@ def has_multiple(gen):
 #     bottom[lhs], bottom[rhs] = bottom[rhs], bottom[lhs]
 from utils.shell_io import byte_style
 
-def _read_graph(graph):
+def _read_graph(graph, make_up_for_no_nt = True):
+    bottom_up = {}
     top_down = {}
     single_attachment = set()
-    for nt in graph[1]:
+    terminals, non_terminals = graph[0]
+    bottom = [(t.get('id'), t.get('word'), t.get('pos')) for t in terminals]
+
+    for nt in non_terminals:
         p_node = nt.get('id')
         label = nt.get('cat')
         children = {}
@@ -30,12 +34,15 @@ def _read_graph(graph):
             assert node not in single_attachment, 'multi-attachment'
             single_attachment.add(node)
             top_down[p_node] = TopDown(label, children)
+            bottom_up[node] = p_node
 
-    bottom = []
-    for t in graph[0]:
-        bottom.append((t.get('id'), t.get('word'), t.get('pos')))
+    if top_down:
+        while p_node in bottom_up: # to root
+            p_node = bottom_up[p_node]
+    elif make_up_for_no_nt:
+        p_node = graph.get('id') + '_VROOT'
+        top_down[p_node] = TopDown('VROOT', {bid: '--' for bid, _, _ in bottom})
 
-    # CHECKED: p_node is the root_id
     validate(bottom, top_down, p_node)
     return bottom, top_down, p_node
 
@@ -177,7 +184,7 @@ def validate(bottom_info, top_down, root_id):
         cids = set()
     __validate(being_bids, to_be_bids, top_down, checked_nids)
 
-def validate_and_maintain(bottom_info, top_down, root_id, remove_cids, trace_dst):
+def validate_and_maintain(bottom_info, top_down, root_id, trace_dst):
     cids = set()
     nids = [root_id]
     bottom_up = {}
@@ -201,11 +208,13 @@ def validate_and_maintain(bottom_info, top_down, root_id, remove_cids, trace_dst
         cids = set()
     remove_bids = (bid for bid, _, tag in bottom_info if tag == '-NONE-')
     remove_bids = sorted(remove_bids, reverse = True)
+    remove_cids = [s_pid for s_pid in top_down if s_pid != root_id and not top_down[s_pid].children]
     for cid in remove_cids + remove_bids:
         if cid in remove_bids:
             bid = cid - sum(td.bid < cid for td in trace_dst)
             assert bottom_info.pop(bid)[2] == '-NONE-'
             to_be_bids.remove(cid)
+            being_bids.remove(cid)
         else:
             top_down.pop(cid)
             checked_nids.remove(cid)
@@ -245,7 +254,7 @@ def trace_dst_gen(trace_src, trace_dst):
         else:
             yield tds[0]
 
-def _read_dpenn(tree):
+def _read_dpenn(tree, convert_id_to_str = True):
     bottom = []
     top_down = {}
     pd_args = {}
@@ -329,7 +338,6 @@ def _read_dpenn(tree):
 
     # cross trace along the bottom (ordered and reversed for bottom.pop(i) stability)
     history = {}
-    remove_cids = []
     for _, tid, d_pid, d_cid, d_bid in trace_dst:
         s_pid, s_cid, lhs, rhs = trace_src.pop(tid)
         d_pid = history.pop(d_cid, d_pid)
@@ -350,43 +358,82 @@ def _read_dpenn(tree):
                     break
             ftag = top_down[s_cid].children.pop(s_ccid)
             top_down[s_pid].children[s_ccid] = ftag
-        if s_pid != nid and not top_down[s_pid].children: # empty node
-            remove_cids.append(s_pid)
 
-    validate_and_maintain(bottom, top_down, nid, remove_cids, trace_dst)
+    validate_and_maintain(bottom, top_down, nid, trace_dst)
     vroot = top_down.pop(nid)
     assert vroot.label == 'VROOT'
-    return bottom, top_down, get_sole_key(vroot.children)
+    root_id = get_sole_key(vroot.children)
 
+    if convert_id_to_str:
+        new_bottom = [(f'n_{bid}', w, t) for bid, w, t in bottom]
+        new_top_down = {}
+        for nid, td in top_down.items():
+            children = {}
+            for cid, ftag in td.children.items():
+                children[f'n_{cid}'] = ftag
+            new_top_down[f'n_{nid}'] = TopDown(td.label, children)
+        return new_bottom, new_top_down, f'n_{root_id}'
+
+    return bottom, top_down, root_id
+
+from utils.math_ops import bit_fanout
 def gap_degree(bottom, top_down, nid, bottom_is_bid = True):
     finally_return = True
     if isinstance(bottom, dict):
         if nid in bottom:
-            return 0, set({bottom[nid]})
+            return {0: 1}, bottom[nid]
         finally_return = False
-    elif bottom_is_bid:
-        bottom = {bid: eid for eid, bid in enumerate(bottom)}
     else:
-        bottom = {bid: eid for eid, (bid, _, _) in enumerate(bottom)}
+        if not top_down:
+            return {0: 1}
+        if bottom_is_bid:
+            bottom = {bid: 1 << eid for eid, bid in enumerate(bottom)}
+        else:
+            bottom = {bid: 1 << eid for eid, (bid, _, _) in enumerate(bottom)}
 
-    max_gap_num = 0
-    coverage = set()
+    gap_cnt = Counter()
+    bit_coverage = 0 # set()
     for cid in top_down[nid].children:
-        gap_num, child_coverage = gap_degree(bottom, top_down, cid)
-        max_gap_num = max(gap_num, max_gap_num)
-        coverage |= child_coverage
+        child_gaps, child_coverage = gap_degree(bottom, top_down, cid)
+        gap_cnt.update(child_gaps)
+        bit_coverage ^= child_coverage
 
-    if finally_return:
-        return max_gap_num
+    if finally_return: # or nid.endswith('_VROOT'):
+        assert bit_fanout(bit_coverage) == 1
+        return gap_cnt
 
-    gap_num = 0
-    last_nid = min(coverage) - 1
-    for nid in sorted(coverage):
-        if nid - last_nid > 1: # discontinuous
-            gap_num += 1
-        last_nid = nid
-    max_gap_num = max(gap_num, max_gap_num)
-    return max_gap_num, coverage
+    gap_cnt[bit_fanout(bit_coverage) - 1] += 1
+    return gap_cnt, bit_coverage
+
+def bracketing(bottom, top_down, nid, bottom_is_bid = True):
+    final_check = False
+    if isinstance(bottom, dict):
+        if nid in bottom:
+            return bottom[nid]
+    else:
+        if bottom_is_bid:
+            bottom = {bid: 1 << eid for eid, bid in enumerate(bottom)}
+        else:
+            bottom = {bid: 1 << eid for eid, (bid, _, _) in enumerate(bottom)}
+        if not top_down:
+            return sum(bottom.values())
+        final_check = True
+
+    bit_coverage = 0
+    bracket_cnt = Counter()
+    for cid in top_down[nid].children:
+        something = bracketing(bottom, top_down, cid)
+        if isinstance(something, int): # from a terminal
+            bit_coverage ^= something
+        else: # from a non-terminal
+            bracket_cnt.update(something)
+            for _, child_coverage in something.keys():
+                bit_coverage |= child_coverage
+
+    bracket_cnt[(top_down[nid].label, bit_coverage)] += 1
+    if final_check:
+        assert bit_coverage + ~bit_coverage == -1
+    return bracket_cnt
 
 def _pre_proc(bottom_info, top_down, unary_join_mark = '+'):
     bu_nodes = [p_node for p_node, (_, children) in top_down.items() if len(children) == 1]
@@ -549,17 +596,15 @@ def _layer_output(bottom,
     return new_bottom, right_layer, joint_layer, label_layer, direc_layer
 
 
-def cross_signals(bottom_info, top_down, cnf_right,
+def cross_signals(bottom, node2tag, bottom_unary, top_down, cnf_right,
                   aggressive = True,
                   swap_right_priority = None,
                   sub_prefix = '_',
                   pos_prefix = '#'):
-    word, bottom, node2tag, bottom_unary = _pre_proc(bottom_info, top_down)
     if swap_right_priority is None:
         swap_right_priority = not cnf_right
 
     some_or_all = has_multiple if aggressive else all
-    bottom_tag = [node2tag[t] for t in bottom]
     sub_suffix = '.'
 
     layers_of_right = []
@@ -601,22 +646,31 @@ def cross_signals(bottom_info, top_down, cnf_right,
         layers_of_right.append([cnf_right])
         layers_of_direc.append([False])
         layers_of_label.append([top_down[bottom.pop()].label])
-    return word, bottom_tag, layers_of_label, layers_of_right, layers_of_joint, layers_of_direc
+    return layers_of_label, layers_of_right, layers_of_joint, layers_of_direc
 
-def read_tiger_graph(graph, cnf_right):
-    bottom_info, top_down, _ = _read_graph(graph[0])
-    return cross_signals(bottom_info, top_down, cnf_right)
+from utils.types import E_CNF, O_RGT
+from copy import deepcopy
+def read_tiger_graph(graph):
+    bottom_info, top_down, root_id = _read_graph(graph)
+    word, bottom, node2tag, bottom_unary = _pre_proc(bottom_info, top_down)
+    bottom_tag = [node2tag[t] for t in bottom]
+    gap = gap_degree(bottom, top_down, root_id)
+    cnf_layers = {}
+    for cnf_factor in E_CNF:
+        new_top_down = deepcopy(top_down) if cnf_factor != O_RGT else top_down
+        cnf_layers[cnf_factor] = cross_signals(bottom, node2tag, bottom_unary, new_top_down, cnf_factor == O_RGT)
+    return word, bottom_tag, cnf_layers, gap
 
-def read_disco_penn(tree, cnf_right):
-    bottom_info, top_down, _ = _read_dpenn(tree)
-    bottom_info = [(f'n_{bid}', w, t) for bid, w, t in bottom_info]
-    new_top_down = {}
-    for nid, td in top_down.items():
-        children = {}
-        for cid, ftag in td.children.items():
-            children[f'n_{cid}'] = ftag
-        new_top_down[f'n_{nid}'] = TopDown(td.label, children)
-    return cross_signals(bottom_info, new_top_down, cnf_right)
+def read_disco_penn(tree):
+    bottom_info, top_down, root_id = _read_dpenn(tree)
+    word, bottom, node2tag, bottom_unary = _pre_proc(bottom_info, top_down)
+    bottom_tag = [node2tag[t] for t in bottom]
+    gap = gap_degree(bottom, top_down, root_id)
+    cnf_layers = {}
+    for cnf_factor in E_CNF:
+        new_top_down = deepcopy(top_down) if cnf_factor != O_RGT else top_down
+        cnf_layers[cnf_factor] = cross_signals(bottom, node2tag, bottom_unary, new_top_down, cnf_factor == O_RGT)
+    return word, bottom_tag, cnf_layers, gap
 
 def targets(right_layer, joint_layer):
     targets = [1 for _ in right_layer]
@@ -637,7 +691,7 @@ def disco_tree(word, bottom_tag, layers_of_label, layers_of_right, layers_of_joi
     top_down = defaultdict(set)
     NTS = 500
     for tid, wd_tg in enumerate(zip(word, bottom_tag)):
-        terminals.append(wd_tg)
+        terminals.append((tid,) + wd_tg)
         if layers_of_label[0][tid][0] not in '#_':
             bottom_unary = layers_of_label[0][tid].split('+')
             last_node = tid
@@ -690,7 +744,11 @@ def disco_tree(word, bottom_tag, layers_of_label, layers_of_right, layers_of_joi
             last_right = right
             last_direc = direc
 
-    return top_down, terminals, non_terminals
+
+    for nid, label in non_terminals.items():
+        top_down[nid] = TopDown(label, top_down.pop(nid))
+
+    return terminals, top_down, non_terminal_start - 1
 
 from data.delta import get_logits as _get_logits
 def xlogit_gen(label_layer, right_layer, direc_layer, joint_layer, current_joints, next_joints):

@@ -6,6 +6,7 @@ from datetime import timedelta
 from torch import nn, no_grad
 from utils.recorder import Recorder, timestamp
 from utils.emoji import get_train_validation_pair
+import torch
 
 class Operator:
     '''An (abstract) Operator operate a customized nn.Module for training, validation and testing.
@@ -57,9 +58,9 @@ class Operator:
                 ds_icon = self._ds_icons[ds_name] if len(ds_names) > 1 else ''
                 batch = next(ds_iters[ds_name])
 
-                # with torch.autograd.set_detect_anomaly(True):
                 self._schedule(epoch_cnt + qbar.n / qbar.total, wander_ratio)
-                num_samples, seq_len = self._step(M_TRAIN, ds_name, batch) # neural core
+                with torch.autograd.set_detect_anomaly(True):
+                    num_samples, seq_len = self._step(M_TRAIN, ds_name, batch) # neural core
                 if self._global_step % update_every_n_batch == update_every_n_batch - 1:
                     self._optimizer.step()
                     self._optimizer.zero_grad()

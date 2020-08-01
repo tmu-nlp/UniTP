@@ -59,9 +59,9 @@ class SentimentExtention(nn.Module):
     def extend(self, base_returns):
         get_sentiment, indie_from_parsing_hidden = self._get_sentiment
         if indie_from_parsing_hidden:
-            sentiment = get_sentiment(base_returns[5])
+            sentiment = get_sentiment(base_returns[4])
         else:
-            sentiment = get_sentiment(base_returns[6])
+            sentiment = get_sentiment(base_returns[5])
         return base_returns + (sentiment,)
 
     def get_polar_decisions(self, logits):
@@ -70,5 +70,8 @@ class SentimentExtention(nn.Module):
     def get_polar_decisions_with_values(self, logits):
         return sorted_decisions_with_values(self._sentiment_score_fn, 5, logits)
 
-    def get_polar_loss(self, logits, batch, height_mask):
-        return get_loss(self._sentiment_argmax, logits, batch, self._sentiment_finale, height_mask, 'polar')
+    def get_polar_loss(self, logits, top3_polar_logits, batch, height_mask):
+        polar_loss = get_loss(self._sentiment_finale, self._sentiment_argmax, logits, batch, True, height_mask, 'polar')
+        if top3_polar_logits is not None:
+            polar_loss += get_loss(self._sentiment_finale, self._sentiment_argmax, top3_polar_logits, batch, 'top3_polar')
+        return polar_loss
