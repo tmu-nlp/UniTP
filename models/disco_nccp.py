@@ -14,8 +14,10 @@ stem_config = dict(orient_dim   = orient_dim,
                    trainable_initials = true_type)
 
 from models.utils import condense_splitter, condense_left
-def diff_integer_indice(right_layer, joint_layer, existence, test = False):
+def diff_integer_indice(right_layer, joint_layer, existence, direc_layer = None, test = False):
     lhs_helper, rhs_helper, _, swap, bool_pads = condense_splitter(right_layer, joint_layer, existence)
+    if direc_layer is not None:
+        swap &= direc_layer[:, 1:] | direc_layer[:, :-1]
     lhs_diff = torch.cat([swap, bool_pads, bool_pads], dim = 1)
     mid_diff = torch.cat([bool_pads, swap, bool_pads], dim = 1)
     rhs_diff = torch.cat([bool_pads, bool_pads, swap], dim = 1)
@@ -26,8 +28,8 @@ def diff_integer_indice(right_layer, joint_layer, existence, test = False):
         return diff_indices
     return lhs_helper, rhs_helper, torch.cumsum(diff_indices, dim = 1)
 
-def split(hidden, right_layer, joint_layer, existence):
-    lhs_helper, rhs_helper, indices = diff_integer_indice(right_layer, joint_layer, existence)
+def split(hidden, right_layer, joint_layer, existence, direc_layer = None):
+    lhs_helper, rhs_helper, indices = diff_integer_indice(right_layer, joint_layer, existence, direc_layer)
     lhs_indices = condense_left(indices, lhs_helper, skip_dump0 = False)
     rhs_indices = condense_left(indices, rhs_helper, skip_dump0 = False)
     indices = torch.arange(hidden.shape[0], device = indices.device)[:, None]
@@ -100,6 +102,7 @@ class DiscoStem(nn.Module):
                 supervised_joint = None,
                 **kw_args):
         batch_size, seg_len = existence.shape
+        max_iter_n = seg_len << 2 # 4 times
         h0c0 = self.get_h0c0(batch_size)
         # existence.squeeze_(dim = 2) # in-place is a pandora box
 
@@ -115,7 +118,7 @@ class DiscoStem(nn.Module):
         segment, seg_length = [], []
         history = []
 
-        for l_cnt in range(50): # max_iter | max_tree_high (unit_emb ** 2).sum().backward()
+        for l_cnt in range(max_iter_n): # max_iter | max_tree_high (unit_emb ** 2).sum().backward()
             # existence = unit_idx > 0
             if not teacher_forcing:
                 segment   .append(seg_len)
@@ -141,11 +144,13 @@ class DiscoStem(nn.Module):
                 joint = supervised_joint[:, jnt_start:jnt_end]
                 ori_start = ori_end
                 jnt_start = jnt_end
+                direc = None
             else:
                 right = right_direc[:, :, 0] > 0
+                direc = right_direc[:, :, 1] > 0
                 joint = joint > 0
 
-            lhs, rhs, jnt, ids = split(unit_emb, right, joint, existence)
+            lhs, rhs, jnt, ids = split(unit_emb, right, joint, existence, direc)
             unit_emb = self.combine(lhs, rhs, jnt.unsqueeze(dim = 2))
             seg_len  = unit_emb.shape[1]
             existence = ids > 0
@@ -155,7 +160,7 @@ class DiscoStem(nn.Module):
                 if len(history) > 2:
                     history.pop(0)
 
-            if l_cnt == 49: print('Unknown action')
+            if l_cnt == max_iter_n - 1: print('Unknown action')
 
         embeddings  = torch.cat(layers_of_u_emb,       dim = 1)
         right_direc = torch.cat(layers_of_right_direc, dim = 1)

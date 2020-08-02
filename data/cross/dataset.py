@@ -42,9 +42,10 @@ class CrossDataset(LengthOrderedDataset):
                 field_names.append(f + f'({num_factors})')
                 num_fields_left += num_factors
 
-        with tqdm(desc = f'Load {prefix.title().ljust(5)}Set: ' + ', '.join(field_names)) as qbar:
+        tqdm_prefix = f"Load {prefix.title().ljust(5, '-')}Set: "
+        with tqdm(desc = tqdm_prefix + ', '.join(field_names)) as qbar:
             for field, v2i in field_v2is:
-                qbar.desc = f'Load {prefix.title().ljust(5)}Set: \033[32m' + ', '.join((f + '\033[m') if f.startswith(field) else f for f in field_names)
+                qbar.desc = tqdm_prefix + f'\033[32m' + ', '.join((f + '\033[m') if f.startswith(field) else f for f in field_names)
                 if field in fields: # token /tag / ftag / finc
                     if field == 'token':
                         column, lengths, text = read_data(dir_join(f'{prefix}.word'), v2i, True)
@@ -163,18 +164,16 @@ class CrossDataset(LengthOrderedDataset):
 
             field_columns[field] = tensor
 
-        if cat_joint: # target -= 1 would make any difference
-            slens = segments
-            tensor = np.zeros([batch_size, np.sum(slens)], np.bool)
-            for i, layer_lens in enumerate(seq_len):
-                l_start = 0
-                for (slen, size) in zip(slens, layer_lens):
-                    if size > 0:
-                        start = l_start + pad_len
-                        end   = start + size
-                        tensor[i, start:end] = True
-                        l_start += slen
-            field_columns['existence'] = tensor
+        tensor = np.zeros([batch_size, np.sum(segments)], np.bool)
+        for i, layer_lens in enumerate(seq_len):
+            l_start = 0
+            for (slen, size) in zip(segments, layer_lens):
+                if size > 0:
+                    start = l_start + pad_len
+                    end   = start + size
+                    tensor[i, start:end] = True
+                    l_start += slen
+        field_columns['existence'] = tensor
 
         for f, column in field_columns.items():
             if f in ('length', 'target', 'segments', 'seq_len'):

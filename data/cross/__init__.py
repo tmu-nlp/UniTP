@@ -405,7 +405,10 @@ def gap_degree(bottom, top_down, nid, bottom_is_bid = True):
     gap_cnt[bit_fanout(bit_coverage) - 1] += 1
     return gap_cnt, bit_coverage
 
-def bracketing(bottom, top_down, nid, bottom_is_bid = True):
+def bracketing(bottom, top_down, nid, bottom_is_bid = True,
+               unlabel = None,
+               excluded_labels = None,
+               equal_labels = None):
     final_check = False
     if isinstance(bottom, dict):
         if nid in bottom:
@@ -422,7 +425,7 @@ def bracketing(bottom, top_down, nid, bottom_is_bid = True):
     bit_coverage = 0
     bracket_cnt = Counter()
     for cid in top_down[nid].children:
-        something = bracketing(bottom, top_down, cid)
+        something = bracketing(bottom, top_down, cid, unlabel = unlabel)
         if isinstance(something, int): # from a terminal
             bit_coverage ^= something
         else: # from a non-terminal
@@ -430,7 +433,14 @@ def bracketing(bottom, top_down, nid, bottom_is_bid = True):
             for _, child_coverage in something.keys():
                 bit_coverage |= child_coverage
 
-    bracket_cnt[(top_down[nid].label, bit_coverage)] += 1
+    if unlabel is None:
+        label = top_down[nid].label
+        if equal_labels:
+            label = equal_labels.get(label, label)
+    else:
+        label = unlabel
+    if not excluded_labels or label not in excluded_labels:
+        bracket_cnt[(label, bit_coverage)] += 1
     if final_check:
         assert bit_coverage + ~bit_coverage == -1
     return bracket_cnt
@@ -684,7 +694,7 @@ def targets(right_layer, joint_layer):
                     targets[r0id + 2] += 1
     return targets
 
-def disco_tree(word, bottom_tag, layers_of_label, layers_of_right, layers_of_joint, layers_of_direc):
+def disco_tree(word, bottom_tag, layers_of_label, layers_of_right, layers_of_joint, layers_of_direc, fall_back_root_label = None):
     track_nodes = []
     terminals = []
     non_terminals = {}
@@ -716,14 +726,20 @@ def disco_tree(word, bottom_tag, layers_of_label, layers_of_right, layers_of_joi
         return safe_label
 
     for lid, (lr, lj, ld) in enumerate(zip(layers_of_right, layers_of_joint, layers_of_direc)):
+        snapshot_track_nodes = track_nodes.copy()
         for nid, (right, direc) in enumerate(zip(lr, ld)):
             if nid == 0:
                 offset = 1
+            elif len(lj) == 0:
+                break # should be the final | unknown action in the model
             elif lj[nid - 1]: # joint
                 if last_right and not right:
                     lhs_nid = nid - offset
                     lhs_node = track_nodes.pop(lhs_nid)
                     rhs_node = track_nodes.pop(lhs_nid)
+                    if not (lhs_nid < len(layers_of_label[lid + 1])):
+                        import pdb; pdb.set_trace()
+                        break # an error
                     labels = layers_of_label[lid + 1][lhs_nid]
                     labels = [labels] if labels[0] in '#_' else labels.split('+')
                     non_terminals[non_terminal_start] = labels.pop()
@@ -744,6 +760,13 @@ def disco_tree(word, bottom_tag, layers_of_label, layers_of_right, layers_of_joi
             last_right = right
             last_direc = direc
 
+        # if isinstance(fall_back_root_label, str) and len(word) > 2:
+        #     import pdb; pdb.set_trace()
+        if len(track_nodes) > 1 and snapshot_track_nodes == track_nodes and isinstance(fall_back_root_label, str): # no action is taken
+            top_down[non_terminal_start].update(track_nodes)
+            non_terminals[non_terminal_start] = fall_back_root_label
+            non_terminal_start += 1
+            break
 
     for nid, label in non_terminals.items():
         top_down[nid] = TopDown(label, top_down.pop(nid))

@@ -142,9 +142,9 @@ def eos_mask(seq_len, length):
 
 def condense_splitter(right_layer, joint_layer, existence):
     batch_size, old_batch_len = existence.shape
-    agree_orient = right_layer[:, :-1] # lhs2r
-    agree_orient &= right_layer[:, 1:].logical_not() # rhs2l
-    swapping_spot = agree_orient & existence[:, 1:] & joint_layer.logical_not()
+    agree_orient = right_layer[:, :-1] & existence[:, :-1] # lhs2r
+    agree_orient &= right_layer[:, 1:].logical_not() & existence[:, 1:] # rhs2l
+    swapping_spot = agree_orient & joint_layer.logical_not()
     physical_joint = agree_orient & joint_layer
     bool_pads = torch.zeros(batch_size, 1, dtype = physical_joint.dtype, device = physical_joint.device)
     rhs_exist = torch.cat([bool_pads, physical_joint], dim = 1)

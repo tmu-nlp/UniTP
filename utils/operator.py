@@ -102,7 +102,7 @@ class Operator:
         epoch_stamp = timestamp(epoch, '')
         with tqdm(total = ds_total, desc = f'#{icon}{epoch_stamp}') as qbar:
             for ds_name, ds_iter in zip(ds_names, ds_iters):
-                self._before_validation(ds_name, epoch_stamp, mode == M_TEST, final_test)
+                self._before_validation(ds_name, f'{epoch:08.2f}', mode == M_TEST, final_test)
                 start, cnt = time(), 0
                 for batch_id, batch in enumerate(ds_iter):
                     with no_grad():

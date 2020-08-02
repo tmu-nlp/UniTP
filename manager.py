@@ -7,7 +7,7 @@ import importlib
 import data
 import experiments
 from os import mkdir, listdir
-from os.path import isdir, isfile, join
+from os.path import isdir, isfile, join, abspath
 from utils.yaml_io import save_yaml, load_yaml
 from utils.file_io import create_join, DelayedKeyboardInterrupt
 from utils.types import valid_size, fill_placeholder
@@ -40,7 +40,8 @@ def _new_status():
                                               de = fill_placeholder + 'cc.de.300.bin'),
                                 ft_lower = False),
                 evalb = dict(path = fill_placeholder + 'evalb',
-                             prm  = fill_placeholder + 'default.prm'))
+                             prm  = fill_placeholder + 'default.prm'),
+                evalb_lcfrs_prm = 'discop-dop.prm')
     data_status = {}
     dat_modules = {}
     for module_name in data.types:
@@ -237,8 +238,9 @@ class Manager:
         ready_dpaths, status = self.check_data()
         verbose = {}
         evalb = status['tool']['evalb']
+        evalb_lcfrs = status['tool']['evalb_lcfrs_prm']
 
-        evalb_errors = []
+        evalb_errors = [] 
         if not isfile(evalb['path']):
             evalb_errors.append('Invalid evalb path')
         if not isfile(evalb['prm']):
@@ -253,8 +255,10 @@ class Manager:
             if data_config.keys() > ready_dpaths.keys():
                 errors.append('Data is not ready: ' + ', '.join(data_config.keys() - ready_dpaths.keys()))
             else:
-                if any(d in E_PENN for d in data_config):
+                if any(d == C_PENN_ABS for d in data_config):
                     errors.extend(evalb_errors)
+                if any(d == C_DISCO_ABS for d in data_config) and not isfile(evalb_lcfrs):
+                    errors.append('Invalid evalb_lcfrs_prm file')
                 for k, mnp, unp in iter_zipped_nt_params(data_type, data_config):
                     if not mnp.validate(unp):
                         errors.append(f'Invalid data_config: {k} = {unp}')
@@ -308,11 +312,18 @@ class Manager:
 
         def diff_recorder(config_dict_or_instance):
             task_dir = create_join(self._work_dir, task)
+            if corp_name in E_PENN:
+                evalb = status['tool']['evalb']
+                evalb = abspath(evalb['path']), '-p', abspath(evalb['prm'])
+            elif corp_name in E_DISCO:
+                evalb = abspath(status['tool']['evalb_lcfrs_prm'])
+            else:
+                evalb = None
             return Recorder(task_dir,
                             module,
                             config_dict_or_instance,
                             name,
-                            evalb = status['tool']['evalb'])
+                            evalb = evalb)
 
         train_or_resume_training = op_code == 'r' or None in exp_ids
         if train_or_resume_training:
@@ -371,7 +382,7 @@ def get_args():
     parser.add_argument('-P', '--threads',   help = 'a number of threads for pre-processing the data', type = int, default = -1)
     parser.add_argument('-m', '--menu',      help = 'list available sublayer configurations', action = 'store_true', default = False)
     parser.add_argument('-g', '--gpu',       help = 'pass to environment', type = str, default = '0')
-    parser.add_argument('-x', '--train',     help = '[:max_epoch][>eval_skip][/eval_nth][|wander_stop][&test_with_eval]', type = str, default = '')
+    parser.add_argument('-x', '--train',     help = 'fv=3:30:4,max=100,& [fine validation starts from the 3rd consecutive key score wandering, ends at the 30th wandering, occuring 4 times during one epoch. AND should test scores.]', type = str, default = '')
     parser.add_argument('-s', '--select',    help = 'select (a sub-layer config id)[/data][:folder] name to run', type = str)
     parser.add_argument('-i', '--instance',  help = 'test an trained model by the folder id without its suffix name', type = str)
     parser.add_argument('-b', '--beams',     help = 'beam sizes for test and infer', nargs = 2, type = int, default = [0, 0])

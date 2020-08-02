@@ -1,5 +1,44 @@
+# Authors: Wolfgang Maier <maierw@hhu.de>,
+# Andreas van Cranenburgh <a.w.vancranenburgh@uva.nl>
+# Version: January 24, 2014
+# Modified By zchen0420@github, 2020
+
 from collections import Counter
 from utils.math_ops import bit_fanout
+
+def read_param(filename):
+    validkeysonce = ('DEBUG', 'MAX_ERROR', 'CUTOFF_LEN', 'LABELED',
+                     'DISC_ONLY', 'TED', 'DEP')
+    param = {'DEBUG': 0, 'MAX_ERROR': 10, 'CUTOFF_LEN': 9999,
+             'LABELED': 1, 'DELETE_LABEL_FOR_LENGTH': set(),
+             'DELETE_LABEL': set(), 'DELETE_WORD': set(),
+             'EQ_LABEL': set(), 'EQ_WORD': set(),
+             'DISC_ONLY': 0, 'TED': 0, 'DEP': 0}
+    seen = set()
+    with open(filename) as fr:
+        for line in fr:
+            line = line.strip()
+            if not line or line.startswith('#'):
+                continue
+            key, val = line.split(None, 1)
+            if key in validkeysonce:
+                if key in seen:
+                    raise ValueError('cannot declare %s twice' % key)
+                seen.add(key)
+                param[key] = int(val)
+            elif key in ('DELETE_LABEL', 'DELETE_LABEL_FOR_LENGTH',
+                    'DELETE_WORD'):
+                param[key].add(val)
+            elif key in ('EQ_LABEL', 'EQ_WORD'):
+                # these are given as undirected pairs (A, B), (B, C), ...
+                try:
+                    b, c = val.split()
+                except ValueError:
+                    raise ValueError('%s requires two values' % key)
+                param[key].add((b, c))
+            else:
+                raise ValueError('unrecognized parameter key: %s' % key)
+    return param
 
 def _scores(bracket_match, p_num_brackets, g_num_brackets):
     if p_num_brackets > 0:
@@ -15,6 +54,20 @@ def _scores(bracket_match, p_num_brackets, g_num_brackets):
     else:
         fb1 = 0.0
     return prec, rec, fb1
+
+def incomplete_sent_line(disc_mark, sent_cnt, g_num_brackets, g_disc_num_brackets, g_tag_count, *p_tag_match_count):
+    sent_line = f'| {disc_mark} {sent_cnt:5d} |                       |       {g_num_brackets:3d}       '
+    if g_disc_num_brackets:
+        sent_line += f'|       {g_disc_num_brackets:3d}       '
+    else:
+        sent_line += f'|                 '
+    if p_tag_match_count:
+        tag_match, p_tag_count = p_tag_match_count
+        sent_line += f'|  {tag_match:3d}   {p_tag_count:3d}  '
+        sent_line += '   |' if g_tag_count == p_tag_count else ' x |'
+    else:
+        sent_line += f'|          {g_tag_count:3d}     |'
+    return sent_line
 
 class DiscoEvalb:
     def __init__(self):
@@ -35,53 +88,62 @@ class DiscoEvalb:
 
     def add(self, p_brackets, p_tags, g_brackets, g_tags):
         self._total_sents += 1
+        g_tag_count = len(g_tags)
+        g_num_brackets = sum(g_brackets.values())
+        g_disc_brackets = Counter({(lb, fo):ct for (lb, fo), ct in g_brackets.items() if bit_fanout(fo) > 1})
+        g_disc_num_brackets = sum(g_disc_brackets.values())
+        self._total_gold += g_num_brackets
+        self._disc_gold += g_disc_num_brackets
+        disc_mark = '* '[not g_disc_num_brackets]
+        if g_disc_num_brackets:
+            self._disc_sents += 1
         if p_tags is None:
             if p_brackets is None:
-                self._sent_lines.append(f'{len(self._sent_lines) + 1:5d}')
+                self._sent_lines.append(incomplete_sent_line(disc_mark, self._total_sents, g_num_brackets, g_disc_num_brackets, g_tag_count))
         else:
             tag_match = len(p_tags & g_tags)
             p_tag_count = len(p_tags)
-            g_tag_count = len(g_tags)
             self._total_matched_pos += tag_match
             self._total_pos += g_tag_count
             if p_brackets is None:
-                self._sent_lines.append(f'{len(self._sent_lines) + 1:5d}' + 45 * ' ' + '%3d  %3d' % (p_tag_count, tag_match))
+                self._sent_lines.append(incomplete_sent_line(disc_mark, self._total_sents, g_num_brackets, g_disc_num_brackets, g_tag_count, tag_match, p_tag_count))
         if p_brackets is None:
             self._missing += 1
             return
 
         bracket_match = sum((g_brackets & p_brackets).values())
         p_num_brackets = sum(p_brackets.values())
-        g_num_brackets = sum(g_brackets.values())
-        g_disc_brackets = Counter({(lb, fo):ct for (lb, fo), ct in g_brackets.items() if bit_fanout(fo) > 1})
         p_disc_brackets = Counter({(lb, fo):ct for (lb, fo), ct in p_brackets.items() if bit_fanout(fo) > 1})
         disc_bracket_match = sum((g_disc_brackets & p_disc_brackets).values())
-        g_disc_num_brackets = sum(g_disc_brackets.values())
         p_disc_num_brackets = sum(p_disc_brackets.values())
         if g_brackets == p_brackets:
             self._total_exact += 1
-        if g_disc_num_brackets:
-            self._disc_sents += 1
-            if g_disc_brackets == p_disc_brackets:
-                self._disc_exact += 1
+        if g_disc_num_brackets and g_disc_brackets == p_disc_brackets:
+            self._disc_exact += 1
         sent_prec, sent_rec, sent_fb1 = _scores(bracket_match, p_num_brackets, g_num_brackets)
-        self._sent_lines.append(
-            "%5d  %6.2f  %6.2f  %6.2f    %3d    %3d  %3d  %3d  %3d" % (
-                len(self._sent_lines) + 1, sent_prec, sent_rec, sent_fb1,
-                bracket_match, g_num_brackets, p_num_brackets, p_tag_count, tag_match))
+        sent_line =  f'| {disc_mark} {self._total_sents:5d} |'
+        sent_line += f' {sent_prec:6.2f} {sent_rec:6.2f}  {sent_fb1:6.2f} |'
+        sent_line += f' {bracket_match:3d}   {g_num_brackets:3d}   {p_num_brackets:3d} |'
+        if g_disc_num_brackets or p_disc_num_brackets:
+            sent_line += f' {disc_bracket_match:3d}   {g_disc_num_brackets:3d}   {p_disc_num_brackets:3d} |'
+        else:
+            sent_line += '                 |'
+        sent_line += f'  {tag_match:3d}   {p_tag_count:3d}  '
+        sent_line += '   |' if g_tag_count == p_tag_count else ' x |'
+        self._sent_lines.append(sent_line)
         self._total_match += bracket_match
-        self._total_pred += g_num_brackets
-        self._total_gold += p_num_brackets
+        self._total_pred += p_num_brackets
         self._disc_match += disc_bracket_match
         self._disc_pred += p_disc_num_brackets
-        self._disc_gold += g_disc_num_brackets
 
     def __str__(self):
         tp, tr, tf, dp, dr, df = self.summary()
-        line = ' sent.  prec.   rec.    F1     match   gold test tags match\n'
-        line += '===========================================================\n'
-        line += '\n'.join(self._sent_lines)
-        line += '\n===========================================================\n\n\n'
+        line =  '|======================================================================================|\n'
+        line += '|         |                     Total               |      Disco.     |        PoS     |\n'
+        line += '| d sent. |  prec.   rec.    F1   | match gold test | match gold test | match gold err |\n'
+        line += '|--------------------------------------------------------------------------------------|\n'
+        line += '\n'.join(self._sent_lines) + '\n'
+        line += '|======================================================================================|\n\n\n'
         line += 'Sentences in key'.ljust(30) + f': {self._total_sents}\n'
         line += 'Sentences missing in answer'.ljust(30) + f': {self._missing}\n'
         line += 'Total edges in key'.ljust(30) + f': {self._total_gold}\n'

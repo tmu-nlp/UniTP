@@ -1,6 +1,6 @@
 
 from datetime import datetime
-from utils.file_io import join, create_join, listdir, isdir, isfile, remove, rm_rf, abspath, rename
+from utils.file_io import join, create_join, listdir, isdir, isfile, remove, rm_rf, rename
 from utils.file_io import DelayedKeyboardInterrupt, copy_with_prefix_and_rename
 from utils.yaml_io import load_yaml, save_yaml
 from utils.param_ops import zip_nt_params, dict_print, change_key
@@ -75,7 +75,7 @@ class Recorder:
         self._key = None
         self._cleaners = []
         self._keep_top_k = keep_top_k
-        self._evalb = evalb = abspath(evalb['path']), '-p', abspath(evalb['prm'])
+        self._evalb = evalb
 
     def __del__(self):
         if isdir(self._instance_dir[1]):
