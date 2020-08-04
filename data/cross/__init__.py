@@ -381,7 +381,7 @@ def gap_degree(bottom, top_down, nid, bottom_is_bid = True):
     finally_return = True
     if isinstance(bottom, dict):
         if nid in bottom:
-            return {0: 1}, bottom[nid]
+            return {nid: 0}, bottom[nid]
         finally_return = False
     else:
         if not top_down:
@@ -855,3 +855,104 @@ def unzip_xlogit(cindex, xtypes):
     #         import pdb; pdb.set_trace()
     #     assert joint_layer == tj, '\nUj[' + c + a + b + e + d + ']\n' + f'{path}'
     return layers_of_right, layers_of_joint, layers_of_direc
+
+def draw_str_lines(bottom, top_down, reverse = True):
+    bottom_up = {}
+    for pid, td in top_down.items():
+        for cid in td.children:
+            bottom_up[cid] = pid
+    while pid in bottom_up:
+        pid = bottom_up[pid]
+    rood_id = pid
+    str_lines = []
+    word_line = ''
+    tag_line = ''
+    temp_bars = set()
+    next_top_down = defaultdict(list)
+    for bid, word, tag in bottom:
+        unit_len = max(len(word), len(tag)) + 2
+        word_line += word.center(unit_len)
+        tag_line  +=  tag.center(unit_len)
+        mid_pos = len(word_line) - round(unit_len // 2)
+        temp_bars.add(mid_pos)
+        next_top_down[bottom_up[bid]].append((bid, mid_pos))
+    pic_width = len(word_line)
+    str_lines.append(word_line)
+    str_lines.append(tag_line)
+    count = 0
+    while next_top_down:
+        cons_line = ''
+        line_line = ''
+        future_top_down = defaultdict(list)
+        post_bars = []
+        for pid, cid_pos_pairs in next_top_down.items():
+            num_children = len(cid_pos_pairs)
+            if num_children < len(top_down[pid].children):
+                future_top_down[pid].extend(cid_pos_pairs)
+                continue
+            if  num_children == 1:
+                _, mid_pos = cid_pos_pairs[0]
+                unit = '│'
+                line_line += ((mid_pos - len(line_line)) * ' ') + unit
+                if mid_pos in temp_bars:
+                    temp_bars.remove(mid_pos)
+            else:
+                mid_pos = 0
+                cid_pos_pairs.sort(key = lambda x: x[1])
+                _, last_pos = cid_pos_pairs[0]
+                start_pos = last_pos
+                for cnt, (_, pos) in enumerate(cid_pos_pairs):
+                    if pos in temp_bars:
+                        temp_bars.remove(pos)
+                    if cnt == 0:
+                        unit = '┌'
+                    elif cnt == num_children - 1:
+                        unit += (pos - last_pos - 1) * '─' + '┐'
+                    else:
+                        unit += (pos - last_pos - 1) * '─' + '┬'
+                    mid_pos += pos
+                    last_pos = pos
+                mid_pos //= num_children
+                unit_half = mid_pos - start_pos
+                if unit[unit_half] == '┬':
+                    unit = unit[:unit_half] + '┼' + unit[unit_half + 1:]
+                else:
+                    unit = unit[:unit_half] + '┴' + unit[unit_half + 1:]
+                line_line += ((mid_pos - len(line_line)) * ' ')[:-unit_half] + unit
+            label = top_down[pid].label
+            cons_half = round(len(label) / 2)
+            if cons_half:
+                cons_line += ((mid_pos - len(cons_line)) * ' ')[:-cons_half] + label
+            else:
+                cons_line += ((mid_pos - len(cons_line)) * ' ') + label
+            if pid in bottom_up:
+                future_top_down[bottom_up[pid]].append((pid, mid_pos))
+                post_bars.append(mid_pos)
+        len_line = len(line_line)
+        len_cons = len(cons_line)
+        if len_line < pic_width:
+            line_line += (pic_width - len_line) * ' '
+            cons_line += (pic_width - len_cons) * ' '
+        if temp_bars:
+            new_line = ''
+            new_cons = ''
+            last_pos = 0
+            for pos in sorted(temp_bars):
+                new_line += line_line[last_pos:pos] + '│'
+                if cons_line[pos] == ' ':
+                    new_cons += cons_line[last_pos:pos] + '│'
+                else:
+                    new_cons += cons_line[last_pos:pos + 1]
+                last_pos = pos + 1
+            line_line = new_line + line_line[last_pos:]
+            cons_line = new_cons + cons_line[last_pos:]
+        temp_bars.update(post_bars)
+
+        str_lines.append(line_line)
+        str_lines.append(cons_line)
+        next_top_down = future_top_down
+        count += 1
+
+    if reverse:
+        str_lines.reverse()
+    return str_lines

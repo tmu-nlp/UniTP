@@ -44,7 +44,7 @@ def get_components(str_compound):
         cmb_dims[cmb] = sum(se - ss for ss, se in slices)
     return cmb_dims, cmb_slices
 
-E_COMBINE = 'CV2 CV1 CS2 CS1 Add Mul Average NV NS BV BS'.split()
+E_COMBINE = 'CV2 CV1 CS2 CS1 EV2 EV1 ES2 ES1 Add Mul Average NV NS BV BS'.split()
 def valid_trans_compound(x): # CT.Tanh.3
     if ':' in x:
         try:
@@ -232,6 +232,19 @@ class Interpolation(Add):
                     # rw =  # Or Scalar to *
                     itp = activation(itp_l(lw) + itp_r(rw)) # Concatenate
                     return (1 - itp) * lw + itp * rw
+        elif type_id[0] == 'E':
+            if type_id =='EV2':
+                itp_ = nn.Linear(in_size, out_size, bias = bias)
+            elif type_id == 'ES2':
+                itp_ = nn.Linear(in_size, 1, bias = bias)
+            elif type_id == 'EV1':
+                itp_ = SimplerLinear(in_size, bias = bias)
+            elif type_id == 'ES1':
+                itp_ = SimplerLinear(1, bias = bias)
+            self._itp = itp_
+            def _compose(lw, rw):
+                itp = activation(itp_(lw) + itp_(rw))
+                return (1 - itp) * lw + itp * rw
         elif type_id[0] == 'B':
             if type_id == 'BV' or type_id.startswith('BT-'):
                 use_condenser = True

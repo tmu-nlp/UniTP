@@ -312,10 +312,10 @@ class Manager:
 
         def diff_recorder(config_dict_or_instance):
             task_dir = create_join(self._work_dir, task)
-            if corp_name in E_PENN:
+            if task.endswith('_parse'):
                 evalb = status['tool']['evalb']
                 evalb = abspath(evalb['path']), '-p', abspath(evalb['prm'])
-            elif corp_name in E_DISCO:
+            elif task.endswith('_disco'):
                 evalb = abspath(status['tool']['evalb_lcfrs_prm'])
             else:
                 evalb = None

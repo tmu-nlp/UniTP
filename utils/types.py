@@ -108,6 +108,18 @@ train_max_len    = BaseType(None, validator = valid_size, as_exception = True)
 fill_placeholder = '//FILL//THIS//'
 trapezoid_height = BaseType(None, valid_size, as_exception = True)
 
+from utils.str_ops import strange_to
+def strange_validator(x):
+    if x is None or x == '':
+        return True
+    try:
+        strange_to(x)
+    except:
+        return False
+    return True
+
+str_num_array = BaseType('', validator = strange_validator)
+
 NIL, UNK, BOS, EOS = '<nil>', '<unk>', '<bos>', '<eos>'
 M_TRAIN = 'train'
 M_DEVEL = 'devel'

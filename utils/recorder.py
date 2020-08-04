@@ -279,7 +279,7 @@ class Recorder:
                 else:
                     status['other'].append(instance_path)
 
-        instance_folders.sort(key = lambda x: x[0])
+        instance_folders.sort(key = lambda x: int(x[0]))
         for _cnt, (instance, exp_name, folder, fpath) in enumerate(instance_folders):
             _instance = str(_cnt)
             ap_zeros  = name_len - len(_instance)

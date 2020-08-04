@@ -32,7 +32,7 @@ def check_train(train_str):
     assert ' ' not in train_str
     for group in train_str.split(',' if ',' in train_str else ';'):
         if group.startswith('fine='):
-            group = [int(x) for x in group[3:].split(':')]
+            group = [int(x) if x else 0 for x in group[5:].split(':')]
             assert 1 <= len(group) <= 3
             if group[0]:
                 train['fine_validation_at_nth_wander'] = group[0]

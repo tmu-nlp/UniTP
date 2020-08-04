@@ -5,8 +5,10 @@ from utils.operator import Operator
 from data.delta import get_rgt, get_dir, get_jnt
 from utils.param_ops import get_sole_key
 from time import time
-from utils.math_ops import is_bin_times
-from utils.types import M_TRAIN, BaseType, frac_open_0, true_type, tune_epoch_type, frac_06, frac_close
+from utils.str_ops import strange_to
+from utils.math_ops import is_bin_times, f_score
+from utils.types import M_TRAIN, BaseType, frac_open_0, frac_06, frac_close
+from utils.types import str_num_array, true_type, tune_epoch_type
 from models.utils import PCA, fraction, hinge_score
 from models.loss import binary_cross_entropy, hinge_loss
 from experiments.helper import warm_adam
@@ -20,7 +22,8 @@ train_type = dict(loss_weight = dict(tag    = BaseType(0.3, validator = frac_ope
                   learning_rate = BaseType(0.001, validator = frac_open_0),
                   tune_pre_trained_from_nth_epoch = tune_epoch_type,
                   lr_factor_for_tuning = frac_06,
-                  orient_hinge_loss = true_type)
+                  orient_hinge_loss = true_type,
+                  visualizing_trees = dict(devel = str_num_array, test = str_num_array))
 
 class DiscoOperator(Operator):
     def __init__(self, model, get_datasets, recorder, i2vs, train_config, evalb_lcfrs_prm):
@@ -29,6 +32,10 @@ class DiscoOperator(Operator):
         self._mode_trees = [], []
         self._train_config = train_config
         self._tune_pre_trained = False
+        v_trees = train_config.visualizing_trees
+        d_trees = strange_to(v_trees.devel) if v_trees else None
+        t_trees = strange_to(v_trees.test ) if v_trees else None
+        self._visualizing_trees = d_trees, t_trees
         eq_w = evalb_lcfrs_prm.EQ_WORD
         eq_l = evalb_lcfrs_prm.EQ_LABEL
         self._evalb_lcfrs_kwargs = dict(unlabel = None if evalb_lcfrs_prm.LABELED else 'X',
@@ -151,13 +158,16 @@ class DiscoOperator(Operator):
     def _before_validation(self, ds_name, epoch, use_test_set = False, final_test = False):
         # devel_bins, test_bins = self._mode_length_bins
         devel_head_batchess, test_head_batchess = self._mode_trees
+        devel_vtrees, test_vtrees = self._visualizing_trees
         if use_test_set:
+            v_trees = test_vtrees
             head_trees = test_head_batchess
             if final_test:
                 folder = ds_name + '_test'
             else:
                 folder = ds_name + '_test_with_devel'
         else:
+            v_trees = devel_vtrees
             head_trees = devel_head_batchess
             folder = ds_name + '_devel'
         vis = DiscoVis(epoch,
@@ -165,9 +175,10 @@ class DiscoOperator(Operator):
                        self.i2vs,
                        head_trees,
                        self.recorder.log,
-                       self._evalb_lcfrs_kwargs)
+                       self._evalb_lcfrs_kwargs,
+                       v_trees)
         pending_heads = vis._pending_heads
-        vis = VisRunner(vis, async_ = False) # wrapper
+        vis = VisRunner(vis, async_ = True) # wrapper
         vis.before()
         self._vis_mode = vis, use_test_set, final_test, pending_heads
 
@@ -198,7 +209,10 @@ class DiscoOperator(Operator):
     @staticmethod
     def combine_scores_and_decide_key(epoch, ds_scores):
         scores = ds_scores[get_sole_key(ds_scores)]
-        scores['key'] = scores['TF']
+        if scores['TF'] + scores['DF'] > 0:
+            scores['key'] = f_score(scores['TF'], scores['DF'], 0.5)
+        else:
+            scores['key'] = 0
         return scores
 
 
@@ -206,16 +220,22 @@ from utils.vis import BaseVis, VisRunner
 from utils.file_io import join, isfile, listdir, remove, isdir
 from utils.pickle_io import pickle_dump
 from utils.param_ops import HParams
-from data.cross import disco_tree, bracketing, Counter
+from data.cross import disco_tree, bracketing, Counter, draw_str_lines
 from data.cross.evalb_lcfrs import DiscoEvalb
 def batch_trees(heads_gen, segments, i2vs, fall_back_root_label = None,
+                v_trees_offset = None,
                 unlabel = None,
                 equal_labels = None,
                 equal_words = None,
                 excluded_words = None,
                 excluded_labels = None):
     trees = []
-    for s_seq_len, s_token, s_tag, s_label, s_right, s_joint, s_direc in heads_gen:
+    if v_trees_offset:
+        sid_offset, v_trees = v_trees_offset
+    else:
+        sid_offset = 0
+        v_trees = set()
+    for sid, (s_seq_len, s_token, s_tag, s_label, s_right, s_joint, s_direc) in enumerate(heads_gen):
         layers_of_label = []
         layers_of_right = []
         layers_of_joint = []
@@ -249,6 +269,9 @@ def batch_trees(heads_gen, segments, i2vs, fall_back_root_label = None,
         else:
             if td:
                 brackets_cnt = bracketing(bottom, td, rt, False, unlabel, excluded_labels, equal_labels)
+                sid += sid_offset
+                if sid in v_trees and v_trees[sid] is None:
+                    v_trees[sid] = draw_str_lines(bottom, td)
             else:
                 brackets_cnt = Counter()
         bottom_set = set()
@@ -262,7 +285,7 @@ def batch_trees(heads_gen, segments, i2vs, fall_back_root_label = None,
     return trees
 
 class DiscoVis(BaseVis):
-    def __init__(self, epoch, work_dir, i2vs, head_trees, logger, evalb_lcfrs_kwargs):
+    def __init__(self, epoch, work_dir, i2vs, head_trees, logger, evalb_lcfrs_kwargs, v_trees):
         super().__init__(epoch)
         self._work_dir = work_dir
         self._evalb = DiscoEvalb()
@@ -272,17 +295,29 @@ class DiscoVis(BaseVis):
         self._pending_heads = not head_trees
         self._data_batch_cnt = 0
         self._evalb_lcfrs_kwargs = evalb_lcfrs_kwargs
+        self._vh_lines = v_trees
+        self._vd_lines = None
 
     def _before(self):
-        pass
+        if self._vh_lines:
+            self._vd_lines = {sid: None for sid in self._vh_lines}
+            if isinstance(self._vh_lines, (set, list, tuple)):
+                self._vh_lines = self._vd_lines.copy()
 
     def _process(self, batch_id, batch):
+
+        if self._vd_lines:
+            offset, _ = self._evalb.total_missing
+            vh_lines_args = offset, self._vh_lines
+            vd_lines_args = offset, self._vd_lines
+        else:
+            vh_lines_args = vd_lines_args = None
 
         if self._pending_heads:
             (h_segment, h_seq_len, h_token, h_tag, h_label, h_right, h_joint, h_direc,
              d_segment, d_seq_len,          d_tag, d_label, d_right, d_joint, d_direc) = batch
             heads = zip(h_seq_len, h_token, h_tag, h_label, h_right, h_joint, h_direc)
-            heads = batch_trees(heads, h_segment, self._i2vs, **self._evalb_lcfrs_kwargs)
+            heads = batch_trees(heads, h_segment, self._i2vs, v_trees_offset = vh_lines_args, **self._evalb_lcfrs_kwargs)
             self._head_batches.append(heads)
         else:
             (d_segment, d_seq_len, h_token, d_tag, d_label, d_right, d_joint, d_direc) = batch
@@ -290,18 +325,34 @@ class DiscoVis(BaseVis):
             self._data_batch_cnt += 1
         
         data = zip(d_seq_len, h_token, d_tag, d_label, d_right, d_joint, d_direc)
-        data = batch_trees(data, d_segment, self._i2vs, 'VROOT', **self._evalb_lcfrs_kwargs)
+        data = batch_trees(data, d_segment, self._i2vs, 'VROOT', v_trees_offset = vd_lines_args, **self._evalb_lcfrs_kwargs)
         for gold, prediction in zip(heads, data):
             self._evalb.add(*prediction, *gold)
 
     def _after(self):
-        num_errors = self._evalb._missing
+        total_sents, num_errors = self._evalb.total_missing
         if num_errors:
             self._logger(f'  {num_errors} errors from evalb')
         tp, tr, tf, dp, dr, df = self._evalb.summary()
-        scores = dict(TP = tp, TR = tr, TF = tf, DP = dp, DR = dr, DF = df, N = self._evalb._total_sents)
+        scores = dict(TP = tp, TR = tr, TF = tf, DP = dp, DR = dr, DF = df, N = total_sents)
+        
         with open(join(self._work_dir, f'eval.{self.epoch}.rpt'), 'w') as fw:
             fw.write(str(self._evalb))
+
+        if self._vd_lines:
+            with open(join(self._work_dir, f'ascii.{self.epoch}.art'), 'w') as fw:
+                for sid, h_lines in self._vh_lines.items():
+                    fw.write(f'Key sentence #{sid}:')
+                    d_lines = self._vd_lines[sid]
+                    if d_lines is None:
+                        fw.write(' [*** Answer Parsing Is Lacking ***]\n▚▞▚ ')
+                        fw.write('\n▚▞▚ '.join(h_lines) + '\n\n\n\n')
+                    elif d_lines == h_lines:
+                        fw.write(' (~ Exactly Matching Answer Parsing ~)\n███ ')
+                        fw.write('\n███ '.join(h_lines) + '\n\n\n\n')
+                    else:
+                        fw.write('\nK<<  ' + '\nK<<  '.join(h_lines) + '\n')
+                        fw.write('|||\n|||\nAnswer Parsing:\nA>>  ' + '\nA>>  '.join(d_lines) + '\n\n\n\n')
 
         desc = f'Evalb({tp:.2f}/{tr:.2f}/{tf:.2f}|{dp:.2f}/{dr:.2f}/{df:.2f})'
         return scores, desc, f'N: {scores["N"]} {desc}', self._head_batches

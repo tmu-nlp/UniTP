@@ -8,6 +8,7 @@ from models.combine import get_combinator, get_components, combine_type, valid_t
 stem_config = dict(orient_dim   = orient_dim,
                    combine_type = combine_type,
                    joint_act    = activation_type,
+                   joint_debias = true_type,
                    num_layers   = num_ori_layer,
                    rnn_drop_out = frac_2,
                    drop_out     = frac_4,
@@ -45,6 +46,7 @@ class DiscoStem(nn.Module):
                  orient_dim,
                  combine_type,
                  joint_act,
+                 joint_debias,
                  num_layers,
                  rnn_drop_out,
                  trainable_initials,
@@ -58,7 +60,8 @@ class DiscoStem(nn.Module):
                                    dropout = rnn_drop_out if num_layers > 1 else 0)
         self._dp_layer = nn.Dropout(drop_out)
         self._ori_dir = nn.Linear(orient_dim, 2)
-        self._jnt_bse = nn.Conv1d(model_dim, orient_dim, 2, 1, 0)
+        self._jnt_lhs = nn.Linear(model_dim, orient_dim)
+        self._jnt_rhs = self._jnt_lhs if joint_debias else nn.Linear(model_dim, orient_dim, bias = False)
         self._jnt_act = joint_act()
         self._jnt_lgt = nn.Linear(orient_dim, 1)
         self.combine = get_combinator(combine_type, model_dim)
@@ -90,10 +93,11 @@ class DiscoStem(nn.Module):
         return self._ori_dir(orient_hidden)
 
     def predict_joint(self, unit_hidden):
-        joint_hidden = self._jnt_bse(unit_hidden.transpose(1, 2))
-        joint_hidden = self._dp_layer(joint_hidden)
+        lhs_hidden = self._jnt_lhs(unit_hidden[:, :-1])
+        rhs_hidden = self._jnt_rhs(unit_hidden[:, 1:])
+        joint_hidden = self._dp_layer(lhs_hidden + rhs_hidden)
         joint_hidden = self._jnt_act(joint_hidden)
-        return self._jnt_lgt(joint_hidden.transpose(1, 2)).squeeze(dim = 2)
+        return self._jnt_lgt(joint_hidden).squeeze(dim = 2) #.transpose(1, 2))
     
     def forward(self,
                 unit_emb,

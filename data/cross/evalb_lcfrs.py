@@ -168,3 +168,7 @@ class DiscoEvalb:
         total = _scores(self._total_match, self._total_pred, self._total_gold)
         disc  = _scores( self._disc_match,  self._disc_pred,  self._disc_gold)
         return total + disc
+
+    @property
+    def total_missing(self):
+        return self._total_sents, self._missing

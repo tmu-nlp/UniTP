@@ -12,7 +12,7 @@ class VisWorker(Process): # designed for decoding batch
         proc_time = 0
         while True:
             if in_q.empty():
-                sleep(0.00001)
+                sleep(0.001)
                 continue
             inp = in_q.get()
             if inp is None:
@@ -75,8 +75,8 @@ class VisRunner:
         if self._async:
             worker, iq, oq = self._async
             iq.put(None) # end while loop | _after
-            worker.join()
             out, attrs, proc_time = oq.get()
+            worker.join() # this should be after oq.get()
             self._timer = proc_time
             self._vis._attrs.update(attrs)
             return out
