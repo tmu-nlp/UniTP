@@ -239,7 +239,7 @@ class TokenizerOperator(Operator):
         return ds_scores
 
 from utils.vis import BaseVis, VisRunner
-from visualization import set_vocab
+from visualization import ContinuousTensorVis # TODO
 from collections import Counter
 from utils.file_io import join, isfile, listdir, rename
 class ChunkVis(BaseVis):
@@ -255,8 +255,7 @@ class ChunkVis(BaseVis):
         self._cnts = 0
 
     def _before(self):
-        if self._work_dir:
-            set_vocab(self._work_dir, self._i2vs._nested)
+        pass
 
     def _process(self, batch_id, accu, racy, size, offsets, lengths, token_ids, validity_logits):
         self._accu += accu
@@ -337,23 +336,18 @@ class ChunkVis(BaseVis):
 
         return accuracy, len(self._subs) / self._cnts
 
-from visualization import set_void_head, set_data
 class UTreeVis(BaseVis):
     def __init__(self, epoch, work_dir, i2vs, logger, save_tensors):
         super().__init__(epoch)
-        self._work_dir = work_dir
-        self._i2vs     = i2vs
+        self._ctvis    = ContinuousTensorVis(work_dir, i2vs)
         self._logger   = logger
         self._valid_log_score = 0
         self._right_log_score = 0
         self._data_tree = None
-        self._head_init = None
         self.register_property('save_tensors', save_tensors)
 
     def _before(self):
-        if self._work_dir:
-            self._head_init = set_vocab(self._work_dir, self._i2vs._nested)
-            self._data_tree = open(join(self._work_dir, f'data.{self.epoch}.tree'), 'w')
+        self._data_tree = open(self._ctvis.join(f'data.{self.epoch}.tree'), 'w')
     
     def _process(self, batch_id, size, batch):
 
@@ -364,12 +358,15 @@ class UTreeVis(BaseVis):
         self._right_log_score += right_logsum
         # import pdb; pdb.set_trace()
 
-        if self._head_init:
-            set_void_head(self._work_dir, batch_id, size, offset, length, token)
+        self._ctvis.set_void_head(batch_id, size, offset, length, token)
 
-        warnings = set_data(self._work_dir if self.save_tensors else None, batch_id, size, self.epoch,
-                            offset, length, token, None, None, right, mpc_token, mpc_label, None,
-                            valid_score, right_score, (segment, seg_length), self._i2vs, self._data_tree)
+        if self.save_tensors:
+            extended = size, None, None
+        else:
+            extended = None
+        self._ctvis.set_data(self._data_tree, self._logger, batch_id, self.epoch,
+                             offset, length, token, None, None, right, mpc_token, mpc_label,
+                             None, valid_score, right_score, (segment, seg_length), extended)
 
     def _after(self):
         valid_log_score = float(self._valid_log_score)

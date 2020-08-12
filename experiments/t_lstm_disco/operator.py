@@ -219,7 +219,6 @@ class DiscoOperator(Operator):
 from utils.vis import BaseVis, VisRunner
 from utils.file_io import join, isfile, listdir, remove, isdir
 from utils.pickle_io import pickle_dump
-from utils.param_ops import HParams
 from data.cross import disco_tree, bracketing, Counter, draw_str_lines
 from data.cross.evalb_lcfrs import DiscoEvalb
 def batch_trees(heads_gen, segments, i2vs, fall_back_root_label = None,

@@ -34,5 +34,4 @@ def get_configs(recorder = None):
 
     model = DiscoRnnTree(**model_config, **task_params)
     model.to(reader.device)
-    evalb = HParams(read_param(recorder.evalb))
-    return DiscoOperator(model, get_datasets, recorder, reader.i2vs, train_config, evalb)
+    return DiscoOperator(model, get_datasets, recorder, reader.i2vs, train_config, read_param(recorder.evalb))

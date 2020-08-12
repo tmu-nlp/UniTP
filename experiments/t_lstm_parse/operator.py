@@ -230,7 +230,7 @@ from utils.file_io import join, isfile, listdir, remove, isdir
 from utils.pickle_io import pickle_dump
 from utils.param_ops import HParams
 from utils.shell_io import parseval, rpt_summary
-from visualization import set_vocab, set_head, set_data
+from visualization import ContinuousTensorVis
 class PennVis(BaseVis):
     def __init__(self, epoch, work_dir, evalb, i2vs, logger,
                  save_tensors   = True,
@@ -238,9 +238,11 @@ class PennVis(BaseVis):
                  scores_of_bins = False,
                  flush_heads    = False):
         super().__init__(epoch)
-        self._work_dir = work_dir
         self._evalb = evalb
-        self._i2vs = i2vs
+        fname = join(work_dir, 'vocabs.pkl')
+        if flush_heads and isfile(fname):
+            remove(fname)
+        self._ctvis = ContinuousTensorVis(work_dir, i2vs)
         self._logger = logger
         htree = join(work_dir, 'head.tree')
         dtree = join(work_dir, f'data.{epoch}.tree')
@@ -250,9 +252,6 @@ class PennVis(BaseVis):
         self._scores_of_bins = scores_of_bins
         self.register_property('save_tensors', save_tensors)
         self.register_property('length_bins',  length_bins)
-        fname = join(work_dir, 'vocabs.pkl')
-        if flush_heads and isfile(fname):
-            remove(fname)
 
     def __del__(self):
         if self._head_tree: self._head_tree.close()
@@ -260,7 +259,7 @@ class PennVis(BaseVis):
 
     def _before(self):
         htree, dtree = self._fnames
-        if set_vocab(self._work_dir, self._i2vs._nested):
+        if self._ctvis.is_anew: # TODO
             self._head_tree = open(htree, 'w')
             self.register_property('length_bins', set())
         self._data_tree = open(dtree, 'w')
@@ -281,24 +280,24 @@ class PennVis(BaseVis):
             d_trapezoid_info = d_segment, d_seg_length
 
         if self._head_tree:
-            bins = set_head(self._work_dir, batch_id,
-                            size, h_offset, h_length, h_token, h_tag, h_label, h_right,
-                            trapezoid_info,
-                            self._i2vs, self._head_tree)
+            bins = self._ctvis.set_head(self._head_tree, h_offset, h_length, h_token, h_tag, h_label, h_right, trapezoid_info, batch_id, size, 10)
             self.length_bins |= bins
 
-        if self.length_bins is not None and self._scores_of_bins:
-            bin_width = 10
+        if self.save_tensors:
+            if self.length_bins is not None and self._scores_of_bins:
+                bin_width = 10
+            else:
+                bin_width = None
+            extended = size, bin_width, self._evalb
         else:
-            bin_width = None
+            extended = None
 
-        fpath = self._work_dir if self.save_tensors else None
-        set_data(fpath, batch_id, size, self.epoch,
-                 h_offset, h_length, h_token, d_tag, d_label, d_right,
-                 mpc_token, mpc_label,
-                 tag_score, label_score, split_score,
-                 d_trapezoid_info,
-                 self._i2vs, self._data_tree, self._logger, self._evalb, bin_width)
+        self._ctvis.set_data(self._data_tree, self._logger, batch_id, self.epoch,
+                             h_offset, h_length, h_token, d_tag, d_label, d_right,
+                             mpc_token, mpc_label,
+                             tag_score, label_score, split_score,
+                             d_trapezoid_info,
+                             extended)
 
     def _after(self):
         # call evalb to data.emm.rpt return the results, and time counted
@@ -312,33 +311,29 @@ class PennVis(BaseVis):
         errors = proc.stderr.decode().split('\n')
         assert errors.pop() == ''
         num_errors = len(errors)
-        fname = None
         if num_errors:
             self._logger(f'  {num_errors} errors from evalb')
             if num_errors < 10:
                 for e, error in enumerate(errors):
                     self._logger(f'    {e}. ' + error)
                 fname = f'data.{self.epoch}.rpt'
+                with open(self._ctvis.join(fname), 'w') as fw:
+                    fw.write(report)
+                self._logger(f'  Go check {fname} for details.')
 
         self._head_tree = self._data_tree = None
 
         if self.length_bins is not None and self._scores_of_bins:
-            fname = f'data.{self.epoch}.rpt'
-            with open(join(self._work_dir, f'{self.epoch}.scores'), 'w') as fw:
+            with open(self._ctvis.join(f'{self.epoch}.scores'), 'w') as fw:
                 fw.write('wbin,num,lp,lr,f1,ta\n')
                 for wbin in self.length_bins:
-                    fhead = join(self._work_dir, f'head.bin_{wbin}.tree')
-                    fdata = join(self._work_dir, f'data.bin_{wbin}.tree')
+                    fhead = self._ctvis.join(f'head.bin_{wbin}.tree')
+                    fdata = self._ctvis.join(f'data.bin_{wbin}.tree')
                     proc = parseval(self._evalb, fhead, fdata)
                     smy = rpt_summary(proc.stdout.decode(), False, True)
                     fw.write(f"{wbin},{smy['N']},{smy['LP']},{smy['LR']},{smy['F1']},{smy['TA']}\n")
                     remove(fhead)
                     remove(fdata)
-
-        if fname:
-            with open(join(self._work_dir, fname), 'w') as fw:
-                fw.write(report)
-            self._logger(f'  Go check {fname} for details.')
 
         desc = f'Evalb({scores["LP"]:.2f}/{scores["LR"]:.2f}/{scores["F1"]:.2f})'
         return scores, desc, f'N: {scores["N"]} {desc}'

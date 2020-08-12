@@ -734,6 +734,7 @@ def disco_tree(word, bottom_tag, layers_of_label, layers_of_right, layers_of_joi
                 break # should be the final | unknown action in the model
             elif lj[nid - 1]: # joint
                 if last_right and not right:
+                    # >j<
                     lhs_nid = nid - offset
                     lhs_node = track_nodes.pop(lhs_nid)
                     rhs_node = track_nodes.pop(lhs_nid)
@@ -745,14 +746,16 @@ def disco_tree(word, bottom_tag, layers_of_label, layers_of_right, layers_of_joi
                     non_terminals[non_terminal_start] = labels.pop()
                     _combine(lhs_node, non_terminal_start, non_terminals, top_down) # TODO: safe_label validate
                     _combine(rhs_node, non_terminal_start, non_terminals, top_down)
-                    while labels:
+                    while labels: # unary
                         non_terminal_start += 1
                         non_terminals[non_terminal_start] = labels.pop()
                         top_down[non_terminal_start] = set({non_terminal_start - 1})
                     track_nodes.insert(lhs_nid, non_terminal_start)
                     non_terminal_start += 1
                     offset += 1
-            elif last_direc and last_right and (not direc or direc and not right) or not last_direc and direc and not right: # cross
+            elif last_direc and last_right and (not direc or direc and not right) or not last_direc and direc and not right: # cross (swap)
+                # 1: >[<≤≥]
+                # 2: [≤≥]<
                 lhs_nid = nid - offset
                 rhs_nid = lhs_nid + 1
                 track_nodes[lhs_nid], track_nodes[rhs_nid] = track_nodes[rhs_nid], track_nodes[lhs_nid]

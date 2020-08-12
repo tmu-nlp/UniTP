@@ -5,6 +5,7 @@
 
 from collections import Counter
 from utils.math_ops import bit_fanout
+from utils.param_ops import HParams
 
 def read_param(filename):
     validkeysonce = ('DEBUG', 'MAX_ERROR', 'CUTOFF_LEN', 'LABELED',
@@ -38,7 +39,7 @@ def read_param(filename):
                 param[key].add((b, c))
             else:
                 raise ValueError('unrecognized parameter key: %s' % key)
-    return param
+    return HParams(param)
 
 def _scores(bracket_match, p_num_brackets, g_num_brackets):
     if p_num_brackets > 0:
@@ -172,3 +173,33 @@ class DiscoEvalb:
     @property
     def total_missing(self):
         return self._total_sents, self._missing
+
+def continuous_evalb(pred_fname, gold_fname, prm_fname):
+    from data.cross import _read_dpenn, bracketing
+    from nltk.tree import Tree
+    evalb_lcfrs_prm = read_param(prm_fname)
+    eq_w = evalb_lcfrs_prm.EQ_WORD
+    eq_l = evalb_lcfrs_prm.EQ_LABEL
+    args = dict(unlabel = None if evalb_lcfrs_prm.LABELED else 'X',
+                excluded_labels = evalb_lcfrs_prm.DELETE_LABEL,
+                equal_labels    = {l:ls[-1] for ls in eq_l for l in ls})
+    excluded_words  = evalb_lcfrs_prm.DELETE_WORD
+    equal_words     = {w:ws[-1] for ws in eq_w for w in ws}
+    def filter_bottom(bt):
+        bt_set = set()
+        for bid, word, tag in g_bt:
+            if equal_words:
+                word = equal_words.get(word, word)
+            if word in excluded_words:
+                continue
+            bt_set.add((bid, word, tag))
+        return bt_set
+    evalb = DiscoEvalb()
+    with open(pred_fname) as f_pred, open(gold_fname) as f_gold:
+        for p_line, g_line in zip(f_pred, f_gold):
+            p_bt, p_td, p_rt = _read_dpenn(Tree.fromstring(p_line))
+            g_bt, g_td, g_rt = _read_dpenn(Tree.fromstring(g_line))
+            p_brackets = bracketing(p_bt, p_td, p_rt, False, **args)
+            g_brackets = bracketing(g_bt, g_td, g_rt, False, **args)
+            evalb.add(p_brackets, filter_bottom(p_bt), g_brackets, filter_bottom(g_bt))
+    print(evalb)

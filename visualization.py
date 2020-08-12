@@ -3,178 +3,217 @@
 import numpy as np
 from collections import namedtuple, Counter, defaultdict
 from itertools import count
-from os.path import join, isfile, getsize, expanduser, basename
+from os.path import getsize, expanduser
 from os import listdir, remove
 import sys, pdb
 from nltk.tree import Tree
+from utils.file_io import join, isfile, parpath
 from utils.math_ops import isqrt
 from utils.pickle_io import pickle_load, pickle_dump
-
-IOHead = namedtuple('IOHead', 'offset, length, token, tag, label, right, tree, segment, seg_length')
-IOData = namedtuple('IOData', 'offset, length, token, tag, label, right, tree, segment, seg_length, mpc_word, mpc_phrase, warning, scores, tag_score, label_score, split_score, summary')
+from utils.param_ops import HParams
 
 inf_none_gen = (None for _ in count())
-def set_vocab(fpath, vocabs, model_vocab_size = None, fname = 'vocabs.pkl'):
-    assert isinstance(vocabs, dict)
-    fname = join(fpath, fname)
-    if isfile(fname):
-        return False
-    pickle_dump(fname, vocabs)
-    return True
+
+IOVocab = namedtuple('IOVocab', 'vocabs, IOHead_fields, IOData_fields')
+class TensorVis:
+    @classmethod
+    def from_vfile(cls, fpath):
+        vocabs, IOHead_fields, IOData_fields = pickle_load(fpath)
+        return cls(parpath(fpath), HParams(vocabs), IOHead_fields, IOData_fields)
+
+    def __init__(self, fpath, vocabs, IOHead_fields, IOData_fields, clean_fn = None, fname = 'vocabs.pkl'):
+        files = listdir(fpath)
+        fname = join(fpath, fname)
+        if fname in files:
+            assert isfile(fname)
+            if callable(clean_fn): # TODO
+                clean_fn(files)
+            anew = False
+        else:
+            assert isinstance(vocabs, HParams)
+            pickle_dump(fname, IOVocab(vocabs._nested, IOHead_fields, IOData_fields))
+            anew = True
+        self._anew = anew
+        self._fpath = fpath
+        self._vocabs = vocabs
+        self._head_type = namedtuple('IOHead', IOHead_fields)
+        self._data_type = namedtuple('IOData', IOData_fields)
+
+    @property
+    def is_anew(self):
+        return self._anew
+
+    def join(self, fname):
+        return join(self._fpath, fname)
+
+    @property
+    def vocabs(self):
+        return self._vocabs
+
+    @property
+    def IOHead(self):
+        return self._head_type
+
+    @property
+    def IOData(self):
+        return self._data_type
 
 from contextlib import ExitStack
 from data.triangle import head_to_tree as tri_h2t
 from data.triangle import data_to_tree as tri_d2t
 from data.trapezoid import head_to_tree as tra_h2t
 from data.trapezoid import data_to_tree as tra_d2t
-def set_head(fpath, batch_id, size,
-             offset, length, token, tag, label, right,
-             trapezoid_info,
-             vocabs, fhtree, vfname = 'vocabs.pkl', bin_width = 10):
-    old_tag = tag
-
-    if tag is None:
-        tag = inf_none_gen
-
-    if trapezoid_info is None:
-        segment = seg_length = None
-        func_args = zip(offset, length, token, tag, label, right)
-        func_args = ((*args, vocabs) for args in func_args)
-        head_to_tree = tri_h2t
-    else:
-        segment, seg_length = trapezoid_info
-        func_args = zip(offset, length, token, tag, label, right, seg_length)
-        func_args = ((*args, segment, vocabs) for args in func_args)
-        head_to_tree = tra_h2t
-
-    trees = []
-    for args in func_args:
-        tree = str(head_to_tree(*args))
-        tree = ' '.join(tree.split())
-        print(tree, file = fhtree)
-        trees.append(tree)
-
-    if fpath:
-        ftrees = {}
-        fhead = join(fpath, f'head.{batch_id}.tree')
-
-        with ExitStack() as stack, open(fhead, 'w') as fh:
-            for wlen, tree in zip(length, trees):
-                wbin = wlen // bin_width
-                if wbin in ftrees:
-                    fw = ftrees[wbin]
-                else:
-                    fw = open(join(fpath, f'head.bin_{wbin}.tree'), 'a')
-                    ftrees[wbin] = stack.enter_context(fw)
-                print(tree, file = fw)
-                print(tree, file = fh)
-
-        assert isfile(join(fpath, vfname))
-        fname = join(fpath, f'head.{batch_id}_{size}.pkl')
-        head  = IOHead(offset, length, token, old_tag, label, right, trees, segment, seg_length)
-        pickle_dump(fname, head)
-        return ftrees.keys()
-
-def set_void_head(fpath, batch_id, size, offset, length, token):
-    fname = join(fpath, f'head.{batch_id}_{size}.pkl')
-    head  = IOHead(offset, length, token, None, None, None, None, None, None)
-    pickle_dump(fname, head)
-
 from utils.shell_io import parseval, rpt_summary
-def set_data(fpath, batch_id, size, epoch,
-             offset, length, token, tag, label, right, mpc_word, mpc_phrase,
-             tag_score, label_score, split_score,
-             trapezoid_info,
-             vocabs, fdtree, on_error = None, evalb = None, bin_width = 10):
+class ContinuousTensorVis(TensorVis):
+    def __init__(self, fpath, vocabs):
+        IOHead_fields = 'offset, length, token, tag, label, right, tree, segment, seg_length'
+        IOData_fields = 'offset, length, token, tag, label, right, tree, segment, seg_length, mpc_word, mpc_phrase, warning, scores, tag_score, label_score, split_score, summary'
+        super().__init__(fpath, vocabs, IOHead_fields, IOData_fields)
 
-    tree_kwargs = dict(return_warnings = True, on_error = on_error)
-    error_prefix = f'  [{batch_id} {epoch}'
+    def set_head(self, fhtree, offset, length, token, tag, label, right, trapezoid_info, *batch_id_size_bin_width):
+        old_tag = tag
 
-    old_tag   = tag
-    old_tag_s = tag_score
-    if tag is None: tag = inf_none_gen
-    if label is None:
-        label_ = label_score
-        tree_kwargs['error_root'] = 'NA'
-    else:
-        label_ = label
-    trees = []
-    batch_warnings = []
-    if trapezoid_info is None:
-        segment = seg_length = None
-        func_args = zip(offset, length, token, tag, label_, right)
-        func_args = ((*args, vocabs) for args in func_args)
-        data_to_tree = tri_d2t
-    else:
-        segment, seg_length = trapezoid_info
-        func_args = zip(offset, length, token, tag, label_, right, seg_length)
-        func_args = ((*args, segment, vocabs) for args in func_args)
-        data_to_tree = tra_d2t
+        if tag is None:
+            tag = inf_none_gen
 
-    for i, args in enumerate(func_args):
-        tree_kwargs['error_prefix'] = error_prefix + f']-{i} len={args[1]}'
-        tree, warnings = data_to_tree(*args, **tree_kwargs)
-        tree = str(tree)
-        tree = ' '.join(tree.split())
-        trees.append(tree)
-        print(tree, file = fdtree) # TODO use stack to protect opened file close and delete
-        batch_warnings.append(warnings)
+        if trapezoid_info is None:
+            segment = seg_length = None
+            func_args = zip(offset, length, token, tag, label, right)
+            func_args = ((*args, self.vocabs) for args in func_args)
+            head_to_tree = tri_h2t
+        else:
+            segment, seg_length = trapezoid_info
+            func_args = zip(offset, length, token, tag, label, right, seg_length)
+            func_args = ((*args, segment, self.vocabs) for args in func_args)
+            head_to_tree = tra_h2t
 
-    if fpath:
-        if label is None: # unlabeled
-            pickle_dump(join(fpath, f'data.{batch_id}_{epoch}.pkl'),
-                        IOData(offset, length, token, None, None, right, trees,
-                               segment, seg_length, mpc_word, mpc_phrase,
-                               batch_warnings, None, tag_score, label_score, split_score, None))
-            return batch_warnings
+        trees = []
+        for args in func_args:
+            tree = str(head_to_tree(*args))
+            tree = ' '.join(tree.split())
+            print(tree, file = fhtree)
+            trees.append(tree)
 
-        else: # supervised / labeled
-            
-            fdata = join(fpath, f'data.{batch_id}.tree')
-            with open(fdata, 'w') as fw:
-                for tree in trees:
+        if batch_id_size_bin_width:
+            batch_id, size, bin_width = batch_id_size_bin_width
+            fhead = self.join(f'head.{batch_id}.tree')
+
+            ftrees = {}
+            with ExitStack() as stack, open(fhead, 'w') as fh:
+                for wlen, tree in zip(length, trees):
+                    wbin = wlen // bin_width
+                    if wbin in ftrees:
+                        fw = ftrees[wbin]
+                    else:
+                        fw = open(self.join(f'head.bin_{wbin}.tree'), 'a')
+                        ftrees[wbin] = stack.enter_context(fw)
                     print(tree, file = fw)
+                    print(tree, file = fh)
 
-            if isinstance(bin_width, int):
-                ftrees = {}
-                with ExitStack() as stack:
-                    for wlen, tree in zip(length, trees):
-                        wbin = wlen // bin_width
-                        if wbin in ftrees:
-                            fw = ftrees[wbin]
-                        else:
-                            fw = open(join(fpath, f'data.bin_{wbin}.tree'), 'a')
-                            ftrees[wbin] = stack.enter_context(fw)
+            fname = self.join(f'head.{batch_id}_{size}.pkl')
+            head  = self.IOHead(offset, length, token, old_tag, label, right, trees, segment, seg_length)
+            pickle_dump(fname, tuple(head)) # type check
+            return ftrees.keys()
+
+    def set_void_head(self, batch_id, size, offset, length, token):
+        fname = self.join(f'head.{batch_id}_{size}.pkl')
+        head  = self.IOHead(offset, length, token, None, None, None, None, None, None)
+        pickle_dump(fname, tuple(head))
+
+    def set_data(self, fdtree, on_error, batch_id, epoch,
+                 offset, length, token, tag, label, right, mpc_word, mpc_phrase,
+                 tag_score, label_score, split_score,
+                 trapezoid_info, size_bin_width_evalb):
+
+        tree_kwargs = dict(return_warnings = True, on_error = on_error)
+        error_prefix = f'  [{batch_id} {epoch}'
+
+        old_tag   = tag
+        old_tag_s = tag_score
+        if tag is None: tag = inf_none_gen
+        if label is None:
+            label_ = label_score
+            tree_kwargs['error_root'] = 'NA'
+        else:
+            label_ = label
+        trees = []
+        batch_warnings = []
+        if trapezoid_info is None:
+            segment = seg_length = None
+            func_args = zip(offset, length, token, tag, label_, right)
+            func_args = ((*args, self.vocabs) for args in func_args)
+            data_to_tree = tri_d2t
+        else:
+            segment, seg_length = trapezoid_info
+            func_args = zip(offset, length, token, tag, label_, right, seg_length)
+            func_args = ((*args, segment, self.vocabs) for args in func_args)
+            data_to_tree = tra_d2t
+
+        for i, args in enumerate(func_args):
+            tree_kwargs['error_prefix'] = error_prefix + f']-{i} len={args[1]}'
+            tree, warnings = data_to_tree(*args, **tree_kwargs)
+            tree = str(tree)
+            tree = ' '.join(tree.split())
+            trees.append(tree)
+            print(tree, file = fdtree) # TODO use stack to protect opened file close and delete
+            batch_warnings.append(warnings)
+
+        if size_bin_width_evalb:
+            size, bin_width, evalb = size_bin_width_evalb
+            if label is None: # unlabeled
+                pickle_dump(self.join(f'data.{batch_id}_{epoch}.pkl'),
+                            self.IOData(offset, length, token, None, None, right, trees,
+                                segment, seg_length, mpc_word, mpc_phrase,
+                                batch_warnings, None, tag_score, label_score, split_score, None))
+                return batch_warnings
+
+            else: # supervised / labeled
+                
+                fdata = self.join(f'data.{batch_id}.tree')
+                with open(fdata, 'w') as fw:
+                    for tree in trees:
                         print(tree, file = fw)
 
-            fhead = f'head.{batch_id}_{size}.pkl'
-            assert isfile(join(fpath, fhead)), f"Need a head '{fhead}'"
-            fhead = join(fpath, f'head.{batch_id}.tree')
+                if isinstance(bin_width, int):
+                    ftrees = {}
+                    with ExitStack() as stack:
+                        for wlen, tree in zip(length, trees):
+                            wbin = wlen // bin_width
+                            if wbin in ftrees:
+                                fw = ftrees[wbin]
+                            else:
+                                fw = open(self.join(f'data.bin_{wbin}.tree'), 'a')
+                                ftrees[wbin] = stack.enter_context(fw)
+                            print(tree, file = fw)
 
-            if evalb is None: # sentiment
-                # 52VII
-                idv, smy, key_score = calc_stan_accuracy(fhead, fdata, error_prefix, on_error)
-            else: # constituency
-                proc = parseval(evalb, fhead, fdata)
-                idv, smy = rpt_summary(proc.stdout.decode(), True, True)
+                fhead = f'head.{batch_id}_{size}.pkl'
+                assert isfile(self.join(fhead)), f"Need a head '{fhead}'"
+                fhead = self.join(f'head.{batch_id}.tree')
 
-                fname = join(fpath, 'summary.pkl')
-                if isfile(fname):
-                    summary = pickle_load(fname)
-                else:
-                    summary = {}
-                summary[(batch_id, epoch)] = smy
-                pickle_dump(fname, summary)
+                if evalb is None: # sentiment
+                    # 52VII
+                    idv, smy, key_score = calc_stan_accuracy(fhead, fdata, error_prefix, on_error)
+                else: # constituency
+                    proc = parseval(evalb, fhead, fdata)
+                    idv, smy = rpt_summary(proc.stdout.decode(), True, True)
 
-                key_score = smy['F1']
+                    fname = self.join('summary.pkl')
+                    if isfile(fname):
+                        summary = pickle_load(fname)
+                    else:
+                        summary = {}
+                    summary[(batch_id, epoch)] = smy
+                    pickle_dump(fname, summary)
 
-            fdata = join(fpath, f'data.{batch_id}_{epoch}.pkl')
-            data = IOData(offset, length, token, old_tag, label, right, trees,
-                          segment, seg_length, mpc_word, mpc_phrase,
-                          batch_warnings, idv, tag_score, label_score, split_score, smy)
-            pickle_dump(fdata, data)
+                    key_score = smy['F1']
 
-            return key_score
+                fdata = self.join(f'data.{batch_id}_{epoch}.pkl')
+                data = self.IOData(offset, length, token, old_tag, label, right, trees,
+                            segment, seg_length, mpc_word, mpc_phrase,
+                            batch_warnings, idv, tag_score, label_score, split_score, smy)
+                pickle_dump(fdata, tuple(data))
+
+                return key_score
 
 def neg_pos(head, data, _numerators, _denominators, offset):
     gr = head.label()
@@ -242,7 +281,7 @@ def calc_stan_accuracy(hfname, dfname, error_prefix, on_error):
     scores = []
     for n,d in zip(numerators, denominators):
         scores.append(n/d*100 if d else float('nan'))
-    # 0: fine, 2: PnN 3: PN, 4: root_fine, 2: root_PnN 3: root_PN
+    # 0: root_fine, 1: root_PnN 2: root_PN, 3: fine, 4: PnN 5: PN
     return sents, scores, (np.asarray(numerators), np.asarray(denominators))
 # dpi_value     = master.winfo_fpixels('1i')
 # master.tk.call('tk', 'scaling', '-displayof', '.', dpi_value / 72.272)
@@ -312,7 +351,7 @@ if desktop:
     from math import exp, sqrt, pi
     from functools import partial
     from data.delta import warning_level, NIL
-    from utils.param_ops import more_kwargs, HParams
+    from utils.param_ops import more_kwargs
     from utils.file_io import path_folder
     from concurrent.futures import ProcessPoolExecutor
     from data.triangle import triangle_to_layers
@@ -378,7 +417,7 @@ if desktop:
                      initial_combs = CombList((True, 'x ** 0.5'), (False, (0.5, 0.1, 0.9, 0.1)), (True, (0.04, 0.01, 0.34, 0.01)), (True, (0.2, 0.1, 0.9, 0.1)), (False, (200, 100, 500, 100)))):
             vocabs = fpath.join('vocabs.pkl')
             if isfile(vocabs):
-                self._vocabs = HParams(pickle_load(vocabs))
+                self._tvis = TensorVis.from_vfile(vocabs)
             else:
                 raise ValueError(f"The folder should at least contains a vocab file '{vocabs}'")
 
@@ -501,7 +540,7 @@ if desktop:
                     viewer.destroy()
                 # widget shall be consumed within a function, or they will be visible!
                 master = Toplevel(self) if self._last_panel_bools.detach_viewer else self
-                viewer = ThreadViewer(master, self._vocabs, self._change_title)
+                viewer = ThreadViewer(master, self._tvis.vocabs, self._change_title)
                 viewer.bind('<Key>', self.shortcuts)
                 self._viewer = viewer
 
@@ -545,12 +584,15 @@ if desktop:
                 fpath, heads = self._fpath_heads
                 i = int(choice_t[0]) # head/inter-batch id or sentence/intra-batch id
                 if event.widget is headbox:
+                    IOHead = self._tvis.IOHead
+                    IOData = self._tvis.IOData
                     head = fpath.join(heads[i])
                     bid, num_word = (int(i) for i in heads[i][5:-4].split('_'))
-                    head = pickle_load(head)
+                    head = IOHead(*pickle_load(head))
                     if head.tag is None and head.label is not None:
-                        neg_set = set(self._vocabs[0].label.index(i) for i in '01')
-                        pos_set = set(self._vocabs[0].label.index(i) for i in '34')
+                        polar_vocab = self._tvis.vocabs.polar
+                        neg_set = set(polar_vocab.index(i) for i in '01')
+                        pos_set = set(polar_vocab.index(i) for i in '34')
                             
                     sentbox.delete(0, END)
                     for sid, (offset, length, words) in enumerate(zip(head.offset, head.length, head.token)):
@@ -564,7 +606,7 @@ if desktop:
                         #     mark += " ◌•▴⨯"[warning_level(warning_cnt)]
                         mark += '\t'
                         tokens = '' if head.label is None else ' '
-                        tokens = tokens.join(self._vocabs.token[idx] for idx in words[offset:offset + length])
+                        tokens = tokens.join(self._tvis.vocabs.token[idx] for idx in words[offset:offset + length])
                         sentbox.insert(END, mark + tokens)
 
                     head_ = []
@@ -582,7 +624,7 @@ if desktop:
                         for fname_time in fpath.listdir():
                             if fname_time.startswith(prefix) and fname_time.endswith(suffix):
                                 if fname_time not in self._sent_cache:
-                                    data       = pickle_load(fpath.join(fname_time))
+                                    data       = IOData(*pickle_load(fpath.join(fname_time)))
                                     sample_gen = (inf_none_gen if x is None else x for x in data[:-1])
                                     data_      = []
                                     for sample in zip(*sample_gen):
@@ -610,7 +652,7 @@ if desktop:
                         for fname_time in fpath.listdir():
                             if fname_time.startswith(prefix) and fname_time.endswith(suffix):
                                 if fname_time not in self._sent_cache:
-                                    data       = pickle_load(fpath.join(fname_time))
+                                    data       = IOData(*pickle_load(fpath.join(fname_time)))
                                     sample_gen = (inf_none_gen if d is None or f in ('segment', 'summary') else d for f,d in zip(IOData._fields, data))
                                     data_      = []
                                     for sample in zip(*sample_gen):
@@ -1359,8 +1401,10 @@ if desktop:
             _, time = self._head_time
             bid, epoch = time[tid][0][5:-4].split('_')
             title = f'Batch: {bid} Epoch: {epoch} '
-            if data.scores is not None:
+            if isinstance(data.scores, dict): # parsing
                 title += '  '.join(i+f'({data.scores[j]})' for i, j in zip(('len.', 'P.', 'R.', 'tag.'), (1, 3, 4, 11)))
+            elif isinstance(data.scores, list): # sentiment
+                title += '  |  ' + '  '.join(i+f'({j:.1f})' for i, j in zip(('5r.', '3r.', '2r.', '5f.', '3f.', '2f.'), data.scores))
             self._time_change_callback(title, epoch) # [(fname, data)]
 
         def navi_to(self, navi_char, steps = 0, num_frame = 24, duration = 1):
@@ -1732,6 +1776,13 @@ if desktop:
                                                    width = line_width,
                                                    fill = word_color,
                                                    tags = ('elems', 'line')))
+                    if not apply_dash and decorate:
+                        elems.append(board.create_oval(center_x - r, w_p_s[2] - r,
+                                                       center_x + r, w_p_s[2] + r,
+                                                       fill = word_color, outline = '', tags = ('elems', 'dot')))
+                        elems.append(board.create_oval(center_x - r, tag_label_line_bo - r,
+                                                       center_x + r, tag_label_line_bo + r,
+                                                       fill = word_color, outline = '', tags = ('elems', 'dot')))
                     board_item_coord[pbox] = elems, ('p', i)
                 else:
                     node = board.create_text(center_x, word_center + text_offy, text = token, font = (font_name, font_size),
@@ -1808,7 +1859,7 @@ if desktop:
                 if label_layer is None:
                     if layer_tracker is None:
                         last_right = data.right[l - 1]
-                        last_exist = data.label[l - 1] > 0 # TODO: unlabeled dtype is float
+                        last_exist = data.label[l - 1][:, 0] > -1 if data.tag is None else data.label[l - 1] > 0 # TODO: unlabeled dtype is float
                         layer_tracker = []
                         for p, (lhr, rhr, lhe, rhe) in enumerate(zip(last_right, last_right[1:], last_exist, last_exist[1:])):
                             rw_relay = lhe and lhr
@@ -1819,7 +1870,7 @@ if desktop:
                     continue
 
                 for p, (ps, pr) in enumerate(zip(label_layer, right_layer)):
-                    if not self._conf.show_paddings and not (head.offset <= p < head.offset + head.length - l) or not self._conf.show_nil and ps == nil: # not use ts because of spotlight
+                    if not self._conf.show_paddings and not (head.offset <= p < head.offset + head.length - l) or not self._conf.show_nil and ps[0] < 0 if isinstance(ps, np.ndarray) else ps == nil: # not use ts because of spotlight
                         continue
                         
                     center_x = (l/2 + p + .5) * self._conf.word_width + self._conf.offset_x
@@ -1831,28 +1882,66 @@ if desktop:
                     else:
                         label_color = mpc_color
 
-                    if issubclass(label_layer.dtype.type, np.integer):
-                        if self._conf.show_errors and head.label[l] is not None:
-                            ts = head.label[l][p]
-                            draw_error_box = ps != ts
-                            label_text = f'{vocabs.label[ps]}({vocabs.label[ts]})' if draw_error_box else f'{vocabs.label[ps]}'
-                        else:
-                            draw_error_box = False
-                            label_text = f'{vocabs.label[ps]}'
+                    if data.tag is None: # sentiment labels
+                        ts = head.label[l][p]
+                        elems = []
+                        error = None
+                        for pid, psi in enumerate(ps):
+                            b_font_size = font_size if apply_dash else round_int(font_size * data.label_score[l][p, pid])
+                            if b_font_size < 1:
+                                continue
+                            elem = board.create_text(center_x, tag_label_center + text_offy,
+                                                     text = f'{vocabs.polar[psi]}',
+                                                     fill = label_color,
+                                                     tags = ('elems', 'node'),
+                                                     font = (font_name, b_font_size,))
+                            elems.append(elem)
+                            xs, ys, xe, ye = board.bbox(elem)
+                            if pid:
+                                b_boxes.append((xe - xs, ye))
+                            else:
+                                b_boxes  = [(xe - xs, ye)]
+                                b_bottom = ye
+                            if self._conf.show_errors and pid and psi == ts:
+                                error = pid
+                        mid_pos = sum(bw for bw, _ in b_boxes) / 2
+                        b_offset = 0
+                        for pid, ((bw, be), elem) in enumerate(zip(b_boxes, elems)):
+                            b_offset += bw
+                            x_move = b_offset - bw / 2 - mid_pos
+                            y_move = b_bottom - be
+                            board.move(elem, x_move, y_move)
+                            
+                            if error == pid:
+                                elem = board.create_rectangle(*board.bbox(elem),
+                                                              outline = 'red', dash = (1, 2),
+                                                              tags = ('elems', 'err'))
+                                errors.append(elem)
+                                elems .append(elem)
                     else:
-                        draw_error_box = False
-                        label_text = f'{ps * 100:.1f}%'
-                    
-                    elems = [board.create_text(center_x, tag_label_center + text_offy,
-                                               text = label_text,
-                                               fill = label_color,
-                                               tags = ('elems', 'node'), font = (font_name, font_size if apply_dash else round_int(font_size * data.label_score[l][p])),)]
-                    if draw_error_box:
-                        # x,y,x_,y_ = board.bbox(elems[0])x-7,y-3,x_+2,y_, 
-                        elems.append(board.create_rectangle(*board.bbox(elems[0]),
-                                                            outline = 'red', dash = (1, 2),
-                                                            tags = ('elems', 'err')))
-                        errors.append(elems[-1])
+                        if issubclass(label_layer.dtype.type, np.integer):
+                            if self._conf.show_errors and head.label[l] is not None:
+                                ts = head.label[l][p]
+                                draw_error_box = ps != ts
+                                label_text = f'{vocabs.label[ps]}({vocabs.label[ts]})' if draw_error_box else f'{vocabs.label[ps]}'
+                            else:
+                                draw_error_box = False
+                                label_text = f'{vocabs.label[ps]}'
+                        else: # tokenization
+                            draw_error_box = False
+                            label_text = f'{ps * 100:.1f}%'
+                        
+                        elems = [board.create_text(center_x, tag_label_center + text_offy,
+                                                   text = label_text,
+                                                   fill = label_color,
+                                                   tags = ('elems', 'node'),
+                                                   font = (font_name, font_size if apply_dash else round_int(font_size * data.label_score[l][p])),)]
+                        if draw_error_box:
+                            # x,y,x_,y_ = board.bbox(elems[0])x-7,y-3,x_+2,y_, 
+                            elems.append(board.create_rectangle(*board.bbox(elems[0]),
+                                                                outline = 'red', dash = (1, 2),
+                                                                tags = ('elems', 'err')))
+                            errors.append(elems[-1])
                     board_item_coord[sbox] = elems, (l, p)
 
                     if not self._conf.show_paddings:

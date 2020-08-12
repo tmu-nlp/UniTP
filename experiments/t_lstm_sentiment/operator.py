@@ -190,7 +190,7 @@ from utils.file_io import join, isfile, listdir, remove, isdir
 from utils.pickle_io import pickle_dump
 from utils.param_ops import HParams
 from utils.shell_io import parseval, rpt_summary
-from visualization import set_vocab, set_head, set_data, calc_stan_accuracy
+from visualization import ContinuousTensorVis, calc_stan_accuracy
 class StanVis(BaseVis):
     def __init__(self, epoch, work_dir, i2vs, logger,
                  save_tensors   = True,
@@ -198,8 +198,10 @@ class StanVis(BaseVis):
                  scores_of_bins = False,
                  flush_heads    = False):
         super().__init__(epoch)
-        self._work_dir = work_dir
-        self._i2vs = i2vs
+        fname = join(work_dir, 'vocabs.pkl') # TODO integrate into ctvis
+        if flush_heads and isfile(fname):
+            remove(fname)
+        self._ctvis = ContinuousTensorVis(work_dir, i2vs)
         self._logger = logger
         htree = join(work_dir, 'head.tree')
         dtree = join(work_dir, f'data.{epoch}.tree')
@@ -210,9 +212,6 @@ class StanVis(BaseVis):
         self.register_property('save_tensors', save_tensors)
         self.register_property('length_bins',  length_bins)
         self._final_dn = None
-        fname = join(work_dir, 'vocabs.pkl')
-        if flush_heads and isfile(fname):
-            remove(fname)
 
     def __del__(self):
         if self._head_tree: self._head_tree.close()
@@ -220,7 +219,7 @@ class StanVis(BaseVis):
 
     def _before(self):
         htree, dtree = self._fnames
-        if set_vocab(self._work_dir, self._i2vs._nested):
+        if self._ctvis.is_anew: # TODO
             self._head_tree = open(htree, 'w')
             self.register_property('length_bins', set())
         self._data_tree = open(dtree, 'w')
@@ -231,10 +230,7 @@ class StanVis(BaseVis):
          label_score, split_score) = batch
 
         if self._head_tree:
-            bins = set_head(self._work_dir, batch_id,
-                            size, h_offset, h_length, h_token, None, h_polar, h_right,
-                            trapezoid_info,
-                            self._i2vs, self._head_tree)
+            bins = self._ctvis.set_head(self._head_tree, h_offset, h_length, h_token, None, h_polar, h_right, trapezoid_info, batch_id, size, 10)
             self.length_bins |= bins
 
         if self.length_bins is not None and self._scores_of_bins:
@@ -242,13 +238,22 @@ class StanVis(BaseVis):
         else:
             bin_width = None
 
-        fpath = self._work_dir if self.save_tensors and (mpc_token is not None or mpc_label is not None) else None
-        n__d = set_data(fpath, batch_id, size, self.epoch,
-                        h_offset, h_length, h_token, None, d_polar, h_right, # d_right,
-                        mpc_token, mpc_label,
-                        None, label_score, split_score,
-                        trapezoid_info,
-                        self._i2vs, self._data_tree, self._logger, None, bin_width)
+        if self.save_tensors and (mpc_token is not None or mpc_label is not None):
+            if self.length_bins is not None and self._scores_of_bins:
+                bin_width = 10 # TODO check this!!!
+            else:
+                bin_width = None
+            extended = size, bin_width, None
+        else:
+            extended = None
+
+        n__d = self._ctvis.set_data(self._data_tree, self._logger, batch_id, self.epoch,
+                             h_offset, h_length, h_token, None, d_polar, h_right, # TODO d_right, should be equal
+                             mpc_token, mpc_label,
+                             None, label_score, split_score,
+                             trapezoid_info,
+                             extended)
+
         if n__d is not None:
             n, d = n__d
             if self._final_dn is None:
