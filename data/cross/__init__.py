@@ -694,11 +694,23 @@ def targets(right_layer, joint_layer):
                     targets[r0id + 2] += 1
     return targets
 
+E_SHP = 0
+E_CMB = 1
+
+def explain_error(error_layer, error_id, sent_len):
+    if error_id == E_SHP:
+        error = 'Bad tensor shape'
+    elif error_id == E_CMB:
+        error = 'No action was taken'
+    return f'len={sent_len}, {error} at layer {error_layer}'
+
 def disco_tree(word, bottom_tag, layers_of_label, layers_of_right, layers_of_joint, layers_of_direc, fall_back_root_label = None):
     track_nodes = []
     terminals = []
     non_terminals = {}
     top_down = defaultdict(set)
+    track_fall_back = isinstance(fall_back_root_label, str)
+    error_layer_id = None
     NTS = 500
     for tid, wd_tg in enumerate(zip(word, bottom_tag)):
         terminals.append((tid,) + wd_tg)
@@ -713,6 +725,7 @@ def disco_tree(word, bottom_tag, layers_of_label, layers_of_right, layers_of_joi
             track_nodes.append(NTS - 1)
         else:
             track_nodes.append(tid)
+    bottom_len = tid + 1
             
     non_terminal_start = NTS
     def _combine(child_node, parent_node, non_terminals, top_down):
@@ -731,6 +744,7 @@ def disco_tree(word, bottom_tag, layers_of_label, layers_of_right, layers_of_joi
             if nid == 0:
                 offset = 1
             elif len(lj) == 0:
+                error_layer_id = lid, E_SHP, bottom_len
                 break # should be the final | unknown action in the model
             elif lj[nid - 1]: # joint
                 if last_right and not right:
@@ -765,7 +779,9 @@ def disco_tree(word, bottom_tag, layers_of_label, layers_of_right, layers_of_joi
 
         # if isinstance(fall_back_root_label, str) and len(word) > 2:
         #     import pdb; pdb.set_trace()
-        if len(track_nodes) > 1 and snapshot_track_nodes == track_nodes and isinstance(fall_back_root_label, str): # no action is taken
+        if len(track_nodes) > 1 and snapshot_track_nodes == track_nodes and track_fall_back: # no action is taken
+            if error_layer_id is None:
+                error_layer_id = lid, E_CMB, bottom_len
             top_down[non_terminal_start].update(track_nodes)
             non_terminals[non_terminal_start] = fall_back_root_label
             non_terminal_start += 1
@@ -774,7 +790,7 @@ def disco_tree(word, bottom_tag, layers_of_label, layers_of_right, layers_of_joi
     for nid, label in non_terminals.items():
         top_down[nid] = TopDown(label, top_down.pop(nid))
 
-    return terminals, top_down, non_terminal_start - 1
+    return terminals, top_down, non_terminal_start - 1, error_layer_id
 
 from data.delta import get_logits as _get_logits
 def xlogit_gen(label_layer, right_layer, direc_layer, joint_layer, current_joints, next_joints):

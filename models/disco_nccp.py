@@ -2,13 +2,16 @@ import torch
 from torch import nn, Tensor
 from models.backend import Stem, activation_type, logit_type
 
-from utils.types import orient_dim, hidden_dim, num_ori_layer, true_type, frac_2, frac_4
+from utils.types import orient_dim, hidden_dim, num_ori_layer, true_type, frac_2, frac_4, frac_5
+from utils.math_ops import inv_sigmoid
+from visualization import DiscoThresholds
 
 from models.combine import get_combinator, get_components, combine_type, valid_trans_compound
 stem_config = dict(orient_dim   = orient_dim,
                    combine_type = combine_type,
                    joint_act    = activation_type,
                    joint_debias = true_type,
+                   threshold    = dict(right = frac_5, direc = frac_4, joint = frac_4),
                    num_layers   = num_ori_layer,
                    rnn_drop_out = frac_2,
                    drop_out     = frac_4,
@@ -47,6 +50,7 @@ class DiscoStem(nn.Module):
                  combine_type,
                  joint_act,
                  joint_debias,
+                 threshold,
                  num_layers,
                  rnn_drop_out,
                  trainable_initials,
@@ -64,6 +68,8 @@ class DiscoStem(nn.Module):
         self._jnt_rhs = self._jnt_lhs if joint_debias else nn.Linear(model_dim, orient_dim, bias = False)
         self._jnt_act = joint_act()
         self._jnt_lgt = nn.Linear(orient_dim, 1)
+        self._thresholds = DiscoThresholds(0, 0, 0)
+        self._raw_threshold = DiscoThresholds(**threshold)
         self.combine = get_combinator(combine_type, model_dim)
         if trainable_initials:
             c0 = torch.randn(num_layers * 2, 1, hidden_size)
@@ -76,6 +82,21 @@ class DiscoStem(nn.Module):
             self.register_parameter('_h0', None)
             self.register_parameter('_c0', None)
             self._initial_size = None
+
+    def checkout_loss(self, hinge_loss = True):
+        raw_threshold = self._raw_threshold
+        assert 0 < raw_threshold.joint < 1
+        assert 0 < raw_threshold.direc < 1
+        if hinge_loss:
+            thresholds = (x - 0.5 for x in raw_threshold)
+        else:
+            thresholds = (inv_sigmoid(x) for x in raw_threshold)
+        self._thresholds = ret = DiscoThresholds(*thresholds)
+        return ret
+
+    @property
+    def raw_threshold(self):
+        return self._raw_threshold
 
     def get_h0c0(self, batch_size):
         if self._initial_size:
@@ -150,9 +171,9 @@ class DiscoStem(nn.Module):
                 jnt_start = jnt_end
                 direc = None
             else:
-                right = right_direc[:, :, 0] > 0
-                direc = right_direc[:, :, 1] > 0
-                joint = joint > 0
+                right = right_direc[:, :, 0] > self._thresholds.right
+                direc = right_direc[:, :, 1] > self._thresholds.direc
+                joint = joint > self._thresholds.joint
 
             lhs, rhs, jnt, ids = split(unit_emb, right, joint, existence, direc)
             unit_emb = self.combine(lhs, rhs, jnt.unsqueeze(dim = 2))
@@ -190,7 +211,7 @@ model_type = dict(orient_layer    = stem_config,
 from models.utils import get_logit_layer
 from models.loss import get_decision, get_decision_with_value, get_loss
 
-class BaseRnnTree(nn.Module):
+class BaseRnnTree(DiscoStem):
     def __init__(self,
                  model_dim,
                  num_tags,
@@ -198,9 +219,9 @@ class BaseRnnTree(nn.Module):
                  orient_layer,
                  tag_label_layer,
                  **kw_args):
-        super().__init__(**kw_args)
+        # (**kw_args)self._stem_layer = 
 
-        self._stem_layer = DiscoStem(model_dim, **orient_layer)
+        super().__init__(model_dim, **orient_layer)
 
         hidden_dim = tag_label_layer['hidden_dim']
         if hidden_dim:
@@ -223,7 +244,7 @@ class BaseRnnTree(nn.Module):
                 ingore_logits = False,
                 **kw_args):
         (layers_of_existence, layers_of_base, layers_of_right_direc, layers_of_joint, segment,
-         seg_length) = self._stem_layer(base_inputs, bottom_existence, **kw_args)
+         seg_length) = super().forward(base_inputs, bottom_existence, **kw_args)
 
         if self._hidden_dim:
             layers_of_hidden = self._shared_layer(layers_of_base)

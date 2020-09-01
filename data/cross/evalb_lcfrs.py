@@ -110,7 +110,7 @@ class DiscoEvalb:
                 self._sent_lines.append(incomplete_sent_line(disc_mark, self._total_sents, g_num_brackets, g_disc_num_brackets, g_tag_count, tag_match, p_tag_count))
         if p_brackets is None:
             self._missing += 1
-            return
+            return -1, -1, -1, -1 if p_tags is None else (tag_match / p_tag_count)
 
         bracket_match = sum((g_brackets & p_brackets).values())
         p_num_brackets = sum(p_brackets.values())
@@ -136,6 +136,7 @@ class DiscoEvalb:
         self._total_pred += p_num_brackets
         self._disc_match += disc_bracket_match
         self._disc_pred += p_disc_num_brackets
+        return sent_prec, sent_rec, sent_fb1, tag_match / p_tag_count
 
     def __str__(self):
         tp, tr, tf, dp, dr, df = self.summary()

@@ -8,20 +8,20 @@ from os import listdir, remove
 import sys, pdb
 from nltk.tree import Tree
 from utils.file_io import join, isfile, parpath
-from utils.math_ops import isqrt
 from utils.pickle_io import pickle_load, pickle_dump
 from utils.param_ops import HParams
 
 inf_none_gen = (None for _ in count())
 
-IOVocab = namedtuple('IOVocab', 'vocabs, IOHead_fields, IOData_fields')
+DiscoThresholds = namedtuple('DiscoThresholds', 'right, joint, direc')
+IOVocab = namedtuple('IOVocab', 'vocabs, IOHead_fields, IOData_fields, thresholds')
 class TensorVis:
     @classmethod
     def from_vfile(cls, fpath):
-        vocabs, IOHead_fields, IOData_fields = pickle_load(fpath)
-        return cls(parpath(fpath), HParams(vocabs), IOHead_fields, IOData_fields)
+        vocabs, IOHead_fields, IOData_fields, thresholds = pickle_load(fpath)
+        return cls(parpath(fpath), HParams(vocabs), IOHead_fields, IOData_fields, thresholds)
 
-    def __init__(self, fpath, vocabs, IOHead_fields, IOData_fields, clean_fn = None, fname = 'vocabs.pkl'):
+    def __init__(self, fpath, vocabs, IOHead_fields, IOData_fields, thresholds = None, clean_fn = None, fname = 'vocabs.pkl'):
         files = listdir(fpath)
         fname = join(fpath, fname)
         if fname in files:
@@ -31,13 +31,14 @@ class TensorVis:
             anew = False
         else:
             assert isinstance(vocabs, HParams)
-            pickle_dump(fname, IOVocab(vocabs._nested, IOHead_fields, IOData_fields))
+            pickle_dump(fname, IOVocab(vocabs._nested, IOHead_fields, IOData_fields, thresholds))
             anew = True
         self._anew = anew
         self._fpath = fpath
         self._vocabs = vocabs
         self._head_type = namedtuple('IOHead', IOHead_fields)
         self._data_type = namedtuple('IOData', IOData_fields)
+        self._threshold = thresholds
 
     @property
     def is_anew(self):
@@ -58,7 +59,25 @@ class TensorVis:
     def IOData(self):
         return self._data_type
 
+    @property
+    def threshold(self):
+        return self._threshold
+
 from contextlib import ExitStack
+class DiscontinuousTensorVis(TensorVis):
+    def __init__(self, fpath, vocabs, thresholds):
+        IOHead_fields = 'token, tag, label, right, joint, direc, tree, segment, seg_length'
+        IOData_fields = 'token, tag, label, right, joint, direc, tree, segment, seg_length, mpc_word, mpc_phrase, warning, scores, tag_score, label_score, right_score, joint_score, direc_score'
+        super().__init__(fpath, vocabs, IOHead_fields, IOData_fields, thresholds)
+
+    def set_head(self, batch_id, size, *args):
+        assert len(self._head_type._fields) == len(args)
+        pickle_dump(self.join(f'head.{batch_id}_{size}.pkl'), args)
+
+    def set_data(self, batch_id, epoch, *args):
+        assert len(self._data_type._fields) == len(args)
+        pickle_dump(self.join(f'data.{batch_id}_{epoch}.pkl'), args)
+
 from data.triangle import head_to_tree as tri_h2t
 from data.triangle import data_to_tree as tri_d2t
 from data.trapezoid import head_to_tree as tra_h2t
@@ -287,7 +306,7 @@ def calc_stan_accuracy(hfname, dfname, error_prefix, on_error):
 # master.tk.call('tk', 'scaling', '-displayof', '.', dpi_value / 72.272)
 # screen_shape = master.winfo_screenwidth(), master.winfo_screenheight()
 # master.geometry("%dx%d+%d+%d" % (canvas_shape + tuple(s/2-c/2 for s,c in zip(screen_shape, canvas_shape))))
-
+        
 try:
     from utils.gui import *
     desktop = True
@@ -296,10 +315,12 @@ except ImportError:
 
 if desktop:
     def _font(x):
-        font_name, font_size = x.split()
-        font_size = int(font_size)
-        assert font_size > 0, 'font size should be positive'
-        return font_name, font_size
+        font_name, font_min_size, font_max_size = x.split()
+        font_min_size = int(font_min_size)
+        font_max_size = int(font_max_size)
+        assert font_min_size > 0, 'font minimun size should be positive' 
+        assert font_max_size > font_min_size, 'font maximun size should be greather than min size'
+        return font_name, font_min_size, font_max_size
 
     def _ratio(x):
         x = float(x) if '.' in x else int(x)
@@ -348,6 +369,7 @@ if desktop:
     from nltk.draw import TreeWidget
     from nltk.draw.util import CanvasFrame
     from time import time, sleep
+    from utils.math_ops import uneven_split
     from math import exp, sqrt, pi
     from functools import partial
     from data.delta import warning_level, NIL
@@ -405,14 +427,13 @@ if desktop:
                 sftp.close()
 
     get_batch_id = lambda x: int(x[5:-4].split('_')[0])
-    R = namedtuple('R', 'head, sent, pool')
 
     class TreeExplorer(Frame):
         def __init__(self,
                      root,
                      fpath,
                      initial_bools = BoolList(True, False, False, False, False, True, False, True, False),
-                     initial_numbs = NumbList('System 15', (1, 1, 9, 1), (2, 1, 9, 1), (4, 2, 10, 2), (0, -200, 200, 10), (0, -200, 200, 10), (80, 60, 200, 5), (22, 12, 99, 2), (0.9, 0.5, 2, 0.1), (60, 50, 120, 10), (60, 50, 120, 10)),
+                     initial_numbs = NumbList('System 6 15', (1, 1, 9, 1), (2, 1, 9, 1), (4, 2, 10, 2), (0, -200, 200, 10), (0, -200, 200, 10), (80, 60, 200, 5), (22, 12, 99, 2), (0.9, 0.5, 2, 0.1), (60, 50, 120, 10), (60, 50, 120, 10)),
                      initial_panel = PanelList(False, False),
                      initial_combs = CombList((True, 'x ** 0.5'), (False, (0.5, 0.1, 0.9, 0.1)), (True, (0.04, 0.01, 0.34, 0.01)), (True, (0.2, 0.1, 0.9, 0.1)), (False, (200, 100, 500, 100)))):
             vocabs = fpath.join('vocabs.pkl')
@@ -423,7 +444,6 @@ if desktop:
 
             self._fpath_heads = fpath, None
             self._last_init_time = None
-            self._rpt = R(defaultdict(list), {}, None)
 
             super().__init__(root)
             self.master.title(fpath.folder)
@@ -540,7 +560,7 @@ if desktop:
                     viewer.destroy()
                 # widget shall be consumed within a function, or they will be visible!
                 master = Toplevel(self) if self._last_panel_bools.detach_viewer else self
-                viewer = ThreadViewer(master, self._tvis.vocabs, self._change_title)
+                viewer = ThreadViewer(master, self._tvis, self._change_title)
                 viewer.bind('<Key>', self.shortcuts)
                 self._viewer = viewer
 
@@ -561,20 +581,20 @@ if desktop:
 
         def _change_title(self, prefix, epoch):
             title = [self._fpath_heads[0].folder, prefix]
-            bid, _, _, sid = self._selected
-            key = f'{bid}_{epoch}'
-            if key in self._rpt.sent:
-                scores = self._rpt.sent[key][sid]
-                if len(scores) == 4:
-                    scores = '  '.join(i+f'({j:.2f})' for i, j in zip(('5C@R', 'N-P@R', '5C', 'N-P'), scores))
-                else:
-                    scores = tuple(scores[i] for i in (1, 3, 4, 11))
-                    scores = '  '.join(i+f'({str(j)})' for i, j in zip(('len.', 'P.', 'R.', 'tag.'), scores))
+            # bid, _, _, sid = self._selected
+            # key = f'{bid}_{epoch}'
+            # if key in self._rpt.sent:
+            #     scores = self._rpt.sent[key][sid]
+            #     if len(scores) == 4:
+            #         scores = '  '.join(i+f'({j:.2f})' for i, j in zip(('5C@R', 'N-P@R', '5C', 'N-P'), scores))
+            #     else:
+            #         scores = tuple(scores[i] for i in (1, 3, 4, 11))
+            #         scores = '  '.join(i+f'({str(j)})' for i, j in zip(('len.', 'P.', 'R.', 'tag.'), scores))
                 # else:
                 #     r = self._fpath_heads[0].join(f'data.{key}.rpt')
                 #     scores = self._rpt.sent[r[5:-4]] = rpt_summary(r, sents = True)
                     
-                title.append(scores)
+                # title.append(scores)
             self.master.title(' | '.join(title))
 
         def read_listbox(self, event):
@@ -595,7 +615,16 @@ if desktop:
                         pos_set = set(polar_vocab.index(i) for i in '34')
                             
                     sentbox.delete(0, END)
-                    for sid, (offset, length, words) in enumerate(zip(head.offset, head.length, head.token)):
+                    is_a_conti_task = 'offset' in IOHead._fields
+                    if is_a_conti_task: # tri/tra
+                        offsets = head.offset
+                        lengths = head.length
+                        is_triangular = head.segment is None and head.label is not None
+                    else: # cross
+                        batch_size = head.token.shape[0]
+                        offsets = (1 for _ in range(batch_size))
+                        lengths = head.seg_length[:, 0]
+                    for sid, (offset, length, words) in enumerate(zip(offsets, lengths, head.token)):
                         if head.tag is None and head.label is not None:
                             negation = any(i in head.label[sid] for i in pos_set) and any(i in head.label[sid] for i in neg_set)
                         else:
@@ -610,63 +639,95 @@ if desktop:
                         sentbox.insert(END, mark + tokens)
 
                     head_ = []
-                    if head.segment is None and head.label is not None: # depend on task
-                        sample_gen = (inf_none_gen if h is None else h for h in head)
-                        for sample in zip(*sample_gen):
-                            values = []
-                            for field, value in zip(IOHead._fields, sample):
-                                if value is not None and field in ('label', 'right'):
-                                    value = triangle_to_layers(value) 
-                                values.append(value)
-                            head_.append(IOHead(*values))
+                    if is_a_conti_task: # depend on task senti/parse | tri
+                        if is_triangular:
+                            sample_gen = (inf_none_gen if h is None else h for h in head)
+                            for sample in zip(*sample_gen):
+                                values = []
+                                for field, value in zip(IOHead._fields, sample):
+                                    if value is not None and field in ('label', 'right'):
+                                        value = triangle_to_layers(value) 
+                                    values.append(value)
+                                head_.append(IOHead(*values))
 
-                        prefix, suffix = f'data.{bid}_', '.pkl'
-                        for fname_time in fpath.listdir():
-                            if fname_time.startswith(prefix) and fname_time.endswith(suffix):
-                                if fname_time not in self._sent_cache:
-                                    data       = IOData(*pickle_load(fpath.join(fname_time)))
-                                    sample_gen = (inf_none_gen if x is None else x for x in data[:-1])
-                                    data_      = []
-                                    for sample in zip(*sample_gen):
-                                        values = []
-                                        for field, value in zip(IOData._fields, sample): # TODO: open for unsup?
-                                            if value is not None and field in ('label', 'right', 'label_score', 'split_score'):
-                                                value = triangle_to_layers(value)
-                                            values.append(value)
-                                        sample = IOData(*values, inf_none_gen)
-                                        stat = SentenceEnergy(num_word, sample.mpc_word, sample.mpc_phrase,
-                                                              sample.offset, sample.length, None, None)
-                                        data_.append((sample, stat))
-                                    self._sent_cache[fname_time] = data_, data[-1]
-                    else:
-                        sample_gen = (inf_none_gen if h is None or f == 'segment' else h for f,h in zip(IOHead._fields, head))
+                            prefix, suffix = f'data.{bid}_', '.pkl'
+                            for fname_time in fpath.listdir():
+                                if fname_time.startswith(prefix) and fname_time.endswith(suffix):
+                                    if fname_time not in self._sent_cache:
+                                        data       = IOData(*pickle_load(fpath.join(fname_time)))
+                                        sample_gen = (inf_none_gen if x is None else x for x in data[:-1])
+                                        data_      = []
+                                        for sample in zip(*sample_gen):
+                                            values = []
+                                            for field, value in zip(IOData._fields, sample): # TODO: open for unsup?
+                                                if value is not None and field in ('label', 'right', 'label_score', 'split_score'):
+                                                    value = triangle_to_layers(value)
+                                                values.append(value)
+                                            sample = IOData(*values, inf_none_gen)
+                                            stat = SentenceEnergy(num_word, sample.mpc_word, sample.mpc_phrase,
+                                                                  sample.offset, sample.length, None, None)
+                                            data_.append((sample, stat))
+                                        self._sent_cache[fname_time] = data_, data[-1]
+                        else: # trapezoidal
+                            sample_gen = (inf_none_gen if h is None or f == 'segment' else h for f,h in zip(IOHead._fields, head))
+                            for sample in zip(*sample_gen):
+                                values = dict(zip(IOHead._fields, sample))
+                                for field in ('label', 'right'):
+                                    if values[field] is not None: # trapezoids for supervised parsing
+                                        values[field] = inflate(trapezoid_to_layers(values[field], head.segment, values['seg_length']))
+                                values['segment'] = head.segment
+                                head_.append(IOHead(**values))
+
+                            prefix, suffix = f'data.{bid}_', '.pkl'
+                            for fname_time in fpath.listdir():
+                                if fname_time.startswith(prefix) and fname_time.endswith(suffix):
+                                    if fname_time not in self._sent_cache:
+                                        data       = IOData(*pickle_load(fpath.join(fname_time)))
+                                        sample_gen = (inf_none_gen if d is None or f in ('segment', 'summary') else d for f,d in zip(IOData._fields, data))
+                                        data_      = []
+                                        for sample in zip(*sample_gen):
+                                            values = dict(zip(IOData._fields, sample))
+                                            for field in ('label', 'right', 'label_score', 'split_score'):
+                                                if field == 'label' and values[field] is None:
+                                                    values[field] = values['label_score']
+                                                if values[field] is not None: # trapezoid for supervised parsing
+                                                    values[field] = inflate(trapezoid_to_layers(values[field], data.segment, values['seg_length']))
+                                            values['segment'] = data.segment
+                                            sample = IOData(**values)
+                                            stat = SentenceEnergy(num_word, sample.mpc_word, sample.mpc_phrase,
+                                                                  sample.offset, sample.length,
+                                                                  sample.segment, sample.seg_length)
+                                            data_.append((sample, stat))
+                                        self._sent_cache[fname_time] = data_, data[-1]
+                    else: # discontinuous task
+                        sample_gen = (inf_none_gen if f == 'segment' else h for f,h in zip(IOHead._fields, head))
                         for sample in zip(*sample_gen):
                             values = dict(zip(IOHead._fields, sample))
-                            for field in ('label', 'right'):
-                                if values[field] is not None: # trapezoids for supervised parsing
-                                    values[field] = inflate(trapezoid_to_layers(values[field], head.segment, values['seg_length']))
+                            for field in ('label', 'right', 'direc'):
+                                values[field] = trapezoid_to_layers(values[field], head.segment, head.segment, big_endian = False)
+                            joint_segment = (head.segment - 1)[:-1]
+                            values['joint'] = trapezoid_to_layers(values['joint'], joint_segment, joint_segment, big_endian = False)
                             values['segment'] = head.segment
                             head_.append(IOHead(**values))
-
+                        
                         prefix, suffix = f'data.{bid}_', '.pkl'
                         for fname_time in fpath.listdir():
                             if fname_time.startswith(prefix) and fname_time.endswith(suffix):
                                 if fname_time not in self._sent_cache:
                                     data       = IOData(*pickle_load(fpath.join(fname_time)))
-                                    sample_gen = (inf_none_gen if d is None or f in ('segment', 'summary') else d for f,d in zip(IOData._fields, data))
+                                    sample_gen = (inf_none_gen if f == 'segment' else d for f,d in zip(IOData._fields, data))
                                     data_      = []
                                     for sample in zip(*sample_gen):
                                         values = dict(zip(IOData._fields, sample))
-                                        for field in ('label', 'right', 'label_score', 'split_score'):
-                                            if field == 'label' and values[field] is None:
-                                                values[field] = values['label_score']
-                                            if values[field] is not None: # trapezoid for supervised parsing
-                                                values[field] = inflate(trapezoid_to_layers(values[field], data.segment, values['seg_length']))
+                                        for field in ('label', 'right', 'direc', 'label_score', 'right_score', 'direc_score'):
+                                            values[field] = trapezoid_to_layers(values[field], data.segment, data.segment, big_endian = False)
+                                        joint_segment = [x - 1 for x in data.segment[:-1]]
+                                        for field in ('joint', 'joint_score'):
+                                            values[field] = trapezoid_to_layers(values[field], joint_segment, joint_segment, big_endian = False)
                                         values['segment'] = data.segment
                                         sample = IOData(**values)
                                         stat = SentenceEnergy(num_word, sample.mpc_word, sample.mpc_phrase,
-                                                              sample.offset, sample.length,
-                                                              sample.segment, sample.seg_length)
+                                                              1, None, sample.segment, sample.seg_length, False)
                                         data_.append((sample, stat))
                                     self._sent_cache[fname_time] = data_, data[-1]
                     self._selected = bid, num_word, head_
@@ -977,16 +1038,20 @@ if desktop:
             return self._global_data.shape[0]
 
     class SentenceEnergy:
-        def __init__(self, size, mpc_word, mpc_phrase, offset, length, segment, seg_length):
+        def __init__(self, size, mpc_word, mpc_phrase, offset, length, segment, seg_length, is_contiuous = True):
             mpc_all = mpc_phrase
             if segment is None:
                 stats = phrase = tuple(LayerMPCStat(l) for l in triangle_to_layers(mpc_phrase))
             else:
-                layers = inflate(trapezoid_to_layers(mpc_phrase, segment, seg_length))
+                if is_contiuous:
+                    layers = inflate(trapezoid_to_layers(mpc_phrase, segment, seg_length)) # TODO check  seg seg
+                else:
+                    layers = trapezoid_to_layers(mpc_phrase, segment, segment, big_endian = False)
                 stats = phrase = tuple(l if l is None else LayerMPCStat(l) for l in layers)
+
             if mpc_word is not None:
                 mpc_all = np.concatenate([mpc_word, mpc_phrase])
-                token = LayerMPCStat(mpc_word)
+                token = LayerMPCStat(mpc_word) # TODO check [offset:offset + length]
                 stats = (token,) + phrase
             else:
                 token = None
@@ -994,14 +1059,24 @@ if desktop:
             self._min_all = xmax = np.min(mpc_all, 0)
             self._max_all = xmin = np.max(mpc_all, 0)
             for i, stat in enumerate(stats):
-                if i == 0:
-                    lo = offset, length
-                else:
-                    _len = length - i + 1 # pitari without +1
-                    if _len <= 0 or stat is None:
-                        continue
-                    lo = offset, _len
+                if is_contiuous:
+                    if i == 0:
+                        lo = offset, length
+                        ct = 0
+                    else:
+                        _len = length - i + 1 # pitari without +1
+                        if _len <= 0 or stat is None:
+                            continue
+                        lo = offset, _len
+                else: # discontinuous
+                    if i == 0:
+                        lo = 1, seg_length[i]
+                    else:
+                        lo = 1, seg_length[i - 1]
+                        
                 x, _ = stat._without_paddings(lo)
+                if x.shape[0] == 0:
+                    import pdb; pdb.set_trace()
                 _max = np.max(x, 0)
                 x = x[x[:, 0] > 0]
                 _min = np.min(x, 0)
@@ -1009,6 +1084,8 @@ if desktop:
                 xmin = np.where(invalid, _min, xmin)
                 invalid = _max > xmax
                 xmax = np.where(invalid, _max, xmax)
+                if lo[1] == 1:
+                    break
 
             self._min_val = xmin
             self._max_val = xmax
@@ -1221,13 +1298,13 @@ if desktop:
     class ThreadViewer(Frame):
         def __init__(self,
                      master,
-                     vocabs,
+                     vocab_bundle,
                      time_change_callback):
             super().__init__(master)
             self._time_change_callback = time_change_callback
             self._boards = Canvas(self), Canvas(self)
             self._time_slider = None, Scale(self, command = self._change_time)
-            self._vocabs = vocabs
+            self._vocab_bundle = vocab_bundle
             self._spotlight_subjects = None
             
         def configure(self,
@@ -1333,13 +1410,13 @@ if desktop:
         def set_framework(self, head, time_data):
             if len(time_data) != self._time_slider[0]:
                 raise ValueError(f'Set Invalid timesteps! {len(time_data)} vs. {self._time_slider[0]}')
-            self._head_time = head, tuple(time_data.items()) # [(fname, ((sent, stat), (sent, stat), ...)), ..]
+            self._head_time = head, tuple(time_data.items()) # [(fname, ((sents, summary), (sents, summary), ...)), ..]
 
         def show_sentence(self, sid): # across timesteps
             head, time_data = self._head_time
 
             # head in [sentence]: IOHead
-            self._head = head[sid]
+            self._head = _head = head[sid]
 
             # data in [epoch, sentence]: IOData
             self._data = []
@@ -1348,7 +1425,8 @@ if desktop:
 
             self._refresh_board(self._time_slider[1].get())
             if not self._conf.show_paddings:
-                self._boards[0].xview_moveto(self._head.offset / self._conf.num_word)
+                offset = _head.offset if 'offset' in _head._fields else 1
+                self._boards[0].xview_moveto(offset / self._conf.num_word)
 
         def minor_change(self, dynamic_settings, dynamic_geometry):
             self._conf = BoardConfig(*(dynamic_settings + dynamic_geometry + self._frame_geometry[len(dynamic_geometry):]))
@@ -1381,9 +1459,10 @@ if desktop:
             bg_color = 'white'
             stat_fg = 'gray5'
             stat_bg = 'gray94'
+            x_fg = 'gray80'
             if self._conf.dark_background:
                 fg_color, bg_color = bg_color, fg_color
-                stat_fg = 'gray40'
+                stat_fg = x_fg = 'gray40'
                 stat_bg = 'gray10'
             to_color = partial(make_color,
                                show_color         = self._conf.show_color and not self._conf.apply_dash,
@@ -1394,17 +1473,23 @@ if desktop:
 
             data, stat = self._data[tid]
             stat.make(self._conf.show_paddings, self._conf.pc_x, self._conf.pc_y)
-            self.__draw_board(data, stat, fg_color, to_color)
+            is_continuous = 'offset' in data._fields
+            if is_continuous:
+                self.__draw_board(data, stat, fg_color, to_color)
+            else:
+                self.__draw_board_x(data, stat, fg_color, x_fg, to_color)
             if self._conf.statistics:
-                self.__draw_stat_board(data.label, data.offset, data.length, stat, stat_fg, stat_bg, to_color)
+                if is_continuous:
+                    self.__draw_stat_board(data.label, data.offset, data.length, stat, stat_fg, stat_bg, to_color)
             
             _, time = self._head_time
             bid, epoch = time[tid][0][5:-4].split('_')
             title = f'Batch: {bid} Epoch: {epoch} '
-            if isinstance(data.scores, dict): # parsing
-                title += '  '.join(i+f'({data.scores[j]})' for i, j in zip(('len.', 'P.', 'R.', 'tag.'), (1, 3, 4, 11)))
-            elif isinstance(data.scores, list): # sentiment
-                title += '  |  ' + '  '.join(i+f'({j:.1f})' for i, j in zip(('5r.', '3r.', '2r.', '5f.', '3f.', '2f.'), data.scores))
+            len_score = len(data.scores)
+            if len_score == 12: # conti. parsing
+                title += ' |  ' + '  '.join(i+f'({data.scores[j]})' for i, j in zip(('len.', 'P.', 'R.', 'tag.'), (1, 3, 4, 11)))
+            elif len_score == 6: # sentiment
+                title += ' |  ' + '  '.join(i+f'({j:.1f})' for i, j in zip(('5r.', '3r.', '2r.', '5f.', '3f.', '2f.'), data.scores))
             self._time_change_callback(title, epoch) # [(fname, data)]
 
         def navi_to(self, navi_char, steps = 0, num_frame = 24, duration = 1):
@@ -1420,8 +1505,13 @@ if desktop:
             ox, oy = xpad[0], ypad[0]
             xpad = xpad[1] - xpad[0]
             ypad = ypad[1] - ypad[0]
-            l_pad = (head.offset / num_word)
-            ratio = 1 - (num_word - head.length) / num_word - l_pad
+            if 'offset' in head._fields:
+                l_pad = (head.offset / num_word)
+                ratio = 1 - (num_word - head.length) / num_word - l_pad
+            else:
+                l_pad = 1 / num_word
+                ratio = 1 - (num_word - head.seg_length[0] - 2) / num_word - l_pad # -2?
+            
             r_pad = ratio - xpad
             c_pad = 0.5 - xpad / 2 if show_paddings else (l_pad + r_pad) / 2
             o_pad = ratio / 2
@@ -1634,7 +1724,7 @@ if desktop:
 
         def __draw_stat_board(self, label_layers, offset, length, stat, fg_color, bg_color, to_color):
             stat_board = self._boards[1]
-            vocabs = self._vocabs
+            vocabs = self._vocab_bundle.vocabs
             nil = vocabs.label.index(NIL) if vocabs.tag else -1
             scatter_coord_item = {}
             histo_coord_position = {}
@@ -1720,7 +1810,7 @@ if desktop:
         def __draw_board(self, data, stat, fg_color, to_color):
             head   = self._head
             board  = self._boards[0]
-            vocabs = self._vocabs
+            vocabs = self._vocab_bundle.vocabs
             board_item_coord = {}
             apply_dash = self._conf.apply_dash
             tail_ = 1 - self._conf.dash
@@ -1739,9 +1829,10 @@ if desktop:
             text_offy = 0 #2
             w_p_s = self._conf.word_height + self._conf.offset_y, level_unit + self._conf.offset_y, level_unit + self._conf.word_height + self._conf.offset_y # token >--> tag >--> label
             decorate = isinstance(line_width, int) and line_width % 2 == 0
+            capstyle = ROUND if not apply_dash and decorate else None
             deco_dx = 0 if decorate else self._conf.deco_dx
             deco_dy = 0 if decorate else self._conf.deco_dy
-            font_name, font_size = self._conf.font
+            font_name, font_min_size, font_max_size = self._conf.font
             round_int = lambda x: int(round(x))
             errors = []
             if self._conf.delta_shape:
@@ -1769,70 +1860,50 @@ if desktop:
                 token = vocabs.token[w]
 
                 if data.tag is None:
-                    elems = [board.create_text(center_x, tag_label_center, text = token, font = (font_name, font_size),
-                                               fill = word_color, tags = ('elems', 'node'))]
-                    elems.append(board.create_line(center_x,  w_p_s[2],
-                                                   center_x,  tag_label_line_bo,
-                                                   width = line_width,
-                                                   fill = word_color,
-                                                   tags = ('elems', 'line')))
-                    if not apply_dash and decorate:
-                        elems.append(board.create_oval(center_x - r, w_p_s[2] - r,
-                                                       center_x + r, w_p_s[2] + r,
-                                                       fill = word_color, outline = '', tags = ('elems', 'dot')))
-                        elems.append(board.create_oval(center_x - r, tag_label_line_bo - r,
-                                                       center_x + r, tag_label_line_bo + r,
-                                                       fill = word_color, outline = '', tags = ('elems', 'dot')))
-                    board_item_coord[pbox] = elems, ('p', i)
+                    word_node = board.create_text(center_x, tag_label_center, 
+                                                  text = token, font = (font_name, font_max_size),
+                                                  fill = word_color, tags = ('elems', 'node'))
+                    word_line = board.create_line(center_x,  w_p_s[2],
+                                                  center_x,  tag_label_line_bo,
+                                                  width = line_width,
+                                                  fill = word_color,
+                                                  capstyle = capstyle,
+                                                  tags = ('elems', 'line'))
+                    board_item_coord[pbox] = (word_node, word_line), ('p', i)
                 else:
-                    node = board.create_text(center_x, word_center + text_offy, text = token, font = (font_name, font_size),
-                                             fill = word_color, tags = ('elems', 'node'))
-                    line = board.create_line(center_x,  w_p_s[0],
-                                             center_x,  w_p_s[1],
-                                             width = line_width,
-                                             fill = word_color,
-                                             tags = ('elems', 'line'))
-                    if apply_dash or not decorate:
-                        elems = node, line
-                    else:
-                        sdot = board.create_oval(center_x - r, w_p_s[0] - r,
-                                                 center_x + r, w_p_s[0] + r,
-                                                 fill = word_color, outline = '', tags = ('elems', 'dot'))
-                        edot = board.create_oval(center_x - r, w_p_s[1] - r,
-                                                 center_x + r, w_p_s[1] + r,
-                                                 fill = word_color, outline = '', tags = ('elems', 'dot'))
-                        elems = node, line, sdot, edot
-                    board_item_coord[wbox] = elems, ('w', i)
+                    word_node = board.create_text(center_x, word_center + text_offy,
+                                                  text = token, font = (font_name, font_max_size),
+                                                  fill = word_color, tags = ('elems', 'node'))
+                    word_line = board.create_line(center_x,  w_p_s[0],
+                                                  center_x,  w_p_s[1],
+                                                  width = line_width,
+                                                  fill = word_color,
+                                                  capstyle = capstyle,
+                                                  tags = ('elems', 'line'))
+                    board_item_coord[wbox] = (word_node, word_line), ('w', i)
                     tp = head.tag[i]
                     pp = data.tag[i]
                     # print(len(stat.tag), len(stat.token), len(stat.phrase[0])) shorter??
                     tag_color = to_color(data.tag_score if apply_dash else stat.tag[i] if i < len(stat.tag) else (0,0,0))
-                    node = board.create_text(center_x, tag_label_center + text_offy,
-                                             fill = tag_color, font = (font_name, font_size if apply_dash else round_int(font_size * data.tag_score[i])),
-                                             text = f'{vocabs.tag[pp]}' if not self._conf.show_errors or pp == tp else f'{vocabs.tag[pp]}({vocabs.tag[tp]})',
-                                             tags = ('elems', 'node'))
-                    line = board.create_line(center_x,  w_p_s[2],
-                                             center_x,  tag_label_line_bo,
-                                             width = line_width,
-                                             fill = tag_color,
-                                             tags = ('elems', 'line'))
+                    tag_node = board.create_text(center_x, tag_label_center + text_offy,
+                                                 fill = tag_color, font = (font_name, font_max_size if apply_dash else round_int(font_max_size * data.tag_score[i])),
+                                                 text = f'{vocabs.tag[pp]}' if not self._conf.show_errors or pp == tp else f'{vocabs.tag[pp]}({vocabs.tag[tp]})',
+                                                 tags = ('elems', 'node'))
+                    tag_line = board.create_line(center_x,  w_p_s[2],
+                                                 center_x,  tag_label_line_bo,
+                                                 width = line_width,
+                                                 fill = tag_color,
+                                                 capstyle = capstyle,
+                                                 tags = ('elems', 'line'))
                     if pp != tp and self._conf.show_errors:
-                        err = board.create_rectangle(*board.bbox(node),
+                        err = board.create_rectangle(*board.bbox(tag_node),
                                                      outline = 'red',
                                                      dash = (1, 2),
                                                      tags = ('elems', 'err'))
-                        elems = node, line, err
-                        errors.append
+                        elems = tag_node, tag_line, err
+                        errors.append(err)
                     else:
-                        elems = node, line
-                    if not apply_dash and decorate:
-                        sdot = board.create_oval(center_x - r, w_p_s[2] - r,
-                                                 center_x + r, w_p_s[2] + r,
-                                                 fill = tag_color, outline = '', tags = ('elems', 'dot'))
-                        edot = board.create_oval(center_x - r, tag_label_line_bo - r,
-                                                 center_x + r, tag_label_line_bo + r,
-                                                 fill = tag_color, outline = '', tags = ('elems', 'dot'))
-                        elems = elems + (sdot, edot)
+                        elems = tag_node, tag_line
                     board_item_coord[pbox] = elems, (0, i)
 
             if data.tag is None:
@@ -1886,31 +1957,30 @@ if desktop:
                         ts = head.label[l][p]
                         elems = []
                         error = None
-                        for pid, psi in enumerate(ps):
-                            b_font_size = font_size if apply_dash else round_int(font_size * data.label_score[l][p, pid])
-                            if b_font_size < 1:
-                                continue
+                        pps = sorted(zip(((vocabs.polar[psi], psi) for psi in ps), data.label_score[l][p]), key = lambda tt: tt[0][0])
+                        for pid, ((p_polar, psi), p_score) in enumerate(pps):
+                            b_font_size = font_max_size - font_min_size
+                            b_font_size = round_int(b_font_size * p_score)
+                            b_font_size += font_min_size
                             elem = board.create_text(center_x, tag_label_center + text_offy,
-                                                     text = f'{vocabs.polar[psi]}',
+                                                     text = f'{p_polar}',
                                                      fill = label_color,
                                                      tags = ('elems', 'node'),
                                                      font = (font_name, b_font_size,))
                             elems.append(elem)
-                            xs, ys, xe, ye = board.bbox(elem)
+                            xs, _, xe, _ = board.bbox(elem)
                             if pid:
-                                b_boxes.append((xe - xs, ye))
+                                b_widths.append(xe - xs)
                             else:
-                                b_boxes  = [(xe - xs, ye)]
-                                b_bottom = ye
-                            if self._conf.show_errors and pid and psi == ts:
+                                b_widths  = [xe - xs]
+                            if self._conf.show_errors and psi == ts and psi != ps[0]:
                                 error = pid
-                        mid_pos = sum(bw for bw, _ in b_boxes) / 2
                         b_offset = 0
-                        for pid, ((bw, be), elem) in enumerate(zip(b_boxes, elems)):
+                        mid_pos = sum(b_widths) / 2
+                        for pid, (bw, elem) in enumerate(zip(b_widths, elems)):
                             b_offset += bw
                             x_move = b_offset - bw / 2 - mid_pos
-                            y_move = b_bottom - be
-                            board.move(elem, x_move, y_move)
+                            board.move(elem, x_move, 0)
                             
                             if error == pid:
                                 elem = board.create_rectangle(*board.bbox(elem),
@@ -1935,7 +2005,7 @@ if desktop:
                                                    text = label_text,
                                                    fill = label_color,
                                                    tags = ('elems', 'node'),
-                                                   font = (font_name, font_size if apply_dash else round_int(font_size * data.label_score[l][p])),)]
+                                                   font = (font_name, font_max_size if apply_dash else round_int(font_max_size * data.label_score[l][p])),)]
                         if draw_error_box:
                             # x,y,x_,y_ = board.bbox(elems[0])x-7,y-3,x_+2,y_, 
                             elems.append(board.create_rectangle(*board.bbox(elems[0]),
@@ -1982,28 +2052,30 @@ if desktop:
                         to_right_x = center_x + offset_right_x
                         to_left_y  = line_y - line_dy * left_score
                         to_right_y = line_y - line_dy * right_score
-                        if offset_right_x > 0.5:
-                            elems.append(board.create_line(center_x   - deco_dx,     line_y - deco_dy,
-                                                           to_right_x + deco_dx, to_right_y + deco_dy,
-                                                           width = line_width, fill = mpc_color,
-                                                           tags = ('elems', 'r_line')))
-                        if offset_left_x > 0.5:
-                            elems.append(board.create_line(center_x  + deco_dx,    line_y - deco_dy,
-                                                           to_left_x - deco_dx, to_left_y + deco_dy,
-                                                           width = line_width, fill = mpc_color,
-                                                           tags = ('elems', 'l_line')))
-                        if decorate:
-                            if offset_right_x > 0.5:
-                                elems.append(board.create_oval(to_right_x - r, to_right_y - r,
-                                                               to_right_x + r, to_right_y + r,
-                                                               fill = mpc_color, outline = '', tags = ('elems', 'r_dot')))
-                            if offset_left_x > 0.5:
-                                elems.append(board.create_oval(to_left_x - r, to_left_y - r,
-                                                               to_left_x + r, to_left_y + r,
-                                                               fill = mpc_color, outline = '', tags = ('elems', 'l_dot')))
-                            elems.append(board.create_oval(center_x - r, line_y - r,
-                                                           center_x + r, line_y + r,
-                                                           fill = mpc_color, outline = '', tags = ('elems', 'dot')))
+                        elems.append(board.create_line( to_left_x - deco_dx,  to_left_y + deco_dy,
+                                                       center_x   - deco_dx,     line_y - deco_dy,
+                                                       to_right_x + deco_dx, to_right_y + deco_dy,
+                                                       capstyle = capstyle,
+                                                       width = line_width, fill = mpc_color,
+                                                       tags = ('elems', 'r_line')))
+                        # if offset_right_x > 0.5:
+                        # if offset_left_x > 0.5:
+                        #     elems.append(board.create_line(center_x  + deco_dx,    line_y - deco_dy,
+                                                           
+                        #                                    width = line_width, fill = mpc_color,
+                        #                                    tags = ('elems', 'l_line')))
+                        # if decorate:
+                        #     if offset_right_x > 0.5:
+                        #         elems.append(board.create_oval(to_right_x - r, to_right_y - r,
+                        #                                        to_right_x + r, to_right_y + r,
+                        #                                        fill = mpc_color, outline = '', tags = ('elems', 'r_dot')))
+                        #     if offset_left_x > 0.5:
+                        #         elems.append(board.create_oval(to_left_x - r, to_left_y - r,
+                        #                                        to_left_x + r, to_left_y + r,
+                        #                                        fill = mpc_color, outline = '', tags = ('elems', 'l_dot')))
+                        #     elems.append(board.create_oval(center_x - r, line_y - r,
+                        #                                    center_x + r, line_y + r,
+                        #                                    fill = mpc_color, outline = '', tags = ('elems', 'dot')))
                         color = mpc_color
 
                     if layer_tracker is not None:
@@ -2024,14 +2096,15 @@ if desktop:
                         #         to_x = center_x + line_ldx * dy / (last_x - center_x) * line_xy
                         elems.append(board.create_line(last_x, last_y, to_x, last_line_bo,
                                                        width = line_width, fill = color,# dashoffset = r,
+                                                       capstyle = capstyle,
                                                        dash = (line_width, r, line_width, r), tags = ('elems', 'c_line')))
-                        if not apply_dash and decorate:
-                            elems.append(board.create_oval(last_x - r, last_y - r,
-                                                           last_x + r, last_y + r,
-                                                           fill = mpc_color, outline = '', tags = ('elems', 'd_dot')))
-                            elems.append(board.create_oval(to_x - r, last_line_bo - r,
-                                                           to_x + r, last_line_bo + r,
-                                                           fill = mpc_color, outline = '', tags = ('elems', 'u_dot')))
+                        # if not apply_dash and decorate:
+                        #     elems.append(board.create_oval(last_x - r, last_y - r,
+                        #                                    last_x + r, last_y + r,
+                        #                                    fill = mpc_color, outline = '', tags = ('elems', 'd_dot')))
+                        #     elems.append(board.create_oval(to_x - r, last_line_bo - r,
+                        #                                    to_x + r, last_line_bo + r,
+                        #                                    fill = mpc_color, outline = '', tags = ('elems', 'u_dot')))
                 layer_tracker = None
                 # if layer_len == 1#: or not self._conf.show_paddings and np.any(layer_label):
                 #     break
@@ -2041,6 +2114,193 @@ if desktop:
                 self._spotlight_subjects = (board_item_coord, self._conf.word_width, level_unit) + self._spotlight_subjects[-3:]
             else:
                 self._spotlight_subjects = board_item_coord, self._conf.word_width, level_unit, None, None, None
+
+        def __draw_board_x(self, data, stat, fg_color, jnt_color, to_color):
+            head   = self._head
+            board  = self._boards[0]
+            vocabs = self._vocab_bundle.vocabs
+            threshold = self._vocab_bundle.threshold
+            board_item_coord = {}
+            apply_dash = self._conf.apply_dash
+
+            word_center     = self._conf.half_word_height + self._conf.offset_y    # >--- token ---<
+            level_unit      = self._conf.word_height + self._conf.line_dy            # token lines
+            tag_label_center  = word_center + level_unit                        # >--- tag label ---<
+            tag_label_line_bo = 2 * level_unit            + self._conf.offset_y # token lines tag lines
+            line_width = self._conf.line_width
+            r = line_width // 2
+            text_offy = 0 #2
+            w_p_s = self._conf.word_height + self._conf.offset_y, level_unit + self._conf.offset_y, level_unit + self._conf.word_height + self._conf.offset_y # token >--> tag >--> label
+            decorate = isinstance(line_width, int) and line_width % 2 == 0
+            deco_dx = 0 if decorate else self._conf.deco_dx
+            deco_dy = 0 if decorate else self._conf.deco_dy
+            font_name, font_min_size, font_max_size = self._conf.font
+            round_int = lambda x: int(round(x))
+            errors = []
+            if self._conf.delta_shape:
+                line_dy = self._conf.line_dy
+                deco_dy = - deco_dy
+                word_center        = self._conf.canvas_height - word_center
+                tag_label_center   = self._conf.canvas_height - tag_label_center
+                tag_label_line_bo  = self._conf.canvas_height - tag_label_line_bo
+                w_p_s = tuple(self._conf.canvas_height - b for b in w_p_s)
+            half_text_height = None
+            
+            track_positions = []
+            for i, w in enumerate(head.token):
+                if not self._conf.show_paddings and not 0 < i <= head.seg_length[0]:
+                    continue
+
+                center_x = (i + 0.5) * self._conf.word_width + self._conf.offset_x
+                left_x   = center_x - self._conf.half_word_width
+                track_positions.append(center_x)
+                if self._conf.delta_shape:
+                    wbox = (left_x, w_p_s[1]         )
+                    pbox = (left_x, tag_label_line_bo)
+                else:
+                    wbox = (left_x, 0       )
+                    pbox = (left_x, w_p_s[1])
+
+                if self._conf.show_errors:
+                    word_color = tag_color = fg_color
+                else:
+                    word_color = to_color(1.0 if apply_dash else stat.token[i])
+                    tag_color  = to_color(data.tag_score if apply_dash else stat.tag[i] if i < len(stat.tag) else (0,0,0))
+
+                word_node = board.create_text(center_x, word_center + text_offy,
+                                              text = vocabs.token[w], font = (font_name, font_max_size),
+                                              fill = word_color, tags = ('elems', 'node'))
+                tp = head.tag[i]
+                pp = data.tag[i]
+                tag_node = board.create_text(center_x, tag_label_center + text_offy,
+                                             fill = tag_color, font = (font_name, font_max_size if apply_dash else round_int(font_max_size * data.tag_score[i])),
+                                             text = f'{vocabs.tag[pp]}' if not self._conf.show_errors or pp == tp else f'{vocabs.tag[pp]}({vocabs.tag[tp]})',
+                                             tags = ('elems', 'node'))
+
+                w_line = board.create_line(center_x,  w_p_s[0],
+                                           center_x,  w_p_s[1],
+                                           width = line_width,
+                                           fill = word_color,
+                                           capstyle = ROUND if not apply_dash and decorate else None,
+                                           tags = ('elems', 'line'))
+                t_line = board.create_line(center_x,  w_p_s[2],
+                                           center_x,  tag_label_line_bo,
+                                           width = line_width,
+                                           fill = tag_color,
+                                           capstyle = ROUND if not apply_dash and decorate else None,
+                                           tags = ('elems', 'line'))
+                board_item_coord[wbox] = (word_node, w_line), ('w', i)
+
+                if pp != tp and self._conf.show_errors:
+                    err = board.create_rectangle(*board.bbox(tag_node),
+                                                 outline = 'red',
+                                                 dash = (1, 2),
+                                                 tags = ('elems', 'err'))
+                    elems = tag_node, t_line, err
+                else:
+                    elems = tag_node, t_line
+                board_item_coord[pbox] = elems, ('p', i)
+                if half_text_height is None:
+                    _, ys, _, ye = board.bbox(tag_node)
+                    half_text_height = ye - ys
+                    half_text_height *= 0.45
+
+            if self._conf.show_errors:
+                layers = enumerate(zip(head.label, head.right, head.direc, head.right, head.direc, head.segment, head.seg_length))
+            else:
+                layers = enumerate(zip(data.label, data.right, data.direc, data.right_score, data.direc_score, data.segment, data.seg_length))
+            for lid, (label_layer, right_layer, direc_layer, right_score, direc_score, seg_size, layer_size) in layers:
+                last_line_bo = tag_label_line_bo
+                if self._conf.delta_shape:
+                    tag_label_center = tag_label_line_bo - self._conf.half_word_height
+                    line_y           = tag_label_line_bo - self._conf.word_height
+                    tag_label_line_bo -= level_unit
+                else:
+                    tag_label_center = tag_label_line_bo + self._conf.half_word_height
+                    line_y           = tag_label_line_bo + self._conf.word_height
+                    tag_label_line_bo += level_unit
+
+                last_x = None
+                track_positions.append(None) # layer flag
+                for pid, (ps, pr, pd, prs, pds) in enumerate(zip(label_layer, right_layer, direc_layer, right_score, direc_score)):
+                    if not self._conf.show_paddings and not (0 < pid <= layer_size):
+                        last_pr = pr
+                        continue
+                    center_x = track_positions.pop(0)
+                    if self._conf.show_errors:
+                        pls = 1
+                        mpc_color = label_color = fg_color
+                    else:
+                        pls = data.label_score[lid][pid]
+                        mpc_color = to_color(stat.phrase[lid][pid])
+                        if apply_dash:
+                            label_color = to_color(pls)
+                        else:
+                            label_color = mpc_color
+                    node = board.create_text(center_x, tag_label_center + text_offy,
+                                             text = vocabs.label[ps],
+                                             fill = label_color,
+                                             tags = ('elems', 'node'),
+                                             font = (font_name, font_max_size if apply_dash else round_int(font_max_size * pls)),)
+                    to_x = center_x + uneven_split(threshold.right, prs) * self._conf.half_word_width
+                    if self._conf.delta_shape:
+                        to_y = line_y - self._conf.line_dy * pds
+                    else:
+                        to_y = line_y + self._conf.line_dy * pds
+                    line = board.create_line(center_x, line_y, to_x, to_y,
+                                             width = line_width, fill = mpc_color,
+                                             capstyle = ROUND if not apply_dash and decorate else None,
+                                             arrow = LAST if pd else None, tags = ('elems', 'line'))
+                    if pid and last_pr and not pr and ((head if self._conf.show_errors else data).joint[lid][pid - 1]):
+                        last_x = track_positions.pop()
+                        new_center_x = (last_x + center_x) / 2
+                        track_positions.append(new_center_x)
+                    else:
+                        track_positions.append(center_x)
+                        new_center_x = None
+                    if last_x is None:
+                        elems = node, line
+                    else:
+                        if new_center_x is None:
+                            new_center_x = (last_x + center_x) / 2
+                        js = uneven_split(threshold.joint, (head.joint if self._conf.show_errors else data.joint_score)[lid][pid - 1])
+                        if js > 0:
+                            fill_color = jnt_color
+                            dash = None
+                        else:
+                            js = -js
+                            fill_color = ''
+                            dash = (1, 2)
+                        radius = half_text_height * js
+                        circle = board.create_oval(new_center_x - radius, tag_label_center - radius,
+                                                   new_center_x + radius, tag_label_center + radius,
+                                                   fill = fill_color, outline = fg_color, dash = dash, tags = ('elems', 'jnt'))
+                        from_x = last_x + self._conf.half_word_width
+                        to_x = center_x - self._conf.half_word_width
+                        if from_x < to_x and fill_color:
+                            j_line = board.create_line(from_x, tag_label_center, to_x, tag_label_center,
+                                                       fill = fill_color, dash = (1, 2), tags = ('elems', 'j_line'))
+                            elems = node, line, circle, j_line
+                        else:
+                            elems = node, line, circle
+                    left_x = center_x - self._conf.half_word_width
+                    sbox = (left_x, tag_label_line_bo) if self._conf.delta_shape else (left_x, last_line_bo)
+                    board_item_coord[sbox] = elems, (lid, pid)
+                    last_pr = pr
+                    last_x = center_x
+                assert track_positions.pop(0) is None, track_positions
+                if layer_size == 1:
+                    break
+
+            # for elem in errors:
+            #     board.tag_raise(elem)
+            if False:# self._spotlight_subjects:
+                self._spotlight_subjects = (board_item_coord, self._conf.word_width, level_unit) + self._spotlight_subjects[-3:]
+            else:
+                self._spotlight_subjects = board_item_coord, self._conf.word_width, level_unit, None, None, None
+
+
+
 
     import argparse
     import getpass

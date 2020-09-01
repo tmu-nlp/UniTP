@@ -18,7 +18,7 @@ def trapezoid_to_layers(data, segments, seg_length, vocab = None, offset = 0, bi
         layers.reverse()
     return layers
 
-def inflate(layers):
+def inflate(layers, reversed = True):
     inflated = []
     expected_len = 1
     # import pdb; pdb.set_trace()
@@ -29,7 +29,8 @@ def inflate(layers):
             inflated.append(None)
         expected_len += 1
         inflated.append(inc)
-    inflated.reverse()
+    if reversed:
+        inflated.reverse()
     return inflated
 
 def head_to_tree(offset, length, tokens, tags, labels, rights, seg_lengths, segments, vocabs):

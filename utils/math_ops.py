@@ -12,7 +12,7 @@ def is_bin_times(n):
 def harmony(*fractions):
     return len(fractions) / sum(1/f for f in fractions)
 
-from math import sqrt, floor
+from math import sqrt, floor, log
 def t_index(sid, b = 1):
     c = (2 - b) / (2 * b)
     lid = floor(sqrt(sid * 2 + c*c) - c)
@@ -36,6 +36,17 @@ def bit_fanout(bits):
             result += 1
         prev = bits
     return result
+
+def inv_sigmoid(y):
+    return - log(1 / y - 1)
+
+def uneven_split(threshold, score):
+    score -= threshold
+    if score > 0:
+        score /= 1 - threshold
+    else:
+        score /= threshold
+    return score
 
 if __name__ == '__main__1':
     def max_nil_relay(n):

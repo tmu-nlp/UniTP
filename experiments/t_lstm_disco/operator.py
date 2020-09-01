@@ -32,6 +32,8 @@ class DiscoOperator(Operator):
         self._mode_trees = [], []
         self._train_config = train_config
         self._tune_pre_trained = False
+        self._raw_threshold = model.raw_threshold
+        self._threshold = model.checkout_loss(train_config.orient_hinge_loss)
         v_trees = train_config.visualizing_trees
         d_trees = strange_to(v_trees.devel) if v_trees else None
         t_trees = strange_to(v_trees.test ) if v_trees else None
@@ -77,25 +79,23 @@ class DiscoOperator(Operator):
          seq_len) = self._model(batch['token'], self._tune_pre_trained, **batch)
         batch_time = time() - batch_time
 
-        tags    = self._model.get_decision(tag_logits  )
-        labels  = self._model.get_decision(label_logits)
         right_logits = right_direc_logits[:, :, 0]
         direc_logits = right_direc_logits[:, :, 1]
         if self._train_config.orient_hinge_loss:
-            rights = right_logits > 0
-            direcs = direc_logits > 0
-            joints = joint_logits > 0
+            rights = right_logits > self._threshold.right
+            direcs = direc_logits > self._threshold.direc
+            joints = joint_logits > self._threshold.joint
         else:
             right_logits = self._sigmoid(right_logits)
             direc_logits = self._sigmoid(direc_logits)
             joint_logits = self._sigmoid(joint_logits)
-            rights = right_logits > 0.5
-            direcs = direc_logits > 0.5
-            joints = joint_logits > 0.5
+            rights = right_logits > self._threshold.right
+            direcs = direc_logits > self._threshold.direc
+            joints = joint_logits > self._threshold.joint
 
         if mode == M_TRAIN:
-            # existence & height -> right, direc
-            # all joint
+            tags    = self._model.get_decision(tag_logits  )
+            labels  = self._model.get_decision(label_logits)
             tag_mis       = (tags    != batch['tag'])
             label_mis     = (labels  != batch['label'])
             tag_weight    = (  tag_mis | gold_exists[:, :batch_len]) # small endian
@@ -145,12 +145,35 @@ class DiscoOperator(Operator):
             self._writer.add_scalar('Batch/Height', batch['segments'].shape[0], gs)
         else:
             vis, _, _, pending_heads = self._vis_mode
+            if vis.save_tensors:
+                if self._model._input_layer.has_static_pca:
+                    mpc_token = self._model._input_layer.pca(static)
+                    mpc_label = self._model._input_layer.pca(embeddings)
+                else:
+                    pca = PCA(embeddings.reshape(-1, embeddings.shape[2]))
+                    mpc_token = pca(static)
+                    mpc_label = pca(embeddings)
+
+                tag_scores,     tags = self._model.get_decision_with_value(tag_logits)
+                label_scores, labels = self._model.get_decision_with_value(label_logits)
+                if self._train_config.orient_hinge_loss: # otherwise with sigmoid
+                    hinge_score(right_logits, inplace = True)
+                    hinge_score(joint_logits, inplace = True)
+                    hinge_score(direc_logits, inplace = True)
+                extra = mpc_token, mpc_label, tag_scores, label_scores, right_logits, joint_logits, direc_logits
+            else:
+                tags    = self._model.get_decision(tag_logits  )
+                labels  = self._model.get_decision(label_logits)
+                extra = None
             if pending_heads:
                 b_head = tuple(batch[x] for x in 'segments seq_len token tag label right joint direc'.split())
                 b_data = (segment, seq_len, tags, labels, rights, joints, direcs)
                 tensors = b_head + b_data
             else:
                 tensors = (segment, seq_len, batch['token'], tags, labels, rights, joints, direcs)
+            if extra:
+                tensors = extra + tensors
+
             tensors = tuple(x.cpu().numpy() if isinstance(x, torch.Tensor) else x for x in tensors)
             vis.process(batch_id, tensors)
         return batch_size, batch_len
@@ -164,23 +187,30 @@ class DiscoOperator(Operator):
             head_trees = test_head_batchess
             if final_test:
                 folder = ds_name + '_test'
+                save_tensors = True
             else:
                 folder = ds_name + '_test_with_devel'
+                save_tensors = is_bin_times(int(float(epoch)) - 1)
         else:
             v_trees = devel_vtrees
             head_trees = devel_head_batchess
             folder = ds_name + '_devel'
+            save_tensors = is_bin_times(int(float(epoch)) - 1)
         vis = DiscoVis(epoch,
                        self.recorder.create_join(folder),
                        self.i2vs,
                        head_trees,
                        self.recorder.log,
                        self._evalb_lcfrs_kwargs,
-                       v_trees)
+                       v_trees,
+                       self._raw_threshold,
+                       save_tensors)
         pending_heads = vis._pending_heads
-        vis = VisRunner(vis, async_ = True) # wrapper
+        vis = VisRunner(vis, async_ = False) # wrapper
         vis.before()
         self._vis_mode = vis, use_test_set, final_test, pending_heads
+        if self._model._input_layer.has_static_pca:
+            self._model._input_layer.flush_pc_if_emb_is_tuned()
 
     def _after_validation(self, ds_name, count, seconds):
         vis, use_test_set, final_test, pending_heads = self._vis_mode
@@ -221,20 +251,19 @@ from utils.file_io import join, isfile, listdir, remove, isdir
 from utils.pickle_io import pickle_dump
 from data.cross import disco_tree, bracketing, Counter, draw_str_lines
 from data.cross.evalb_lcfrs import DiscoEvalb
-def batch_trees(heads_gen, segments, i2vs, fall_back_root_label = None,
-                v_trees_offset = None,
+def batch_trees(bid_offset, heads_gen, segments, i2vs, fall_back_root_label = None,
+                v_trees = set(),
+                v_errors = None,
                 unlabel = None,
                 equal_labels = None,
                 equal_words = None,
                 excluded_words = None,
                 excluded_labels = None):
     trees = []
-    if v_trees_offset:
-        sid_offset, v_trees = v_trees_offset
-    else:
-        sid_offset = 0
-        v_trees = set()
+    errors = []
+    top_downs = []
     for sid, (s_seq_len, s_token, s_tag, s_label, s_right, s_joint, s_direc) in enumerate(heads_gen):
+        sid += bid_offset
         layers_of_label = []
         layers_of_right = []
         layers_of_joint = []
@@ -255,24 +284,29 @@ def batch_trees(heads_gen, segments, i2vs, fall_back_root_label = None,
         tags  = tuple(i2vs.tag[i]   for i in   s_tag[1:bottom_end])
         words = tuple(i2vs.token[i] for i in s_token[1:bottom_end])
 
-        try:
-            bottom, td, rt = disco_tree(words, tags, layers_of_label, layers_of_right, layers_of_joint, layers_of_direc, fall_back_root_label)
-        except Exception as err:
-            import traceback
-            traceback.print_exc()
-            print(err)
-            import pdb; pdb.set_trace()
-            bottom, td, rt = disco_tree(words, tags, layers_of_label, layers_of_right, layers_of_joint, layers_of_direc, fall_back_root_label)
-            brackets_cnt = None
-            bottom = ((bid, wd, tg) for bid, (wd, tg) in enumerate(zip(words, tags)))
+        bottom, td, rt, error = disco_tree(words, tags, layers_of_label, layers_of_right, layers_of_joint, layers_of_direc, fall_back_root_label)
+        if fall_back_root_label is None: # head conversion
+            assert error is None
+        else: # data conversion
+            errors.append(error)
+            if error:
+                v_errors[sid] = error
+        # except Exception as err:
+        #     import traceback
+        #     traceback.print_exc()
+        #     print(err)
+        #     import pdb; pdb.set_trace()
+        #     bottom, td, rt = disco_tree(words, tags, layers_of_label, layers_of_right, layers_of_joint, layers_of_direc, fall_back_root_label)
+        #     brackets_cnt = None
+        #     bottom = ((bid, wd, tg) for bid, (wd, tg) in enumerate(zip(words, tags)))
+        # else:
+        if td:
+            brackets_cnt = bracketing(bottom, td, rt, False, unlabel, excluded_labels, equal_labels)
+            if sid in v_trees and v_trees[sid] is None:
+                v_trees[sid] = draw_str_lines(bottom, td)
         else:
-            if td:
-                brackets_cnt = bracketing(bottom, td, rt, False, unlabel, excluded_labels, equal_labels)
-                sid += sid_offset
-                if sid in v_trees and v_trees[sid] is None:
-                    v_trees[sid] = draw_str_lines(bottom, td)
-            else:
-                brackets_cnt = Counter()
+            brackets_cnt = Counter()
+        top_downs.append(td)
         bottom_set = set()
         for bid, word, tag in bottom:
             if equal_words:
@@ -281,14 +315,17 @@ def batch_trees(heads_gen, segments, i2vs, fall_back_root_label = None,
                 continue
             bottom_set.add((bid, word, tag))
         trees.append((brackets_cnt, bottom_set))
-    return trees
+    if fall_back_root_label is None: # head
+        return trees, top_downs
+    return trees, top_downs, errors # data
 
+from visualization import DiscontinuousTensorVis
+from data.cross import explain_error
 class DiscoVis(BaseVis):
-    def __init__(self, epoch, work_dir, i2vs, head_trees, logger, evalb_lcfrs_kwargs, v_trees):
+    def __init__(self, epoch, work_dir, i2vs, head_trees, logger, evalb_lcfrs_kwargs, v_trees, thresholds, save_tensors):
         super().__init__(epoch)
-        self._work_dir = work_dir
         self._evalb = DiscoEvalb()
-        self._i2vs = i2vs
+        self._dtv = DiscontinuousTensorVis(work_dir, i2vs, thresholds)
         self._logger = logger
         self._head_batches = head_trees
         self._pending_heads = not head_trees
@@ -296,6 +333,8 @@ class DiscoVis(BaseVis):
         self._evalb_lcfrs_kwargs = evalb_lcfrs_kwargs
         self._vh_lines = v_trees
         self._vd_lines = None
+        self._v_errors = {}
+        self.register_property('save_tensors', save_tensors)
 
     def _before(self):
         if self._vh_lines:
@@ -305,41 +344,59 @@ class DiscoVis(BaseVis):
 
     def _process(self, batch_id, batch):
 
+        bid_offset, _ = self._evalb.total_missing
         if self._vd_lines:
-            offset, _ = self._evalb.total_missing
-            vh_lines_args = offset, self._vh_lines
-            vd_lines_args = offset, self._vd_lines
+            vh_lines_args = self._vh_lines
+            vd_lines_args = self._vd_lines
         else:
             vh_lines_args = vd_lines_args = None
 
+        i2vs = self._dtv.vocabs
+        if self.save_tensors:
+            mpc_word, mpc_phrase, tag_score, label_score, right_score, joint_score, direc_score = batch[:7]
+            batch = batch[7:]
         if self._pending_heads:
             (h_segment, h_seq_len, h_token, h_tag, h_label, h_right, h_joint, h_direc,
              d_segment, d_seq_len,          d_tag, d_label, d_right, d_joint, d_direc) = batch
             heads = zip(h_seq_len, h_token, h_tag, h_label, h_right, h_joint, h_direc)
-            heads = batch_trees(heads, h_segment, self._i2vs, v_trees_offset = vh_lines_args, **self._evalb_lcfrs_kwargs)
+            heads, trees = batch_trees(bid_offset, heads, h_segment, i2vs, v_trees = vh_lines_args, **self._evalb_lcfrs_kwargs)
             self._head_batches.append(heads)
+            if self.save_tensors:
+                self._dtv.set_head(batch_id, h_token.shape[1], h_token, h_tag, h_label, h_right, h_joint, h_direc, trees, h_segment, h_seq_len)
         else:
             (d_segment, d_seq_len, h_token, d_tag, d_label, d_right, d_joint, d_direc) = batch
             heads = self._head_batches[self._data_batch_cnt]
             self._data_batch_cnt += 1
         
         data = zip(d_seq_len, h_token, d_tag, d_label, d_right, d_joint, d_direc)
-        data = batch_trees(data, d_segment, self._i2vs, 'VROOT', v_trees_offset = vd_lines_args, **self._evalb_lcfrs_kwargs)
+        data, trees, errors = batch_trees(bid_offset, data, d_segment, i2vs, 'VROOT', v_errors = self._v_errors, v_trees = vd_lines_args, **self._evalb_lcfrs_kwargs)
+        scores = []
         for gold, prediction in zip(heads, data):
-            self._evalb.add(*prediction, *gold)
+            scores.append(self._evalb.add(*prediction, *gold))
+        # TODO: mpc_word, mpc_phrase, warning, scores, tag_score, label_score, right_score, joint_score, summary
+        if self.save_tensors:
+            self._dtv.set_data(batch_id, self.epoch, h_token, d_tag, d_label, d_right, d_joint, d_direc, trees, d_segment, d_seq_len, mpc_word, mpc_phrase, errors, scores, tag_score, label_score, right_score, joint_score, direc_score)
 
     def _after(self):
         total_sents, num_errors = self._evalb.total_missing
         if num_errors:
-            self._logger(f'  {num_errors} errors from evalb')
+            self._logger(f'  {num_errors} system errors from evalb (this should not appear in log)')
+        num_errors = len(self._v_errors)
+        if num_errors:
+            fname = f'data.{self.epoch}.errors'
+            self._logger(f'  {num_errors} system errors, check {fname} for details.')
+            with open(self._dtv.join(fname), 'w') as fw:
+                for sid, error_args in self._v_errors.items():
+                    fw.write(explain_error(*error_args) + '\n')
+
         tp, tr, tf, dp, dr, df = self._evalb.summary()
         scores = dict(TP = tp, TR = tr, TF = tf, DP = dp, DR = dr, DF = df, N = total_sents)
         
-        with open(join(self._work_dir, f'eval.{self.epoch}.rpt'), 'w') as fw:
+        with open(self._dtv.join(f'eval.{self.epoch}.rpt'), 'w') as fw:
             fw.write(str(self._evalb))
 
         if self._vd_lines:
-            with open(join(self._work_dir, f'ascii.{self.epoch}.art'), 'w') as fw:
+            with open(self._dtv.join(f'ascii.{self.epoch}.art'), 'w') as fw:
                 for sid, h_lines in self._vh_lines.items():
                     fw.write(f'Key sentence #{sid}:')
                     d_lines = self._vd_lines[sid]
