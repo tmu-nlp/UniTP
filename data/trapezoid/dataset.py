@@ -277,7 +277,7 @@ class TrapezoidDataset(LengthOrderedDataset):
     def at_idx(self, idx, factor, length):
         sample = self._keepers[idx]
         if factor is None:
-            sample = sample.get()
+            sample = sample.get() #?
         else:
             sample = sample[factor]
         sample['length'] = length

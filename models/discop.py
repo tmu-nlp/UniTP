@@ -2,20 +2,68 @@ import torch
 from torch import nn, Tensor
 from models.backend import Stem, activation_type, logit_type
 
-from utils.types import orient_dim, hidden_dim, num_ori_layer, true_type, frac_2, frac_4, frac_5
+from utils.types import orient_dim, hidden_dim, num_ori_layer, true_type, frac_2, frac_4, frac_5, BaseWrapper, BaseType
 from utils.math_ops import inv_sigmoid
 from visualization import DiscoThresholds
 
-from models.combine import get_combinator, get_components, combine_type, valid_trans_compound
-stem_config = dict(orient_dim   = orient_dim,
-                   combine_type = combine_type,
-                   joint_act    = activation_type,
-                   joint_debias = true_type,
-                   threshold    = dict(right = frac_5, direc = frac_4, joint = frac_4),
-                   num_layers   = num_ori_layer,
-                   rnn_drop_out = frac_2,
-                   drop_out     = frac_4,
-                   trainable_initials = true_type)
+def disco_orient_to_dict(x):
+    comps = {}
+    for m_c in x.split(';'):
+        m, c = m_c.split('.')
+        for ci in c:
+            comps[ci] = m
+    return comps
+
+class DiscoOrient(BaseWrapper):
+    def __init__(self, name):
+        super().__init__(name, lambda x: x)
+        self._type = disco_orient_to_dict(self.name)
+
+    def identical(self, x):
+        return self._type == disco_orient_to_dict(x)
+
+    # def __getitem__(self, comp):
+    #     return self._type[comp]
+
+disco_orient_type = []
+for i in range((1 << 3 )+ 2):
+    hinge = []
+    crsen = []
+    if i < 8:
+        (crsen if i & 1 else hinge).append('j')
+        (crsen if i & 2 else hinge).append('d')
+        (crsen if i & 4 else hinge).append('r')
+        if hinge:
+            if crsen:
+                do_type = 'hinge.' + ''.join(hinge) + ';bce.' + ''.join(crsen)
+                do_type = 'hinge.' + ''.join(hinge) + ';bce.' + ''.join(crsen)
+            else:
+                do_type = 'hinge.' + ''.join(hinge)
+        else:
+            do_type = 'bce.' + ''.join(crsen)
+    else:
+        do_type = ('hinge' if i & 1 else 'bce') + '.j;ce.dr'
+    disco_orient_type.append(DiscoOrient(do_type))
+disco_orient_type = BaseType(-1, as_index = True, as_exception = True, default_set = disco_orient_type)
+
+'i:add/cat:200:act|1'
+'i:add|1'
+def parse_joint_type(x):
+    x = x.split(':')
+    if len(x) == 1:
+        if x[0] in ('add', 'iadd'):
+            return x
+    elif len(x) == 3:
+        out, size, act = x
+        size = int(size)
+        if out not in ('add', 'iadd', 'cat', 'icat'):
+            return False
+        if out in ('cat', 'icat') and (size % 2 or size < 2):
+            return False
+        if activation_type.validate(act):
+            return out, size, activation_type[act]
+    return False
+joint_type = BaseType('iadd', validator = parse_joint_type)
 
 from models.utils import condense_splitter, condense_left
 def diff_integer_indice(right_layer, joint_layer, existence, direc_layer = None, test = False):
@@ -43,33 +91,107 @@ def split(hidden, right_layer, joint_layer, existence, direc_layer = None):
     rhs_hidden = hidden[indices, rhs_indices]
     return lhs_hidden, rhs_hidden, rhs_indices > 0, lhs_indices + rhs_indices
 
+def convert32(left_undirec_right):
+    left_undirec_right = torch.exp(left_undirec_right)
+    right = left_undirec_right[:, :, 2]
+    direc = left_undirec_right[:, :, 1]  + right
+    right = right / direc
+    direc = direc / 2 # this is a 2 to 1 battle, make it fair
+    direc = direc / (direc + left_undirec_right[:, :, 0])
+    return right, direc # all in sigmoid range
+
+def convert23_gold(right, direc):
+    right = 1 + right
+    return torch.where(direc, right, torch.zeros_like(right))
+
+hinge_bias = lambda x: x - 0.5
+
+from models.combine import get_combinator, get_components, combine_type, valid_trans_compound
+stem_config = dict(orient_dim   = orient_dim,
+                   combine_type = combine_type,
+                   orient_type  = disco_orient_type,
+                   joint_type   = joint_type,
+                   threshold    = dict(right = frac_5, direc = frac_4, joint = frac_4),
+                   num_layers   = num_ori_layer,
+                   rnn_drop_out = frac_2,
+                   drop_out     = frac_4,
+                   trainable_initials = true_type)
+from models.loss import cross_entropy, hinge_loss, binary_cross_entropy
+from models.utils import hinge_score as hinge_score_
+
 class DiscoStem(nn.Module):
     def __init__(self,
                  model_dim,
                  orient_dim,
                  combine_type,
-                 joint_act,
-                 joint_debias,
+                 joint_type,
                  threshold,
                  num_layers,
+                 orient_type,
                  rnn_drop_out,
                  trainable_initials,
                  drop_out):
         super().__init__()
         hidden_size = orient_dim // 2
+        hinge_score = lambda x: hinge_score_(x, False)
+        self._orient_type = orient_type = disco_orient_to_dict(orient_type)
+        self._jnt_act, joint_inv, joint_loss = (hinge_score, hinge_bias, hinge_loss) if orient_type['j'] == 'hinge' else (nn.Sigmoid(), inv_sigmoid, binary_cross_entropy)
+        if 'ce' in orient_type.values():
+            orient_bits = 3
+            self._orient_act = convert32
+            right_inv = direc_inv = inv_sigmoid
+            self._loss_fns = joint_loss
+        else:
+            orient_bits = 2
+            direc_act, direc_inv, direc_loss = (hinge_score, hinge_bias, hinge_loss) if orient_type['d'] == 'hinge' else (nn.Sigmoid(), inv_sigmoid, binary_cross_entropy)
+            right_act, right_inv, right_loss = (hinge_score, hinge_bias, hinge_loss) if orient_type['r'] == 'hinge' else (nn.Sigmoid(), inv_sigmoid, binary_cross_entropy)
+            self._rgt_act = right_act
+            self._dir_act = direc_act
+            def orient_act(right_direc):
+                direc = right_act(right_direc[:, :, 0])
+                right = direc_act(right_direc[:, :, 1])
+                return right, direc
+            self._orient_act = orient_act
+            self._loss_fns = right_loss, direc_loss, joint_loss
+        bias_fns = DiscoThresholds(right_inv, joint_inv, direc_inv)
+        self._raw_threshold = raw_threshold = DiscoThresholds(**threshold)
+        assert 0 < raw_threshold.joint < 1
+        assert 0 < raw_threshold.direc < 1
+        self._thresholds = DiscoThresholds(*(fn(x) for fn, x in zip(bias_fns, raw_threshold)))
+        
         self._orient_emb = nn.LSTM(model_dim, hidden_size,
                                    num_layers    = num_layers,
                                    bidirectional = True,
                                    batch_first   = True,
                                    dropout = rnn_drop_out if num_layers > 1 else 0)
-        self._dp_layer = nn.Dropout(drop_out)
-        self._ori_dir = nn.Linear(orient_dim, 2)
-        self._jnt_lhs = nn.Linear(model_dim, orient_dim)
-        self._jnt_rhs = self._jnt_lhs if joint_debias else nn.Linear(model_dim, orient_dim, bias = False)
-        self._jnt_act = joint_act()
-        self._jnt_lgt = nn.Linear(orient_dim, 1)
-        self._thresholds = DiscoThresholds(0, 0, 0)
-        self._raw_threshold = DiscoThresholds(**threshold)
+        self._dp_layer = dp_layer = nn.Dropout(drop_out)
+        self._ori_dir = nn.Linear(orient_dim, orient_bits)
+        joint_type = parse_joint_type(joint_type)
+        if len(joint_type) == 1:
+            self._jnt_lhs = jnt_lhs = nn.Linear(model_dim, 1)
+            self._jnt_rhs = jnt_rhs = nn.Linear(model_dim, 1, bias = False) if joint_type[0] == 'iadd' else self._jnt_lhs
+            def jnt_fn(x):
+                x = jnt_lhs(x[:, :-1]) + jnt_rhs(x[:, 1:])
+                return x.squeeze(dim = 2)
+        else:
+            out, jnt_size, jnt_act = joint_type
+            is_cat = out.endswith('cat')
+            hid_size = (jnt_size >> 1) if is_cat else jnt_size
+            self._jnt_lhs = jnt_lhs = nn.Linear(model_dim, hid_size)
+            self._jnt_rhs = jnt_rhs = nn.Linear(model_dim, hid_size, bias = False) if out[0] == 'i' else self._jnt_lhs
+            self._jnt_hid = jnt_hid = jnt_act()
+            self._jnt_lgt = jnt_lgt = nn.Linear(jnt_size, 1)
+            if is_cat:
+                def jnt_fn(x):
+                    x = torch.cat([jnt_lhs(x[:, :-1]), jnt_rhs(x[:, 1:])], dim = 2)
+                    x = dp_layer(x)
+                    return jnt_lgt(jnt_hid(x)).squeeze(dim = 2)
+            else:
+                def jnt_fn(x):
+                    x = jnt_lhs(x[:, :-1]) + jnt_rhs(x[:, 1:])
+                    x = dp_layer(x)
+                    return jnt_lgt(jnt_hid(x)).squeeze(dim = 2)
+        self._jnt_fn = jnt_fn
         self.combine = get_combinator(combine_type, model_dim)
         if trainable_initials:
             c0 = torch.randn(num_layers * 2, 1, hidden_size)
@@ -83,19 +205,8 @@ class DiscoStem(nn.Module):
             self.register_parameter('_c0', None)
             self._initial_size = None
 
-    def checkout_loss(self, hinge_loss = True):
-        raw_threshold = self._raw_threshold
-        assert 0 < raw_threshold.joint < 1
-        assert 0 < raw_threshold.direc < 1
-        if hinge_loss:
-            thresholds = (x - 0.5 for x in raw_threshold)
-        else:
-            thresholds = (inv_sigmoid(x) for x in raw_threshold)
-        self._thresholds = ret = DiscoThresholds(*thresholds)
-        return ret
-
     @property
-    def raw_threshold(self):
+    def threshold(self):
         return self._raw_threshold
 
     def get_h0c0(self, batch_size):
@@ -112,13 +223,6 @@ class DiscoStem(nn.Module):
         orient_hidden, _ = self._orient_emb(unit_hidden, h0c0)
         orient_hidden = self._dp_layer(orient_hidden)
         return self._ori_dir(orient_hidden)
-
-    def predict_joint(self, unit_hidden):
-        lhs_hidden = self._jnt_lhs(unit_hidden[:, :-1])
-        rhs_hidden = self._jnt_rhs(unit_hidden[:, 1:])
-        joint_hidden = self._dp_layer(lhs_hidden + rhs_hidden)
-        joint_hidden = self._jnt_act(joint_hidden)
-        return self._jnt_lgt(joint_hidden).squeeze(dim = 2) #.transpose(1, 2))
     
     def forward(self,
                 unit_emb,
@@ -159,7 +263,7 @@ class DiscoStem(nn.Module):
                 prev, curr = history
                 if prev.shape == curr.shape and (prev == curr).all():
                     break
-            joint = self.predict_joint(unit_emb)
+            joint = self._jnt_fn(unit_emb)
             layers_of_joint.append(joint)
 
             if teacher_forcing:
@@ -169,11 +273,9 @@ class DiscoStem(nn.Module):
                 joint = supervised_joint[:, jnt_start:jnt_end]
                 ori_start = ori_end
                 jnt_start = jnt_end
-                direc = None
+                direc = None # not important for 
             else:
-                right = right_direc[:, :, 0] > self._thresholds.right
-                direc = right_direc[:, :, 1] > self._thresholds.direc
-                joint = joint > self._thresholds.joint
+                right, joint, direc = self.get_stem_prediction(right_direc, joint)
 
             lhs, rhs, jnt, ids = split(unit_emb, right, joint, existence, direc)
             unit_emb = self.combine(lhs, rhs, jnt.unsqueeze(dim = 2))
@@ -200,6 +302,45 @@ class DiscoStem(nn.Module):
             seg_length = torch.stack(seg_length, dim = 1)
 
         return existence, embeddings, right_direc, joint, segment, seg_length
+
+    @property
+    def has_fewer_losses(self):
+        return callable(self._loss_fns)
+
+    def get_stem_score(self, right_direc, joint):
+        right_score, direc_score = self._orient_act(right_direc)
+        joint_score = self._jnt_act(joint)
+        return right_score, joint_score, direc_score
+
+    def get_stem_prediction(self, right_direc, joint, get_score = False):
+        right_score, joint_score, direc_score = self.get_stem_score(right_direc, joint)
+
+        right = right_score > self._raw_threshold.right
+        direc = direc_score > self._raw_threshold.direc
+        joint = joint_score > self._raw_threshold.joint
+        if get_score:
+            return right, joint, direc, right_score, joint_score, direc_score
+        return right, joint, direc
+
+    def get_stem_loss(self, gold, right_direc_logits, joint_logits, undirect_orient):
+        gold_right = gold['right']
+        gold_direc = gold['direc']
+        gold_joint = gold['joint']
+        if self.has_fewer_losses:
+            gold_bit = convert23_gold(gold_right, gold_direc)
+            return cross_entropy(right_direc_logits, gold_bit), self._loss_fns(joint_logits, gold_joint, None)
+
+        right_loss, direc_loss, joint_loss = self._loss_fns
+        right_logits = right_direc_logits[:, :, 0]
+        direc_logits = right_direc_logits[:, :, 1]
+        if undirect_orient == 0:
+            direc_weight = gold_direc
+        elif undirect_orient < 1:
+            direc_weight = gold_direc * (1 - undirect_orient) + undirect_orient
+            direc_weight *= gold['exist']
+        else:
+            direc_weight = gold['exist']
+        return right_loss(right_logits, gold_right, direc_weight), joint_loss(direc_logits, gold_direc, None), direc_loss(direc_logits, gold_direc, None)
 
 multi_class = dict(hidden_dim = hidden_dim,
                    activation = activation_type,
@@ -284,11 +425,12 @@ class BaseRnnTree(DiscoStem):
     def get_decision_with_value(self, logits):
         return get_decision_with_value(self._score_fn, logits)
 
-    def get_losses(self, batch, tag_logits, top3_label_logits, label_logits):
+    def get_losses(self, batch, tag_logits, top3_label_logits, label_logits, right_direc_logits, joint_logits, undirect_orient):
         height_mask = batch['segments'][None] * (batch['seq_len'] > 0)
         height_mask = height_mask.sum(dim = 1)
         tag_loss   = get_loss(self._tag_layer,   self._logit_max, tag_logits,   batch, 'tag')
         label_loss = get_loss(self._label_layer, self._logit_max, label_logits, batch, False, height_mask, 'label')
         if top3_label_logits is not None:
             tag_loss += get_loss(self._label_layer, self._logit_max, top3_label_logits, batch, 'top3_label')
-        return tag_loss, label_loss
+        basic = tag_loss, label_loss
+        return basic + self.get_stem_loss(batch, right_direc_logits, joint_logits, undirect_orient)

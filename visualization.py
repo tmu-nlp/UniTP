@@ -1592,10 +1592,18 @@ if desktop:
                 w = self._conf.canvas_width
                 h = self._conf.canvas_height
             else:
-                x = self._conf.word_width * self._head.offset
-                w = self._conf.word_width * self._head.length
+                h = self._head
+                if 'offset' in h._fields:
+                    x = self._conf.word_width * h.offset
+                    w = self._conf.word_width * h.length
 
-                n = self._conf.num_word - self._head.length # for token and tag layers
+                    n = self._conf.num_word - h.length # for token and tag layers
+                else:
+                    x = self._conf.word_width
+                    w = self._conf.word_width * h.seg_length[0]
+
+                    n = self._conf.num_word - h.seg_length[0] # for token and tag layers
+
                 l = self._conf.word_height + self._conf.line_dy
                 if self._conf.delta_shape:
                     y = n * l
@@ -2128,7 +2136,6 @@ if desktop:
             tag_label_center  = word_center + level_unit                        # >--- tag label ---<
             tag_label_line_bo = 2 * level_unit            + self._conf.offset_y # token lines tag lines
             line_width = self._conf.line_width
-            r = line_width // 2
             text_offy = 0 #2
             w_p_s = self._conf.word_height + self._conf.offset_y, level_unit + self._conf.offset_y, level_unit + self._conf.word_height + self._conf.offset_y # token >--> tag >--> label
             decorate = isinstance(line_width, int) and line_width % 2 == 0
@@ -2137,7 +2144,14 @@ if desktop:
             font_name, font_min_size, font_max_size = self._conf.font
             round_int = lambda x: int(round(x))
             errors = []
+            if not apply_dash and decorate:
+                capstyle = ROUND
+                r = line_width // 2
+            else:
+                capstyle =  None
+                r = 0
             if self._conf.delta_shape:
+                r = - r
                 line_dy = self._conf.line_dy
                 deco_dy = - deco_dy
                 word_center        = self._conf.canvas_height - word_center
@@ -2145,6 +2159,7 @@ if desktop:
                 tag_label_line_bo  = self._conf.canvas_height - tag_label_line_bo
                 w_p_s = tuple(self._conf.canvas_height - b for b in w_p_s)
             half_text_height = None
+            
             
             track_positions = []
             for i, w in enumerate(head.token):
@@ -2177,17 +2192,17 @@ if desktop:
                                              text = f'{vocabs.tag[pp]}' if not self._conf.show_errors or pp == tp else f'{vocabs.tag[pp]}({vocabs.tag[tp]})',
                                              tags = ('elems', 'node'))
 
-                w_line = board.create_line(center_x,  w_p_s[0],
-                                           center_x,  w_p_s[1],
+                w_line = board.create_line(center_x,  w_p_s[0] + r,
+                                           center_x,  w_p_s[1] - r,
                                            width = line_width,
                                            fill = word_color,
-                                           capstyle = ROUND if not apply_dash and decorate else None,
+                                           capstyle = capstyle,
                                            tags = ('elems', 'line'))
-                t_line = board.create_line(center_x,  w_p_s[2],
-                                           center_x,  tag_label_line_bo,
+                t_line = board.create_line(center_x,  w_p_s[2] + r,
+                                           center_x,  tag_label_line_bo - r,
                                            width = line_width,
                                            fill = tag_color,
-                                           capstyle = ROUND if not apply_dash and decorate else None,
+                                           capstyle = capstyle,
                                            tags = ('elems', 'line'))
                 board_item_coord[wbox] = (word_node, w_line), ('w', i)
 
@@ -2201,9 +2216,8 @@ if desktop:
                     elems = tag_node, t_line
                 board_item_coord[pbox] = elems, ('p', i)
                 if half_text_height is None:
-                    _, ys, _, ye = board.bbox(tag_node)
-                    half_text_height = ye - ys
-                    half_text_height *= 0.45
+                    _, ys, _, ye = board.bbox(word_node)
+                    half_text_height = (ye - ys) * 0.45
 
             if self._conf.show_errors:
                 layers = enumerate(zip(head.label, head.right, head.direc, head.right, head.direc, head.segment, head.seg_length))
@@ -2248,8 +2262,7 @@ if desktop:
                     else:
                         to_y = line_y + self._conf.line_dy * pds
                     line = board.create_line(center_x, line_y, to_x, to_y,
-                                             width = line_width, fill = mpc_color,
-                                             capstyle = ROUND if not apply_dash and decorate else None,
+                                             width = line_width, fill = mpc_color, capstyle = capstyle,
                                              arrow = LAST if pd else None, tags = ('elems', 'line'))
                     if pid and last_pr and not pr and ((head if self._conf.show_errors else data).joint[lid][pid - 1]):
                         last_x = track_positions.pop()
@@ -2264,25 +2277,23 @@ if desktop:
                         if new_center_x is None:
                             new_center_x = (last_x + center_x) / 2
                         js = uneven_split(threshold.joint, (head.joint if self._conf.show_errors else data.joint_score)[lid][pid - 1])
+                        elems = [node, line]
                         if js > 0:
                             fill_color = jnt_color
                             dash = None
+                            from_x = last_x + self._conf.half_word_width
+                            to_x = center_x - self._conf.half_word_width
+                            if from_x < to_x:
+                                elems.append(board.create_line(from_x, tag_label_center, to_x, tag_label_center,
+                                                               fill = fill_color, dash = (1, 2), tags = ('elems', 'j_line')))
                         else:
                             js = -js
                             fill_color = ''
-                            dash = (1, 2)
+                            dash = (2, 2)
                         radius = half_text_height * js
-                        circle = board.create_oval(new_center_x - radius, tag_label_center - radius,
-                                                   new_center_x + radius, tag_label_center + radius,
-                                                   fill = fill_color, outline = fg_color, dash = dash, tags = ('elems', 'jnt'))
-                        from_x = last_x + self._conf.half_word_width
-                        to_x = center_x - self._conf.half_word_width
-                        if from_x < to_x and fill_color:
-                            j_line = board.create_line(from_x, tag_label_center, to_x, tag_label_center,
-                                                       fill = fill_color, dash = (1, 2), tags = ('elems', 'j_line'))
-                            elems = node, line, circle, j_line
-                        else:
-                            elems = node, line, circle
+                        elems.append(board.create_oval(new_center_x - radius, tag_label_center - radius,
+                                                       new_center_x + radius, tag_label_center + radius,
+                                                       fill = fill_color, outline = fg_color, dash = dash, tags = ('elems', 'jnt')))
                     left_x = center_x - self._conf.half_word_width
                     sbox = (left_x, tag_label_line_bo) if self._conf.delta_shape else (left_x, last_line_bo)
                     board_item_coord[sbox] = elems, (lid, pid)

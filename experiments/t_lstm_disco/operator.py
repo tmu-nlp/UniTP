@@ -15,25 +15,22 @@ from experiments.helper import warm_adam
 
 train_type = dict(loss_weight = dict(tag    = BaseType(0.3, validator = frac_open_0),
                                      label  = BaseType(0.1, validator = frac_open_0),
+                                     _right = BaseType(0.6, validator = frac_open_0),
+                                     _direc = BaseType(0.6, validator = frac_open_0),
+                                     joint  = BaseType(0.6, validator = frac_open_0),
                                      orient = BaseType(0.6, validator = frac_open_0),
-                                     direct = BaseType(0.6, validator = frac_open_0),
-                                     direct_for_orient = BaseType(0.9, validator = frac_close),
-                                     joint  = BaseType(0.6, validator = frac_open_0)),
+                                     undirect_orient = BaseType(0.9, validator = frac_close)),
                   learning_rate = BaseType(0.001, validator = frac_open_0),
                   tune_pre_trained_from_nth_epoch = tune_epoch_type,
                   lr_factor_for_tuning = frac_06,
-                  orient_hinge_loss = true_type,
                   visualizing_trees = dict(devel = str_num_array, test = str_num_array))
 
 class DiscoOperator(Operator):
     def __init__(self, model, get_datasets, recorder, i2vs, train_config, evalb_lcfrs_prm):
         super().__init__(model, get_datasets, recorder, i2vs)
-        self._sigmoid = nn.Sigmoid()
         self._mode_trees = [], []
         self._train_config = train_config
         self._tune_pre_trained = False
-        self._raw_threshold = model.raw_threshold
-        self._threshold = model.checkout_loss(train_config.orient_hinge_loss)
         v_trees = train_config.visualizing_trees
         d_trees = strange_to(v_trees.devel) if v_trees else None
         t_trees = strange_to(v_trees.test ) if v_trees else None
@@ -79,67 +76,45 @@ class DiscoOperator(Operator):
          seq_len) = self._model(batch['token'], self._tune_pre_trained, **batch)
         batch_time = time() - batch_time
 
-        right_logits = right_direc_logits[:, :, 0]
-        direc_logits = right_direc_logits[:, :, 1]
-        if self._train_config.orient_hinge_loss:
-            rights = right_logits > self._threshold.right
-            direcs = direc_logits > self._threshold.direc
-            joints = joint_logits > self._threshold.joint
-        else:
-            right_logits = self._sigmoid(right_logits)
-            direc_logits = self._sigmoid(direc_logits)
-            joint_logits = self._sigmoid(joint_logits)
-            rights = right_logits > self._threshold.right
-            direcs = direc_logits > self._threshold.direc
-            joints = joint_logits > self._threshold.joint
-
         if mode == M_TRAIN:
             tags    = self._model.get_decision(tag_logits  )
             labels  = self._model.get_decision(label_logits)
+            rights, joints, direcs = self._model.get_stem_prediction(right_direc_logits, joint_logits)
             tag_mis       = (tags    != batch['tag'])
             label_mis     = (labels  != batch['label'])
             tag_weight    = (  tag_mis | gold_exists[:, :batch_len]) # small endian
             label_weight  = (label_mis | gold_exists)
             orient_match  = (rights == gold_rights) & gold_direcs
-            d4o = self._train_config.loss_weight.direct_for_orient
-            if d4o == 0:
-                direc_weight = gold_direcs
-            elif d4o < 1:
-                direc_weight = gold_direcs * d4o + (1 - d4o)
-                direc_weight *= gold_exists
-            else:
-                direc_weight = gold_exists
             
-            tag_loss, label_loss = self._model.get_losses(batch, tag_logits, top3_label_logits, label_logits)
-
-            if self._train_config.orient_hinge_loss:
-                right_loss = hinge_loss(right_logits, gold_rights, direc_weight)
-                direc_loss = hinge_loss(direc_logits, gold_direcs, None)
-                joint_loss = hinge_loss(joint_logits, gold_joints, None)
-            else:
-                right_loss = binary_cross_entropy(right_logits, gold_rights, direc_weight)
-                direc_loss = binary_cross_entropy(direc_logits, gold_direcs, None)
-                joint_loss = binary_cross_entropy(joint_logits, gold_joints, None)
-
-            total_loss = self._train_config.loss_weight.tag * tag_loss
-            total_loss = self._train_config.loss_weight.label * label_loss + total_loss
-            total_loss = self._train_config.loss_weight.joint * joint_loss + total_loss
-            total_loss = self._train_config.loss_weight.orient * right_loss + total_loss
-            total_loss = self._train_config.loss_weight.direct * direc_loss + total_loss
-            total_loss.backward()
-            # check = existences == (batch['xtype'] > 0)
             gs = self.global_step
             self._writer.add_scalar('Accuracy/Tag',   1 - fraction(tag_mis,    tag_weight),   gs)
             self._writer.add_scalar('Accuracy/Label', 1 - fraction(label_mis,  label_weight), gs)
             self._writer.add_scalar('Accuracy/Oriention', fraction(orient_match, gold_direcs),gs)
             self._writer.add_scalar('Accuracy/Directional', fraction(direcs == gold_direcs),  gs)
             self._writer.add_scalar('Accuracy/Joint',       fraction(joints == gold_joints),  gs)
-            self._writer.add_scalar('Loss/Tag',     tag_loss,   gs)
-            self._writer.add_scalar('Loss/Label',   label_loss, gs)
-            self._writer.add_scalar('Loss/Orient',  right_loss, gs)
-            self._writer.add_scalar('Loss/Direct',  direc_loss, gs)
+            losses = self._model.get_losses(batch, tag_logits, top3_label_logits, label_logits, right_direc_logits, joint_logits, self._train_config.loss_weight.undirect_orient)
+            if self._model.has_fewer_losses:
+                tag_loss, label_loss, orient_loss, joint_loss = losses
+                total_loss = self._train_config.loss_weight.tag * tag_loss
+                total_loss = self._train_config.loss_weight.label * label_loss + total_loss
+                total_loss = self._train_config.loss_weight.joint * joint_loss + total_loss
+                total_loss = self._train_config.loss_weight.orient * orient_loss + total_loss
+                self._writer.add_scalar('Loss/Orient',  orient_loss, gs)
+            else:
+                tag_loss, label_loss, right_loss, joint_loss, direc_loss = losses
+                total_loss = self._train_config.loss_weight.tag * tag_loss
+                total_loss = self._train_config.loss_weight.label * label_loss + total_loss
+                total_loss = self._train_config.loss_weight.joint * joint_loss + total_loss
+                total_loss = self._train_config.loss_weight.right * right_loss + total_loss
+                total_loss = self._train_config.loss_weight.direc * direc_loss + total_loss
+                self._writer.add_scalar('Loss/Right',  right_loss, gs)
+                self._writer.add_scalar('Loss/Direc',  direc_loss, gs)
+            total_loss.backward()
+            # check = existences == (batch['xtype'] > 0)
+            self._writer.add_scalar('Loss/Tag',    tag_loss,   gs)
+            self._writer.add_scalar('Loss/Label',  label_loss, gs)
             self._writer.add_scalar('Loss/Joint',  joint_loss, gs)
-            self._writer.add_scalar('Loss/Total',   total_loss, gs)
+            self._writer.add_scalar('Loss/Total',  total_loss, gs)
             self._writer.add_scalar('Batch/SamplePerSec', batch_len / batch_time,  gs)
             self._writer.add_scalar('Batch/Length', batch_len,   gs)
             self._writer.add_scalar('Batch/Height', batch['segments'].shape[0], gs)
@@ -156,14 +131,12 @@ class DiscoOperator(Operator):
 
                 tag_scores,     tags = self._model.get_decision_with_value(tag_logits)
                 label_scores, labels = self._model.get_decision_with_value(label_logits)
-                if self._train_config.orient_hinge_loss: # otherwise with sigmoid
-                    hinge_score(right_logits, inplace = True)
-                    hinge_score(joint_logits, inplace = True)
-                    hinge_score(direc_logits, inplace = True)
+                rights, joints, direcs, right_logits, joint_logits, direc_logits = self._model.get_stem_prediction(right_direc_logits, joint_logits, get_score = True)
                 extra = mpc_token, mpc_label, tag_scores, label_scores, right_logits, joint_logits, direc_logits
             else:
                 tags    = self._model.get_decision(tag_logits  )
                 labels  = self._model.get_decision(label_logits)
+                rights, joints, direcs = self._model.get_stem_prediction(right_direc_logits, joint_logits)
                 extra = None
             if pending_heads:
                 b_head = tuple(batch[x] for x in 'segments seq_len token tag label right joint direc'.split())
@@ -203,7 +176,7 @@ class DiscoOperator(Operator):
                        self.recorder.log,
                        self._evalb_lcfrs_kwargs,
                        v_trees,
-                       self._raw_threshold,
+                       self._model.threshold,
                        save_tensors)
         pending_heads = vis._pending_heads
         vis = VisRunner(vis, async_ = False) # wrapper
@@ -302,7 +275,7 @@ def batch_trees(bid_offset, heads_gen, segments, i2vs, fall_back_root_label = No
         # else:
         if td:
             brackets_cnt = bracketing(bottom, td, rt, False, unlabel, excluded_labels, equal_labels)
-            if sid in v_trees and v_trees[sid] is None:
+            if v_trees and sid in v_trees and v_trees[sid] is None:
                 v_trees[sid] = draw_str_lines(bottom, td)
         else:
             brackets_cnt = Counter()

@@ -2,7 +2,7 @@ import torch
 from torch import nn, Tensor
 from utils.math_ops import s_index
 
-from utils.types import BaseType, true_type, frac_4, frac_2
+from utils.types import BaseType, true_type, frac_4, frac_2, BaseWrapper
 from utils.types import orient_dim, num_ori_layer
 
 def valid_codebook(name):
@@ -17,12 +17,13 @@ def valid_codebook(name):
     return False
 
 logit_type = BaseType('affine', default_set = ('affine', 'linear', 'codebook'), validator = valid_codebook)
-contextual_type = BaseType(0, as_index = True, as_exception = True, default_set = (nn.LSTM, nn.GRU))
-activation_type = BaseType(0, as_index = True, as_exception = True, default_set = (nn.ReLU, nn.ReLU6, nn.Softplus,# end == 0, nn.GELU
+to_name = lambda x: x.__name__
+contextual_type = BaseType(0, as_index = True, as_exception = True, default_set = BaseWrapper.from_gen((nn.LSTM, nn.GRU), to_name))
+activation_type = BaseType(0, as_index = True, as_exception = True, default_set = BaseWrapper.from_gen((nn.ReLU, nn.ReLU6, nn.Softplus,# end == 0, nn.GELU
                                                                                    nn.LeakyReLU, nn.ELU, nn.CELU, nn.SELU, nn.RReLU, # end < 0
                                                                                    nn.Sigmoid, nn.LogSigmoid,
                                                                                    nn.Tanh, nn.Softsign, nn.Hardtanh, # -<0<+
-                                                                                   nn.Tanhshrink, nn.Softshrink, nn.Hardshrink)) # -0+
+                                                                                   nn.Tanhshrink, nn.Softshrink, nn.Hardshrink), to_name)) # -0+
 
 from models.combine import get_combinator, get_components, combine_type, valid_trans_compound
 stem_config = dict(orient_dim   = orient_dim,
@@ -209,7 +210,7 @@ class Stem(nn.Module):
 from models.utils import PCA
 from utils.types import false_type, num_ctx_layer
 from utils.param_ops import HParams, dict_print
-act_fasttext = BaseType(None, as_index = True, as_exception = True, default_set = (nn.Tanh, nn.Softsign))
+act_fasttext = BaseType(None, as_index = True, as_exception = True, default_set = BaseWrapper.from_gen((nn.Tanh, nn.Softsign), to_name))
 input_config = dict(pre_trained = true_type, activation = act_fasttext, drop_out = frac_4)
 
 class InputLeaves(nn.Module):

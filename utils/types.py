@@ -1,5 +1,26 @@
 from copy import copy, deepcopy
 
+class BaseWrapper:
+    def __init__(self, item, to_str):
+        self._item_to_str = item, to_str
+
+    @property
+    def name(self):
+        item, to_str = self._item_to_str
+        return to_str(item)
+
+    @property
+    def item(self):
+        return self._item_to_str[0]
+
+    def identical(self, x):
+        return x == self.name
+
+    @classmethod
+    def from_gen(cls, gen, to_name):
+        return tuple(cls(x, to_name) for x in gen)
+
+
 class BaseType:
     def __init__(self, default_val, validator = None, default_set = None, as_exception = False, as_index = False):
         self._val_as_index = default_val, as_index, as_exception
@@ -17,7 +38,7 @@ class BaseType:
                 assert as_index
                 assert isinstance(default_val, int) or default_val is None
                 if as_exception: # (nn.LSTM, nn.GRU)
-                    names_set = tuple(x.__name__ for x in default_set)
+                    names_set = tuple(x.name for x in default_set)
                     if default_val is None:
                         names_set = (None,) + names_set
                     self._valid = lambda x: x in names_set
@@ -45,7 +66,7 @@ class BaseType:
     def default(self):
         default_val, as_index, as_exception = self._val_as_index
         if as_index and default_val is not None:
-            return (self._set[default_val].__name__ if as_exception else self._set[default_val])
+            return (self._set[default_val].name if as_exception else self._set[default_val])
         return default_val
 
     def validate(self, val):
@@ -63,8 +84,8 @@ class BaseType:
         default_val, as_index, as_exception = self._val_as_index
         if as_index and as_exception:
             for x in self._set:
-                if x.__name__ == idx:
-                    return x
+                if x.identical(idx):
+                    return x.item
             return default_val
         # elif self._fallback is not None:
         #     idx = self._fallback[idx]

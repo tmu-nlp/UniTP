@@ -28,7 +28,7 @@ p <- p + scale_x_continuous(breaks = seq(0, 1, 0.25),
 p <- p + scale_color_discrete(labels = c('6-layer', '8-layer'), breaks = c(6, 8))
 p <- p + scale_shape_discrete(labels = c('6-layer', '8-layer'), breaks = c(6, 8))
 p <- p + labs(x = 'CNF factors and their probabilistic interpolations', y = 'F1 score')
-p <- p + theme(legend.position = c(0.82, 0.119),
+p <- p + theme(legend.position = c(0.13, 0.75),
                legend.direction = "vertical",
                legend.spacing.y = unit(0.1, 'cm'),
                # legend.key.size = unit(0.2, "cm"),
@@ -43,4 +43,4 @@ p <- p + theme(legend.position = c(0.82, 0.119),
 leg <- unname(TeX('BiLSTM$_{cxt}$'))
 p <- p + labs(color = leg, shape = leg, tag = "F1")
 
-ggsave('cnf_chat.pdf', height = 5, width = 8, dpi = 600)
+ggsave('cnf_chat.pdf', height = 4.4, width = 8)
