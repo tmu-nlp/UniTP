@@ -28,7 +28,7 @@ def check_train(train_str):
                  stop_at_nth_wander = 100,
                  fine_validation_each_nth_epoch = 4,
                  update_every_n_batch = 1,
-                 max_epoch = 200)
+                 max_epoch = 1000)
     assert ' ' not in train_str
     for group in train_str.split(',' if ',' in train_str else ';'):
         if group.startswith('fine='):

@@ -28,6 +28,7 @@ class DiscoReader(WordBaseReader):
               batch_size,
               bucket_length,
               binarization   = None,
+              shuffle_swap   = False,
               min_len        = 2,
               max_len        = None,
               sort_by_length = True):
@@ -46,6 +47,7 @@ class DiscoReader(WordBaseReader):
                            factors = binarization,
                            min_len = min_len,
                            max_len = max_len, 
+                           swapper = mode == M_TRAIN and shuffle_swap,
                            extra_text_helper = extra_text_helper,
                            train_indexing_cnn = train_indexing_cnn)
 

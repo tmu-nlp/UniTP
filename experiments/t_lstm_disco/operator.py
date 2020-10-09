@@ -19,7 +19,8 @@ train_type = dict(loss_weight = dict(tag    = BaseType(0.3, validator = frac_ope
                                      _direc = BaseType(0.6, validator = frac_open_0),
                                      joint  = BaseType(0.6, validator = frac_open_0),
                                      orient = BaseType(0.6, validator = frac_open_0),
-                                     undirect_orient = BaseType(0.9, validator = frac_close)),
+                                     shuffled = BaseType(0.6, validator = frac_open_0),
+                                     _undirect_orient = BaseType(0.9, validator = frac_close)),
                   learning_rate = BaseType(0.001, validator = frac_open_0),
                   tune_pre_trained_from_nth_epoch = tune_epoch_type,
                   lr_factor_for_tuning = frac_06,
@@ -72,7 +73,7 @@ class DiscoOperator(Operator):
         # layers_of_existence, layers_of_base, layers_of_hidden, layers_of_right_direc, layers_of_joint, tags, labels, segment, seg_length
         batch_time = time()
         (batch_size, batch_len, static, top3_label_logits,
-         existences, embeddings, hiddens, right_direc_logits, joint_logits, tag_logits, label_logits, segment,
+         existences, embeddings, hiddens, right_direc_logits, joint_logits, shuffled_right_direc, shuffled_joint, tag_logits, label_logits, segment,
          seq_len) = self._model(batch['token'], self._tune_pre_trained, **batch)
         batch_time = time() - batch_time
 
@@ -80,35 +81,48 @@ class DiscoOperator(Operator):
             tags    = self._model.get_decision(tag_logits  )
             labels  = self._model.get_decision(label_logits)
             rights, joints, direcs = self._model.get_stem_prediction(right_direc_logits, joint_logits)
-            tag_mis       = (tags    != batch['tag'])
-            label_mis     = (labels  != batch['label'])
-            tag_weight    = (  tag_mis | gold_exists[:, :batch_len]) # small endian
-            label_weight  = (label_mis | gold_exists)
-            orient_match  = (rights == gold_rights) & gold_direcs
+            tag_weight  = gold_exists[:, :batch_len] # small endian
+            tag_match   = (tags   == batch['tag']) & tag_weight
+            label_match = (labels == batch['label']) & gold_exists
+            right_match = (rights == gold_rights) & gold_direcs
             
             gs = self.global_step
-            self._writer.add_scalar('Accuracy/Tag',   1 - fraction(tag_mis,    tag_weight),   gs)
-            self._writer.add_scalar('Accuracy/Label', 1 - fraction(label_mis,  label_weight), gs)
-            self._writer.add_scalar('Accuracy/Oriention', fraction(orient_match, gold_direcs),gs)
-            self._writer.add_scalar('Accuracy/Directional', fraction(direcs == gold_direcs),  gs)
-            self._writer.add_scalar('Accuracy/Joint',       fraction(joints == gold_joints),  gs)
-            losses = self._model.get_losses(batch, tag_logits, top3_label_logits, label_logits, right_direc_logits, joint_logits, self._train_config.loss_weight.undirect_orient)
+            self._writer.add_scalar('Accuracy/Tag',   fraction(tag_match,    tag_weight), gs)
+            self._writer.add_scalar('Accuracy/Label', fraction(label_match, gold_exists), gs)
+            self._writer.add_scalar('Accuracy/Right', fraction(right_match, gold_direcs), gs)
+            self._writer.add_scalar('Accuracy/Direc', fraction(direcs == gold_direcs),  gs)
+            self._writer.add_scalar('Accuracy/Joint', fraction(joints == gold_joints),  gs)
+            batch['existence'] = gold_exists
+            shuffled = self._train_config.loss_weight.shuffled
+            losses = self._model.get_losses(batch, tag_logits, top3_label_logits, label_logits, right_direc_logits, joint_logits, shuffled_right_direc, shuffled_joint, self._train_config.loss_weight._undirect_orient)
             if self._model.has_fewer_losses:
-                tag_loss, label_loss, orient_loss, joint_loss = losses
+                tag_loss, label_loss, orient_loss, joint_loss, shuffled_orient_loss, shuffled_joint_loss = losses
                 total_loss = self._train_config.loss_weight.tag * tag_loss
                 total_loss = self._train_config.loss_weight.label * label_loss + total_loss
                 total_loss = self._train_config.loss_weight.joint * joint_loss + total_loss
                 total_loss = self._train_config.loss_weight.orient * orient_loss + total_loss
                 self._writer.add_scalar('Loss/Orient',  orient_loss, gs)
+                if shuffled_joint_loss is not None:
+                    total_loss = self._train_config.loss_weight.joint * shuffled_joint_loss * shuffled + total_loss
+                    total_loss = self._train_config.loss_weight.orient * shuffled_orient_loss * shuffled + total_loss
+                    self._writer.add_scalar('Loss/ShuffledOrient', shuffled_orient_loss, gs)
+                    self._writer.add_scalar('Loss/ShuffledJoint',   shuffled_joint_loss, gs)
             else:
-                tag_loss, label_loss, right_loss, joint_loss, direc_loss = losses
+                tag_loss, label_loss, right_loss, joint_loss, direc_loss, shuffled_right_loss, shuffled_joint_loss, shuffled_direc_loss = losses
                 total_loss = self._train_config.loss_weight.tag * tag_loss
                 total_loss = self._train_config.loss_weight.label * label_loss + total_loss
                 total_loss = self._train_config.loss_weight.joint * joint_loss + total_loss
-                total_loss = self._train_config.loss_weight.right * right_loss + total_loss
-                total_loss = self._train_config.loss_weight.direc * direc_loss + total_loss
+                total_loss = self._train_config.loss_weight._right * right_loss + total_loss
+                total_loss = self._train_config.loss_weight._direc * direc_loss + total_loss
                 self._writer.add_scalar('Loss/Right',  right_loss, gs)
                 self._writer.add_scalar('Loss/Direc',  direc_loss, gs)
+                if shuffled_joint_loss is not None:
+                    total_loss = self._train_config.loss_weight.joint * shuffled_joint_loss * shuffled + total_loss
+                    total_loss = self._train_config.loss_weight._right * shuffled_right_loss * shuffled + total_loss
+                    total_loss = self._train_config.loss_weight._direc * shuffled_direc_loss * shuffled + total_loss
+                    self._writer.add_scalar('Loss/ShuffledRight', shuffled_right_loss, gs)
+                    self._writer.add_scalar('Loss/ShuffledDirec', shuffled_direc_loss, gs)
+                    self._writer.add_scalar('Loss/ShuffledJoint', shuffled_joint_loss, gs)
             total_loss.backward()
             # check = existences == (batch['xtype'] > 0)
             self._writer.add_scalar('Loss/Tag',    tag_loss,   gs)
@@ -179,7 +193,7 @@ class DiscoOperator(Operator):
                        self._model.threshold,
                        save_tensors)
         pending_heads = vis._pending_heads
-        vis = VisRunner(vis, async_ = False) # wrapper
+        vis = VisRunner(vis, async_ = True) # wrapper
         vis.before()
         self._vis_mode = vis, use_test_set, final_test, pending_heads
         if self._model._input_layer.has_static_pca:
@@ -221,7 +235,7 @@ class DiscoOperator(Operator):
 
 from utils.vis import BaseVis, VisRunner
 from utils.file_io import join, isfile, listdir, remove, isdir
-from utils.pickle_io import pickle_dump
+from utils.pickle_io import pickle_dump, pickle_load
 from data.cross import disco_tree, bracketing, Counter, draw_str_lines
 from data.cross.evalb_lcfrs import DiscoEvalb
 def batch_trees(bid_offset, heads_gen, segments, i2vs, fall_back_root_label = None,
@@ -341,11 +355,22 @@ class DiscoVis(BaseVis):
             heads = self._head_batches[self._data_batch_cnt]
             self._data_batch_cnt += 1
         
+        evalb = DiscoEvalb()
         data = zip(d_seq_len, h_token, d_tag, d_label, d_right, d_joint, d_direc)
         data, trees, errors = batch_trees(bid_offset, data, d_segment, i2vs, 'VROOT', v_errors = self._v_errors, v_trees = vd_lines_args, **self._evalb_lcfrs_kwargs)
         scores = []
+        self._evalb.add_batch_line(batch_id)
         for gold, prediction in zip(heads, data):
             scores.append(self._evalb.add(*prediction, *gold))
+            evalb.add(*prediction, *gold)
+
+        if self.save_tensors:
+            fname = self._dtv.join('summary.pkl')
+            _, _, tf, _, _, df = evalb.summary()
+            smy = pickle_load(fname) if isfile(fname) else {}
+            smy[(batch_id, self.epoch)] = dict(F1 = tf, DF = df)
+            pickle_dump(fname, smy)
+
         # TODO: mpc_word, mpc_phrase, warning, scores, tag_score, label_score, right_score, joint_score, summary
         if self.save_tensors:
             self._dtv.set_data(batch_id, self.epoch, h_token, d_tag, d_label, d_right, d_joint, d_direc, trees, d_segment, d_seq_len, mpc_word, mpc_phrase, errors, scores, tag_score, label_score, right_score, joint_score, direc_score)

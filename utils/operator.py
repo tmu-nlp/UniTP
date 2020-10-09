@@ -100,6 +100,7 @@ class Operator:
         ds_scores = {}
         self._model.eval() # stack
         epoch_stamp = timestamp(epoch, '')
+        count = 0
         with tqdm(total = ds_total, desc = f'#{icon}{epoch_stamp}') as qbar:
             for ds_name, ds_iter in zip(ds_names, ds_iters):
                 self._before_validation(ds_name, f'{epoch:08.2f}', mode == M_TEST, final_test)

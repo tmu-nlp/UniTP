@@ -378,6 +378,7 @@ if desktop:
     from concurrent.futures import ProcessPoolExecutor
     from data.triangle import triangle_to_layers
     from data.trapezoid import trapezoid_to_layers, inflate
+    from data.cross import draw_str_lines
     # from multiprocessing import Pool
 
     class PathWrapper:
@@ -526,7 +527,7 @@ if desktop:
                 summary_fscores = defaultdict(list)
                 for (batch_id, epoch), smy in summary.items():
                     if not isnan(smy['F1']):
-                        summary_fscores[batch_id].append(smy['F1'])
+                        summary_fscores[batch_id].append((smy['F1'], smy.get('DF', None)))
             else:
                 summary_fscores = {}
 
@@ -535,9 +536,11 @@ if desktop:
 
                 if bid in summary_fscores:
                     if len(summary_fscores[bid]) == 1:
-                        fscores = f'  {summary_fscores[bid][0]}'
+                        f1, df = summary_fscores[bid][0]
+                        fscores = f'  {f1:.2f}' if df is None else f'  {f1:.2f} ({df:.2f})'
                     else:
-                        fscores = f'  ≤{max(summary_fscores[bid])}'
+                        f1, df = max(summary_fscores[bid], key = lambda x: x[0])
+                        fscores = f'  ≤{f1:.2f}' if df is None else f'  ≤{f1:.2f} ({df:.2f})'
                 else:
                     fscores = ''
                 headbox.insert(END, h[5:-4].replace('_', '.\t<') + fscores)
@@ -630,7 +633,7 @@ if desktop:
                         else:
                             negation = False
                         mark = '*' if negation else ''
-                        mark += f'{sid}'
+                        mark += f'{sid + 1}'
                         # if warning_cnt:
                         #     mark += " ◌•▴⨯"[warning_level(warning_cnt)]
                         mark += '\t'
@@ -1471,25 +1474,29 @@ if desktop:
             for b in self._boards:
                 b.configure(background = bg_color)
 
+            _, time = self._head_time
+            bid, epoch = time[tid][0][5:-4].split('_')
+            title = f'Batch: {bid} Epoch: {epoch} '
+
             data, stat = self._data[tid]
+            len_score = len(data.scores)
             stat.make(self._conf.show_paddings, self._conf.pc_x, self._conf.pc_y)
             is_continuous = 'offset' in data._fields
             if is_continuous:
                 self.__draw_board(data, stat, fg_color, to_color)
+
+                if len_score == 12: # conti. parsing
+                    title += ' |  ' + '  '.join(i+f'({data.scores[j]})' for i, j in zip(('len.', 'P.', 'R.', 'tag.'), (1, 3, 4, 11)))
+                elif len_score == 6: # sentiment
+                    title += ' |  ' + '  '.join(i+f'({j:.1f})' for i, j in zip(('5r.', '3r.', '2r.', '5f.', '3f.', '2f.'), data.scores))
             else:
+                tm, tp, tg, dm, dp, dg, mt, gt = data.scores
+                title += f' |  ({tp}>{tm}<{tg}) ({dp}>{dm}<{dg}) ({mt}<{gt})'
                 self.__draw_board_x(data, stat, fg_color, x_fg, to_color)
             if self._conf.statistics:
                 if is_continuous:
                     self.__draw_stat_board(data.label, data.offset, data.length, stat, stat_fg, stat_bg, to_color)
             
-            _, time = self._head_time
-            bid, epoch = time[tid][0][5:-4].split('_')
-            title = f'Batch: {bid} Epoch: {epoch} '
-            len_score = len(data.scores)
-            if len_score == 12: # conti. parsing
-                title += ' |  ' + '  '.join(i+f'({data.scores[j]})' for i, j in zip(('len.', 'P.', 'R.', 'tag.'), (1, 3, 4, 11)))
-            elif len_score == 6: # sentiment
-                title += ' |  ' + '  '.join(i+f'({j:.1f})' for i, j in zip(('5r.', '3r.', '2r.', '5f.', '3f.', '2f.'), data.scores))
             self._time_change_callback(title, epoch) # [(fname, data)]
 
         def navi_to(self, navi_char, steps = 0, num_frame = 24, duration = 1):
@@ -1678,6 +1685,29 @@ if desktop:
                     self._spotlight_objects = items, positions, tuple()
 
         def show_tree(self, show_all_trees, *frame_canvas):
+            if not isinstance(self._head.tree, str):
+                vocabs = self._vocab_bundle.vocabs
+                def get_lines(fields, stamp):
+                    length = fields.seg_length[0]
+                    words = fields.token[1:length + 1]
+                    tags = fields.tag[1:length + 1]
+                    bottom = tuple((bid, vocabs.token[wid], vocabs.tag[tid]) for bid, (wid, tid) in enumerate(zip(words, tags)))
+                    return draw_str_lines(bottom, fields.tree, root_stamp = stamp)
+                lines = get_lines(self._head, ' (gold)')
+                if show_all_trees:
+                    for tid in range(self._time_slider[0]):
+                        data, _ = self._data[tid]
+                        lines.append('')
+                        lines.extend(get_lines(data, f' (predict-{tid})'))
+                else:
+                    tid = self._time_slider[1].get()
+                    data, _ = self._data[tid]
+                    lines.append('')
+                    lines.extend(get_lines(data, f' (predict-{tid})'))
+                widget = Text(Toplevel(self), wrap = NONE)
+                widget.insert(END, '\n'.join(lines))
+                widget.pack(fill = BOTH, expand = YES)
+                return
             label = Tree.fromstring(self._head.tree)
             label.set_label(label.label() + ' (corpus)')
 
@@ -1717,7 +1747,7 @@ if desktop:
                         trees.append(tree)
                         tids.append([tid])
                 for ts, pred in zip(tids, trees):
-                    pred.set_label(pred.label() + ' (predicted-%s)' % ','.join(str(tid) for tid in ts))
+                    pred.set_label(pred.label() + ' (predict-%s)' % ','.join(str(tid) for tid in ts))
                     ltwh = at_time(pred, left_top, force_place = left_top[0] == 0)
                     inc = max(inc, ltwh[3])
                     if ltwh[0] != left_top[0]: # new line
@@ -1727,7 +1757,7 @@ if desktop:
                 tid = self._time_slider[1].get()
                 data, _ = self._data[tid]
                 pred = Tree.fromstring(data.tree)
-                pred.set_label(pred.label() + ' (predicted-%d)' % tid)
+                pred.set_label(pred.label() + f' (predict-{tid})')
                 at_time(pred, left_top, force_place = True)
 
         def __draw_stat_board(self, label_layers, offset, length, stat, fg_color, bg_color, to_color):
@@ -2160,7 +2190,7 @@ if desktop:
                 w_p_s = tuple(self._conf.canvas_height - b for b in w_p_s)
             half_text_height = None
             
-            
+            track_colors = []
             track_positions = []
             for i, w in enumerate(head.token):
                 if not self._conf.show_paddings and not 0 < i <= head.seg_length[0]:
@@ -2177,9 +2207,11 @@ if desktop:
                     pbox = (left_x, w_p_s[1])
 
                 if self._conf.show_errors:
-                    word_color = tag_color = fg_color
+                    track_color = 1.0 if apply_dash else stat.tag[i]
+                    word_color = tag_color = to_color(track_color)
+                    track_colors.append(track_color)
                 else:
-                    word_color = to_color(1.0 if apply_dash else stat.token[i])
+                    word_color = fg_color if apply_dash else to_color(stat.token[i])
                     tag_color  = to_color(data.tag_score if apply_dash else stat.tag[i] if i < len(stat.tag) else (0,0,0))
 
                 word_node = board.create_text(center_x, word_center + text_offy,
@@ -2188,8 +2220,8 @@ if desktop:
                 tp = head.tag[i]
                 pp = data.tag[i]
                 tag_node = board.create_text(center_x, tag_label_center + text_offy,
-                                             fill = tag_color, font = (font_name, font_max_size if apply_dash else round_int(font_max_size * data.tag_score[i])),
-                                             text = f'{vocabs.tag[pp]}' if not self._conf.show_errors or pp == tp else f'{vocabs.tag[pp]}({vocabs.tag[tp]})',
+                                             fill = tag_color, font = (font_name, font_max_size if apply_dash else round_int(font_max_size * (1 if self._conf.show_errors else data.tag_score[i]))),
+                                             text = f'{vocabs.tag[pp]}' if self._conf.show_errors or pp == tp else f'{vocabs.tag[pp]}({vocabs.tag[tp]})',
                                              tags = ('elems', 'node'))
 
                 w_line = board.create_line(center_x,  w_p_s[0] + r,
@@ -2236,15 +2268,20 @@ if desktop:
 
                 last_x = None
                 track_positions.append(None) # layer flag
+                if not self._conf.show_errors and lid >= len(data.joint):
+                    break
                 for pid, (ps, pr, pd, prs, pds) in enumerate(zip(label_layer, right_layer, direc_layer, right_score, direc_score)):
                     if not self._conf.show_paddings and not (0 < pid <= layer_size):
                         last_pr = pr
                         continue
                     center_x = track_positions.pop(0)
+                    # print(center_x, end = ', ')
                     if self._conf.show_errors:
                         pls = 1
-                        mpc_color = label_color = fg_color
+                        track_color = track_colors.pop(0)
+                        mpc_color = label_color = to_color(track_color)
                     else:
+                        track_color = 1.0
                         pls = data.label_score[lid][pid]
                         mpc_color = to_color(stat.phrase[lid][pid])
                         if apply_dash:
@@ -2264,13 +2301,22 @@ if desktop:
                     line = board.create_line(center_x, line_y, to_x, to_y,
                                              width = line_width, fill = mpc_color, capstyle = capstyle,
                                              arrow = LAST if pd else None, tags = ('elems', 'line'))
-                    if pid and last_pr and not pr and ((head if self._conf.show_errors else data).joint[lid][pid - 1]):
-                        last_x = track_positions.pop()
-                        new_center_x = (last_x + center_x) / 2
-                        track_positions.append(new_center_x)
+                    is_joint = (head if self._conf.show_errors else data).joint[lid][pid - 1] if pid else False
+                    new_center_x = None
+                    if pid and last_pr and not pr:
+                        if is_joint:
+                            last_x = track_positions.pop()
+                            new_center_x = (last_x + center_x) / 2
+                            track_positions.append(new_center_x)
+                            track_colors.append((track_colors.pop() + track_color) / 2)
+                        elif self._conf.show_errors and (last_pd or pd):
+                            track_colors.insert(-1, track_color)
+                            track_positions.append(center_x)
+                        else:
+                            track_positions.append(center_x)
                     else:
+                        track_colors.append(track_color)
                         track_positions.append(center_x)
-                        new_center_x = None
                     if last_x is None:
                         elems = node, line
                     else:
@@ -2278,14 +2324,14 @@ if desktop:
                             new_center_x = (last_x + center_x) / 2
                         js = uneven_split(threshold.joint, (head.joint if self._conf.show_errors else data.joint_score)[lid][pid - 1])
                         elems = [node, line]
-                        if js > 0:
+                        if is_joint:
                             fill_color = jnt_color
                             dash = None
                             from_x = last_x + self._conf.half_word_width
                             to_x = center_x - self._conf.half_word_width
                             if from_x < to_x:
                                 elems.append(board.create_line(from_x, tag_label_center, to_x, tag_label_center,
-                                                               fill = fill_color, dash = (1, 2), tags = ('elems', 'j_line')))
+                                                               fill = fill_color, dash = (4, 4), tags = ('elems', 'j_line')))
                         else:
                             js = -js
                             fill_color = ''
@@ -2297,9 +2343,12 @@ if desktop:
                     left_x = center_x - self._conf.half_word_width
                     sbox = (left_x, tag_label_line_bo) if self._conf.delta_shape else (left_x, last_line_bo)
                     board_item_coord[sbox] = elems, (lid, pid)
+                    last_pd = pd
                     last_pr = pr
                     last_x = center_x
+                # print(track_positions[0])
                 assert track_positions.pop(0) is None, track_positions
+                    
                 if layer_size == 1:
                     break
 

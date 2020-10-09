@@ -445,6 +445,20 @@ def bracketing(bottom, top_down, nid, bottom_is_bid = True,
         assert bit_coverage + ~bit_coverage == -1
     return bracket_cnt
 
+# def swappable_layers(layers_of_label, layers_of_right, layers_of_joint, layers_of_direc):
+#     for label_layer, right_layer, joint_layer direc_layer in zip(layers_of_label, layers_of_right, layers_of_joint + [None], layers_of_direc):
+#         swap_layer = []
+#         this_swap = None
+#         for nid, (label, right, direc) in enumerate(zip(label_layer, right_layer direc_layer)):
+#             if nid and joint_layer[nid - 1] and last_right and not right:
+#                 if this_swap is None:
+#                     this_swap = [last_nid]
+#                 this_swap.append(nid)
+            
+#             last_right = right
+#             last_nid = nid
+        
+
 def _pre_proc(bottom_info, top_down, unary_join_mark = '+'):
     bu_nodes = [p_node for p_node, (_, children) in top_down.items() if len(children) == 1]
     unary = {}
@@ -477,30 +491,43 @@ def _pre_proc(bottom_info, top_down, unary_join_mark = '+'):
 
     return word, new_bottom, node2tag, bottom_unary
 
-def _layer_base(bottom, top_down, completed_nodes, some_or_all, cnf_right, sub_suffix):
+from random import random
+def _layer_base(bottom, top_down, completed_nodes, some_or_all, lean_joint, cnf_right, sub_suffix):
     bottom_up = {}
     right_hash = {}
+    swappable_locations = []
     joint_rset = []
     bottom_flag = [True for _ in bottom]
     for p_node, td in top_down.items():
         if p_node in completed_nodes or not some_or_all(node in bottom for node in td.children):
             continue
         
+        location = []
         location_children = []
         for nid, (node, flag) in enumerate(zip(bottom, bottom_flag)):
             if flag and node in td.children:
+                location.append(nid)
                 location_children.append((nid, node))
+        swappable_locations.append(location)
 
         num_children = len(location_children)
         for cid, (nid, node) in enumerate(location_children):
             if cid == 0:
                 right = True
             else:
-                right = False if cid == num_children - 1 else cnf_right
+                if cid == num_children - 1:
+                    right = False
+                elif cnf_right is None:
+                    right = random() > (cid / num_children)
+                else:
+                    right = cnf_right
                 if last_nid == nid - 1: # locality
-                    joint_rset.append(nid)
                     assert last_right or not right # coherent
+                    if not lean_joint:
+                        joint_rset.append(nid)
                     if last_right and not right: # agreeable_orients
+                        if lean_joint:
+                            joint_rset.append(nid)
                         group = td.children
                         if len(group) == 2:
                             new_node = p_node
@@ -519,7 +546,7 @@ def _layer_base(bottom, top_down, completed_nodes, some_or_all, cnf_right, sub_s
             right_hash[node] = last_right = right
             last_nid = nid
             last_node = node
-    return right_hash, joint_rset, bottom_up
+    return right_hash, joint_rset, swappable_locations, bottom_up
 
 def _layer_output(bottom,
                   bottom_up,
@@ -554,7 +581,7 @@ def _layer_output(bottom,
                     last_node = new_bottom.pop()
                     new_bottom += [node, last_node]
                     swap_distance = 0
-            elif not last_direc and not right: # passive swap
+            elif not last_direc and not right: # passive swap ≥<
                 if swap_distance != 1:
                     right_layer[-1] = True
                     last_node = new_bottom.pop()
@@ -572,7 +599,7 @@ def _layer_output(bottom,
         else:
             if last_direc:
                 right = cnf_right
-                if last_right and not cnf_right: # passive swap
+                if last_right and not cnf_right: # passive swap >≤
                     last_node = new_bottom.pop()
                     new_bottom += [node, last_node]
                     swap_distance = 0
@@ -609,6 +636,7 @@ def _layer_output(bottom,
 def cross_signals(bottom, node2tag, bottom_unary, top_down, cnf_right,
                   aggressive = True,
                   swap_right_priority = None,
+                  lean_joint = True,
                   sub_prefix = '_',
                   pos_prefix = '#'):
     if swap_right_priority is None:
@@ -621,13 +649,15 @@ def cross_signals(bottom, node2tag, bottom_unary, top_down, cnf_right,
     layers_of_joint = []
     layers_of_label = []
     layers_of_direc = []
+    layers_of_swaps = []
     completed_nodes = set()
     while len(bottom) > 1:
-        (right_hash, joint_rset,
+        (right_hash, joint_rset, swappable_locations,
          bottom_up) = _layer_base(bottom,
                                   top_down,
                                   completed_nodes,
                                   some_or_all,
+                                  lean_joint,
                                   cnf_right,
                                   sub_suffix)
 
@@ -651,12 +681,13 @@ def cross_signals(bottom, node2tag, bottom_unary, top_down, cnf_right,
         layers_of_joint.append(joint_layer)
         layers_of_label.append(label_layer)
         layers_of_direc.append(direc_layer)
+        layers_of_swaps.append(swappable_locations)
 
     if top_down:
         layers_of_right.append([cnf_right])
         layers_of_direc.append([False])
         layers_of_label.append([top_down[bottom.pop()].label])
-    return layers_of_label, layers_of_right, layers_of_joint, layers_of_direc
+    return layers_of_label, layers_of_right, layers_of_joint, layers_of_direc, layers_of_swaps
 
 from utils.types import E_CNF, O_RGT
 from copy import deepcopy
@@ -714,7 +745,9 @@ def disco_tree(word, bottom_tag, layers_of_label, layers_of_right, layers_of_joi
     NTS = 500
     for tid, wd_tg in enumerate(zip(word, bottom_tag)):
         terminals.append((tid,) + wd_tg)
-        if layers_of_label[0][tid][0] not in '#_':
+        if layers_of_label[0][tid][0] in '#_':
+            track_nodes.append(tid)
+        else:
             bottom_unary = layers_of_label[0][tid].split('+')
             last_node = tid
             while bottom_unary:
@@ -723,8 +756,6 @@ def disco_tree(word, bottom_tag, layers_of_label, layers_of_right, layers_of_joi
                 last_node = NTS
                 NTS += 1
             track_nodes.append(NTS - 1)
-        else:
-            track_nodes.append(tid)
     bottom_len = tid + 1
             
     non_terminal_start = NTS
@@ -752,9 +783,13 @@ def disco_tree(word, bottom_tag, layers_of_label, layers_of_right, layers_of_joi
                     lhs_nid = nid - offset
                     lhs_node = track_nodes.pop(lhs_nid)
                     rhs_node = track_nodes.pop(lhs_nid)
-                    if not (lhs_nid < len(layers_of_label[lid + 1])):
-                        import pdb; pdb.set_trace()
-                        break # an error
+                    try:
+                        if not (lhs_nid < len(layers_of_label[lid + 1])):
+                            import pdb; pdb.set_trace()
+                            break # an error
+                    except:
+                        error_layer_id = lid, E_SHP, bottom_len # TODO change err_type
+                        break
                     labels = layers_of_label[lid + 1][lhs_nid]
                     labels = [labels] if labels[0] in '#_' else labels.split('+')
                     non_terminals[non_terminal_start] = labels.pop()
@@ -782,7 +817,12 @@ def disco_tree(word, bottom_tag, layers_of_label, layers_of_right, layers_of_joi
         if len(track_nodes) > 1 and snapshot_track_nodes == track_nodes and track_fall_back: # no action is taken
             if error_layer_id is None:
                 error_layer_id = lid, E_CMB, bottom_len
-            top_down[non_terminal_start].update(track_nodes)
+            for pid in track_nodes:
+                if pid in non_terminals and non_terminals[pid][0] in '_#':
+                    non_terminals.pop(pid)
+                    top_down[non_terminal_start].update(top_down.pop(pid))
+                else:
+                    top_down[non_terminal_start].add(pid)
             non_terminals[non_terminal_start] = fall_back_root_label
             non_terminal_start += 1
             break
@@ -828,8 +868,34 @@ def zip_to_logit(layers_of_label, layers_of_right, layers_of_joint, layers_of_di
         xtypes.extend(xlogit_gen(ll, lr, ld, lj, cj, nj))
     return cindex, labels, xtypes
 
+def zip_swaps(lsp):
+    swapbl = ''
+    num_layers = len(lsp)
+    for lid, group_layer in enumerate(lsp):
+        num_groups = len(group_layer)
+        for gid, group in enumerate(group_layer):
+            if gid == num_groups - 1:
+                if lid == num_layers - 1:
+                    swapbl += ','.join(str(x) for x in group)
+                else:
+                    swapbl += ','.join(str(x) for x in group) + '|'
+            else:
+                swapbl += ','.join(str(x) for x in group) + ';'
+    return swapbl
+
+def unzip_swaps(swapbl, offset = 0):
+    lsp = []
+    for layer in swapbl.split('|'):
+        groups = []
+        for group in layer.split(';'):
+            group_idx = array([int(x) + offset for x in group.split(',')])
+            group_ctn = array(group_idx)
+            groups.append((group_idx, group_ctn))
+        lsp.append(tuple(groups))
+    return lsp
+
 from data.trapezoid import trapezoid_to_layers
-from numpy import asarray
+from numpy import asarray, array
 from data.delta import get_rgt, get_jnt, get_dir
 def unzip_xlogit(cindex, xtypes):
     xtypes = asarray(xtypes)
@@ -875,14 +941,54 @@ def unzip_xlogit(cindex, xtypes):
     #     assert joint_layer == tj, '\nUj[' + c + a + b + e + d + ']\n' + f'{path}'
     return layers_of_right, layers_of_joint, layers_of_direc
 
-def draw_str_lines(bottom, top_down, reverse = True):
+class SpanTale:
+    def __init__(self):
+        self._spans = {}
+
+    def add(self, start, end = None):
+        self._spans[start] = end
+
+    def overlapped(self, start, end = None):
+        for s_start, s_end in self._spans.items():
+            if end is None:
+                if s_end is None:
+                    if s_start == start:
+                        return True
+                elif s_start <= start <= s_end:
+                    return True
+            elif start <= s_start <= end:
+                return True
+            elif s_end is not None and s_start <= start <= s_end:
+                return True
+        return False
+
+    def __str__(self):
+        if not self._spans:
+            return 'Nothing'
+        last_end = 0
+        blocks = ''
+        for start, end in sorted(self._spans.items(), key = lambda x: x[0]):
+            if end is None:
+                end = start
+            blocks += '_' * (start - last_end)
+            blocks += '&' * (end - start + 1)
+            last_end = end + 1
+        blocks += f':{last_end - 1}'
+        return blocks
+
+
+def draw_str_lines(bottom, top_down, reverse = True, root_stamp = ''):
+    if reverse:
+        LC, MC, RC, MP = '┌┬┐┴'
+    else:
+        LC, MC, RC, MP = '└┴┘┬'
     bottom_up = {}
     for pid, td in top_down.items():
         for cid in td.children:
             bottom_up[cid] = pid
     while pid in bottom_up:
         pid = bottom_up[pid]
-    rood_id = pid
+    root_id = pid
     str_lines = []
     word_line = ''
     tag_line = ''
@@ -898,16 +1004,20 @@ def draw_str_lines(bottom, top_down, reverse = True):
     pic_width = len(word_line)
     str_lines.append(word_line)
     str_lines.append(tag_line)
-    count = 0
+    # print(word_line)
+    # print(tag_line)
     while next_top_down:
         cons_line = ''
         line_line = ''
         future_top_down = defaultdict(list)
         post_bars = []
-        for pid, cid_pos_pairs in next_top_down.items():
+        span_tale = SpanTale()
+        for pid, cid_pos_pairs in sorted(next_top_down.items(), key = lambda x: min(p for _, p in x[1])):
             num_children = len(cid_pos_pairs)
-            if num_children < len(top_down[pid].children):
-                future_top_down[pid].extend(cid_pos_pairs)
+            if num_children < len(top_down[pid].children) or \
+               num_children == 1 and span_tale.overlapped(cid_pos_pairs[0][1]) or \
+               span_tale.overlapped(min(p for _, p in cid_pos_pairs), max(p for _, p in cid_pos_pairs)):
+                future_top_down[pid].extend(cid_pos_pairs) # exclude ones with intersections
                 continue
             if  num_children == 1:
                 _, mid_pos = cid_pos_pairs[0]
@@ -915,30 +1025,42 @@ def draw_str_lines(bottom, top_down, reverse = True):
                 line_line += ((mid_pos - len(line_line)) * ' ') + unit
                 if mid_pos in temp_bars:
                     temp_bars.remove(mid_pos)
+                span_tale.add(mid_pos)
             else:
                 mid_pos = 0
-                cid_pos_pairs.sort(key = lambda x: x[1])
+                cid_pos_pairs.sort(key = lambda x: x[1]) # left to right
                 _, last_pos = cid_pos_pairs[0]
                 start_pos = last_pos
                 for cnt, (_, pos) in enumerate(cid_pos_pairs):
                     if pos in temp_bars:
                         temp_bars.remove(pos)
                     if cnt == 0:
-                        unit = '┌'
+                        unit = LC
                     elif cnt == num_children - 1:
-                        unit += (pos - last_pos - 1) * '─' + '┐'
+                        unit += (pos - last_pos - 1) * '─' + RC
                     else:
-                        unit += (pos - last_pos - 1) * '─' + '┬'
+                        unit += (pos - last_pos - 1) * '─' + MC
                     mid_pos += pos
                     last_pos = pos
+                span_tale.add(start_pos, last_pos)
                 mid_pos //= num_children
+                # if mid_pos in post_bars:
+                #     for i in range(1, 10):
+                #         neg = mid_pos - i
+                #         pos = mid_pos + i
+                #         if 0 < neg and neg not in post_bars or \
+                #            pos < pic_width and pos not in post_bars:
+                #             mid_pos = neg
+                #             break
                 unit_half = mid_pos - start_pos
-                if unit[unit_half] == '┬':
+                if unit[unit_half] == MC:
                     unit = unit[:unit_half] + '┼' + unit[unit_half + 1:]
                 else:
-                    unit = unit[:unit_half] + '┴' + unit[unit_half + 1:]
+                    unit = unit[:unit_half] + MP + unit[unit_half + 1:]
                 line_line += ((mid_pos - len(line_line)) * ' ')[:-unit_half] + unit
             label = top_down[pid].label
+            if pid == root_id:
+                label += root_stamp
             cons_half = round(len(label) / 2)
             if cons_half:
                 cons_line += ((mid_pos - len(cons_line)) * ' ')[:-cons_half] + label
@@ -947,8 +1069,11 @@ def draw_str_lines(bottom, top_down, reverse = True):
             if pid in bottom_up:
                 future_top_down[bottom_up[pid]].append((pid, mid_pos))
                 post_bars.append(mid_pos)
+        
         len_line = len(line_line)
         len_cons = len(cons_line)
+        # prev_line = line_line
+        # prev_cons = cons_line
         if len_line < pic_width:
             line_line += (pic_width - len_line) * ' '
             cons_line += (pic_width - len_cons) * ' '
@@ -958,6 +1083,12 @@ def draw_str_lines(bottom, top_down, reverse = True):
             last_pos = 0
             for pos in sorted(temp_bars):
                 new_line += line_line[last_pos:pos] + '│'
+                # if pos >= len(cons_line):
+                #     print(prev_line)
+                #     print(prev_cons)
+                #     exit()
+                #     cons_line += '<<<<<< overflow bar'
+                #     continue
                 if cons_line[pos] == ' ':
                     new_cons += cons_line[last_pos:pos] + '│'
                 else:
@@ -969,8 +1100,9 @@ def draw_str_lines(bottom, top_down, reverse = True):
 
         str_lines.append(line_line)
         str_lines.append(cons_line)
+        # print(line_line)
+        # print(cons_line)
         next_top_down = future_top_down
-        count += 1
 
     if reverse:
         str_lines.reverse()

@@ -25,7 +25,7 @@ def get_configs(recorder = None):
         datasets = {}
         if mode == M_TRAIN:
             datasets[C_ABSTRACT] = reader.batch(M_TRAIN, disco.batch_size, disco.bucket_len, train_cnf,
-                                                max_len = disco.max_len, sort_by_length = disco.sort_by_length)
+                                                shuffle_swap = disco.shuffle_swap, max_len = disco.max_len, sort_by_length = disco.sort_by_length)
         else:
             datasets[C_ABSTRACT] = reader.batch(mode, disco.batch_size, 0, non_train_cnf, max_len = disco.max_len)
         return datasets

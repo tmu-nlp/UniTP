@@ -3,7 +3,7 @@ from utils.file_io import read_data
 from utils.shell_io import byte_style
 from tqdm import tqdm
 from data.delta import E_XDIM
-from data.cross import unzip_xlogit, targets
+from data.cross import unzip_xlogit, targets, unzip_swaps
 from data.trapezoid import trapezoid_to_layers
 from itertools import zip_longest
 
@@ -18,6 +18,7 @@ class CrossDataset(LengthOrderedDataset):
                  factors  = None,
                  min_len  = 0,
                  max_len  = None,
+                 swapper  = False,
                  extra_text_helper = None,
                  train_indexing_cnn = False):
 
@@ -103,6 +104,17 @@ class CrossDataset(LengthOrderedDataset):
             extra_text_helper = extra_text_helper(text, device)
         super().__init__(heads, lengths, factors, min_len, max_len, extra_text_helper)
 
+        self._swap = {}
+        if swapper:
+            for factor in factors:
+                swap = []
+                with open(dir_join(f'{prefix}.swap.{factor}')) as fr:
+                    for line in fr:
+                        swap.append(line)
+                self._swap[factor] = swap
+                assert len(lengths) == len(swap)
+        self._swap_cache = None
+
         self._columns = columns
         self._device = device
 
@@ -114,6 +126,16 @@ class CrossDataset(LengthOrderedDataset):
             else:
                 sample[field]    = column[idx]
         sample['length'] = length
+
+        if self._swap:
+            swap = self._swap[factor][idx]
+            if isinstance(swap, str):
+                swap = unzip_swaps(swap, 1)
+                self._swap[factor][idx] = swap # update cache
+            if self._swap_cache is None:
+                self._swap_cache = [(factor, swap)]
+            else:
+                self._swap_cache.append((factor, swap))
         return sample
 
     def _collate_fn(self, batch):
@@ -183,4 +205,19 @@ class CrossDataset(LengthOrderedDataset):
             else:
                 dtype = torch.bool
             field_columns[f] = torch.as_tensor(column, dtype = dtype, device = self._device)
+
+        if self._swap_cache: # TODO swap for emb, label
+            swappers = []
+            for size in segments:
+                layer = np.arange(size)
+                layer = np.tile(layer, batch_size)
+                layer.shape = (batch_size, size)
+                swappers.append(layer)
+            for sid, (factor, swap) in enumerate(self._swap_cache):
+                for layer, layer_tensor in zip(swap, swappers):
+                    for (group_idx, group_ctn) in layer:
+                        np.random.shuffle(group_ctn)
+                        layer_tensor[sid, group_idx] = group_ctn
+            self._swap_cache = None # clear batch
+            field_columns['swap'] = [torch.as_tensor(x, dtype = torch.long, device = self._device) for x in swappers]
         return field_columns

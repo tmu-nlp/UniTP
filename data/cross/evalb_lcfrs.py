@@ -72,6 +72,7 @@ def incomplete_sent_line(disc_mark, sent_cnt, g_num_brackets, g_disc_num_bracket
 
 class DiscoEvalb:
     def __init__(self):
+        self._tick = 0
         self._missing = 0
         self._total_match = 0
         self._total_pred = 0
@@ -100,14 +101,14 @@ class DiscoEvalb:
             self._disc_sents += 1
         if p_tags is None:
             if p_brackets is None:
-                self._sent_lines.append(incomplete_sent_line(disc_mark, self._total_sents, g_num_brackets, g_disc_num_brackets, g_tag_count))
+                self._sent_lines.append(incomplete_sent_line(disc_mark, self._total_sents - self._tick, g_num_brackets, g_disc_num_brackets, g_tag_count))
         else:
             tag_match = len(p_tags & g_tags)
             p_tag_count = len(p_tags)
             self._total_matched_pos += tag_match
             self._total_pos += g_tag_count
             if p_brackets is None:
-                self._sent_lines.append(incomplete_sent_line(disc_mark, self._total_sents, g_num_brackets, g_disc_num_brackets, g_tag_count, tag_match, p_tag_count))
+                self._sent_lines.append(incomplete_sent_line(disc_mark, self._total_sents - self._tick, g_num_brackets, g_disc_num_brackets, g_tag_count, tag_match, p_tag_count))
         if p_brackets is None:
             self._missing += 1
             return -1, -1, -1, -1 if p_tags is None else (tag_match / p_tag_count)
@@ -122,7 +123,7 @@ class DiscoEvalb:
         if g_disc_num_brackets and g_disc_brackets == p_disc_brackets:
             self._disc_exact += 1
         sent_prec, sent_rec, sent_fb1 = _scores(bracket_match, p_num_brackets, g_num_brackets)
-        sent_line =  f'| {disc_mark} {self._total_sents:5d} |'
+        sent_line =  f'| {disc_mark} {self._total_sents - self._tick:5d} |'
         sent_line += f' {sent_prec:6.2f} {sent_rec:6.2f}  {sent_fb1:6.2f} |'
         sent_line += f' {bracket_match:3d}   {g_num_brackets:3d}   {p_num_brackets:3d} |'
         if g_disc_num_brackets or p_disc_num_brackets:
@@ -136,14 +137,19 @@ class DiscoEvalb:
         self._total_pred += p_num_brackets
         self._disc_match += disc_bracket_match
         self._disc_pred += p_disc_num_brackets
-        return sent_prec, sent_rec, sent_fb1, tag_match / p_tag_count
+        return bracket_match, p_num_brackets, g_num_brackets, disc_bracket_match, p_disc_num_brackets, g_disc_num_brackets, tag_match, g_tag_count
+
+    def add_batch_line(self, batch_id):
+        batch_id = str(batch_id).rjust(4, '0')
+        self._tick = self._total_sents
+        self._sent_lines.append(f'|- B{batch_id} ------------------------------------------------------------------------------|')
 
     def __str__(self):
         tp, tr, tf, dp, dr, df = self.summary()
         line =  '|======================================================================================|\n'
-        line += '|         |                     Total               |      Disco.     |        PoS     |\n'
+        line += '|  Batch  |                     Total               |      Disco.     |        PoS     |\n'
         line += '| d sent. |  prec.   rec.    F1   | match gold test | match gold test | match gold err |\n'
-        line += '|--------------------------------------------------------------------------------------|\n'
+        # line += '|--------------------------------------------------------------------------------------|\n'
         line += '\n'.join(self._sent_lines) + '\n'
         line += '|======================================================================================|\n\n\n'
         line += 'Sentences in key'.ljust(30) + f': {self._total_sents}\n'

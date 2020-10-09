@@ -17,6 +17,7 @@ disco_config = dict(vocab_size     = vocab_size,
                     batch_size     = train_batch_size,
                     max_len        = train_max_len,
                     bucket_len     = train_bucket_len,
+                    shuffle_swap   = true_type,
                     unify_sub      = true_type,
                     sort_by_length = false_type)
 
@@ -31,7 +32,7 @@ def build(save_to_dir,
           devel_set,
           test_set,
           **kwargs):
-    from data.cross import read_tiger_graph, read_disco_penn, zip_to_logit
+    from data.cross import read_tiger_graph, read_disco_penn, zip_to_logit, zip_swaps
     from tqdm import tqdm
     from xml.etree import ElementTree
     from nltk.corpus import BracketParseCorpusReader
@@ -57,7 +58,7 @@ def build(save_to_dir,
             errors   = []
             word_cnt = Counter()
             tag_cnt  = Counter()
-            gap_cnt  = []
+            gap_cnt  = Counter()
             label_cnts = {o: Counter() for o in E_CNF}
             xtype_cnts = {o: Counter() for o in E_CNF}
             q, sents, read_func = self._args
@@ -73,16 +74,17 @@ def build(save_to_dir,
                     continue
 
                 cnf_bundle = {}
-                for cnf_factor, (lls, lrs, ljs, lds) in cnf_layers.items():
+                for cnf_factor, (lls, lrs, ljs, lds, lsp) in cnf_layers.items():
                     cindex, labels, xtypes = zip_to_logit(lls, lrs, ljs, lds)
                     label_cnts[cnf_factor] += Counter(labels)
                     xtype_cnts[cnf_factor] += Counter(logits_to_xtype(x) for x in xtypes)
                     cindex = ' '.join(str(x) for x in cindex) + '\n'
                     labels = ' '.join(labels) + '\n'
                     xtypes = ' '.join(str(x) for x in xtypes) + '\n'
-                    cnf_bundle[cnf_factor] = cindex, labels, xtypes
+                    swapbl = zip_swaps(lsp) + '\n'
+                    cnf_bundle[cnf_factor] = cindex, labels, xtypes, swapbl
 
-                gap_cnt.append(gd)
+                gap_cnt += Counter(gd.values())
                 word_cnt += Counter(wd)
                 tag_cnt  += Counter(bt)
                 wd = ' '.join(wd) + '\n'
@@ -90,7 +92,7 @@ def build(save_to_dir,
                 bundle = sent_tag, len(wd), wd, bt, cnf_bundle
                 q.put(bundle)
 
-            bundle = len(sents) - len(errors), errors, word_cnt, tag_cnt, label_cnts, xtype_cnts, Counter(gap_cnt)
+            bundle = len(sents) - len(errors), errors, word_cnt, tag_cnt, label_cnts, xtype_cnts, gap_cnt
             q.put(bundle)
 
     if corp_name == C_DPTB:
@@ -159,6 +161,7 @@ def build(save_to_dir,
         ftxs = { o:stack.enter_context(open(join(save_to_dir, f'{M_TRAIN}.xtype.{o}'), 'w')) for o in E_CNF}
         ftls = { o:stack.enter_context(open(join(save_to_dir, f'{M_TRAIN}.label.{o}'), 'w')) for o in E_CNF}
         ftis = { o:stack.enter_context(open(join(save_to_dir, f'{M_TRAIN}.index.{o}'), 'w')) for o in E_CNF}
+        ftss = { o:stack.enter_context(open(join(save_to_dir, f'{M_TRAIN}.swap.{o}' ), 'w')) for o in E_CNF}
         fvxs = { o:stack.enter_context(open(join(save_to_dir, f'{M_DEVEL}.xtype.{o}'), 'w')) for o in E_CNF}
         fvls = { o:stack.enter_context(open(join(save_to_dir, f'{M_DEVEL}.label.{o}'), 'w')) for o in E_CNF}
         fvis = { o:stack.enter_context(open(join(save_to_dir, f'{M_DEVEL}.index.{o}'), 'w')) for o in E_CNF}
@@ -175,20 +178,22 @@ def build(save_to_dir,
                     sent_tag, sent_len, wd, bt, cnf_bundle = t
                     if in_devel_set(sent_tag):
                         length_stat['vlc'][sent_len] += 1
-                        fw, ft, fxs, fls, fis = fvw, fvp, fvxs, fvls, fvis
+                        fw, ft, fxs, fls, fis, fss = fvw, fvp, fvxs, fvls, fvis, None
                     elif in_test_set(sent_tag):
                         length_stat['_lc'][sent_len] += 1
-                        fw, ft, fxs, fls, fis = f_w, f_p, f_xs, f_ls, f_is
+                        fw, ft, fxs, fls, fis, fss = f_w, f_p, f_xs, f_ls, f_is, None
                     else:
                         assert in_train_set(sent_tag)
                         length_stat['tlc'][sent_len] += 1
-                        fw, ft, fxs, fls, fis = ftw, ftp, ftxs, ftls, ftis
+                        fw, ft, fxs, fls, fis, fss = ftw, ftp, ftxs, ftls, ftis, ftss
                     fw.write(wd)
                     ft.write(bt)
-                    for cnf_factor, (cindex, labels, xtypes) in cnf_bundle.items():
+                    for cnf_factor, (cindex, labels, xtypes, swaps) in cnf_bundle.items():
                         fis[cnf_factor].write(cindex)
                         fls[cnf_factor].write(labels)
                         fxs[cnf_factor].write(xtypes)
+                        if fss is not None:
+                            fss[cnf_factor].write(swaps)
                     qbar.update(1)
                 elif len(t) == 7:
                     thread_join_cnt += 1
