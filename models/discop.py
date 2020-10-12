@@ -6,6 +6,7 @@ from utils.types import orient_dim, hidden_dim, num_ori_layer, true_type, frac_2
 from utils.math_ops import inv_sigmoid
 from visualization import DiscoThresholds
 from random import random
+from sys import stderr
 
 def disco_orient_to_dict(x):
     comps = {}
@@ -271,6 +272,9 @@ class DiscoStem(nn.Module):
                 prev, curr = history
                 if prev.shape == curr.shape and (prev == curr).all():
                     break
+                elif l_cnt == max_iter_n - 1:
+                    print(f'WARNING: Action layers overflow maximun {l_cnt}', file = stderr)
+                    break
             joint = self._jnt_fn(unit_emb)
             layers_of_joint.append(joint)
 
@@ -300,8 +304,6 @@ class DiscoStem(nn.Module):
                 if len(history) > 2:
                     history.pop(0)
 
-            if l_cnt == max_iter_n - 1: print('Unknown action')
-
         embeddings  = torch.cat(layers_of_u_emb,       dim = 1)
         right_direc = torch.cat(layers_of_right_direc, dim = 1)
         joint       = torch.cat(layers_of_joint,       dim = 1)
@@ -312,8 +314,8 @@ class DiscoStem(nn.Module):
             if swap is not None:
                 shuffled_right_direc = torch.cat(layers_of_shuffled_right_direc, dim = 1)
                 shuffled_joint       = torch.cat(layers_of_shuffled_joint,       dim = 1)
-            assert joint.shape[1] == supervised_joint.shape[1]
-            assert right_direc.shape[1] == supervised_right.shape[1]
+            assert joint.shape[1] == supervised_joint.shape[1], f'{joint.shape[1]} vs. {supervised_joint.shape[1]}'
+            assert right_direc.shape[1] == supervised_right.shape[1], f'{right_direc.shape[1]} vs. {supervised_right.shape[1]}'
         else:
             # segment    = torch.stack(segment,    dim = 0)
             seg_length = torch.stack(seg_length, dim = 1)

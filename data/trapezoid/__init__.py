@@ -1,6 +1,7 @@
 from data.triangle import before_to_seq, after_to_tree
 from data.delta import get_tree_from_triangle, explain_warnings, explain_one_error
 def trapezoid_to_layers(data, segments, seg_length, vocab = None, offset = 0, big_endian = True):
+    # assert data.shape[0] == sum(segments), f'slice shape not match ({data.shape[0]} vs. {sum(segments)})'
     layers  = []
     l_end   = len(data)
     seg_len = list(zip(segments, seg_length))

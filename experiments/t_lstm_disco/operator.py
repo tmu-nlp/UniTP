@@ -145,8 +145,8 @@ class DiscoOperator(Operator):
 
                 tag_scores,     tags = self._model.get_decision_with_value(tag_logits)
                 label_scores, labels = self._model.get_decision_with_value(label_logits)
-                rights, joints, direcs, right_logits, joint_logits, direc_logits = self._model.get_stem_prediction(right_direc_logits, joint_logits, get_score = True)
-                extra = mpc_token, mpc_label, tag_scores, label_scores, right_logits, joint_logits, direc_logits
+                rights, joints, direcs, right_scores, joint_scores, direc_scores = self._model.get_stem_prediction(right_direc_logits, joint_logits, get_score = True)
+                extra = mpc_token, mpc_label, tag_scores, label_scores, right_scores, joint_scores, direc_scores
             else:
                 tags    = self._model.get_decision(tag_logits  )
                 labels  = self._model.get_decision(label_logits)
@@ -357,6 +357,7 @@ class DiscoVis(BaseVis):
         
         evalb = DiscoEvalb()
         data = zip(d_seq_len, h_token, d_tag, d_label, d_right, d_joint, d_direc)
+        # import pdb; pdb.set_trace()
         data, trees, errors = batch_trees(bid_offset, data, d_segment, i2vs, 'VROOT', v_errors = self._v_errors, v_trees = vd_lines_args, **self._evalb_lcfrs_kwargs)
         scores = []
         self._evalb.add_batch_line(batch_id)
