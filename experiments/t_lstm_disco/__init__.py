@@ -1,7 +1,7 @@
 from data.disco import DiscoReader
 from data.disco_types import C_ABSTRACT, disco_config
-from utils.types import M_TRAIN, M_DEVEL, M_TEST
-from utils.param_ops import HParams, get_sole_key
+from utils.types import M_TRAIN
+from utils.param_ops import HParams
 from data.cross.evalb_lcfrs import read_param
 
 from experiments.t_lstm_disco.model import DiscoRnnTree, model_type

@@ -1,6 +1,6 @@
 from experiments.t_lstm_sentiment import *
 from experiments.t_xlnet_sentiment.model import StanXLNetTree, model_type
-from models.xlnet import XLNetDatasetHelper
+from models.plm import XLNetDatasetHelper
 
 def get_configs(recorder = None):
     if recorder is None:

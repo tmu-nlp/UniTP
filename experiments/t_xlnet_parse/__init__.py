@@ -3,7 +3,7 @@ from data.penn_types import C_PTB, parsing_config, select_and_split_corpus
 from utils.types import M_TRAIN, M_DEVEL, M_TEST
 from utils.param_ops import HParams, get_sole_key
 
-from models.xlnet import XLNetDatasetHelper
+from models.plm import XLNetDatasetHelper
 from experiments.t_xlnet_parse.model import XLNetPennTree, model_type
 from experiments.t_lstm_parse.operator import PennOperator, train_type
 

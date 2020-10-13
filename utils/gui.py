@@ -1,5 +1,5 @@
 from tkinter import Tk, TOP, BOTH, X, Y, N, W, E, S, N, LEFT, RIGHT, END, YES, NO, SUNKEN, ALL, VERTICAL, HORIZONTAL, BOTTOM, CENTER
-from tkinter import FIRST, LAST, ROUND, NONE
+from tkinter import FIRST, LAST, ROUND, NONE, DISABLED
 from tkinter import Text, Canvas, Listbox, Scale, Checkbutton, Label, Entry, Scrollbar, Frame, Button, Spinbox
 from tkinter import BooleanVar, StringVar# , IntVar, DoubleVar
 from tkinter import Toplevel, TclError, filedialog, messagebox

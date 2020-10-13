@@ -1706,6 +1706,7 @@ if desktop:
                     lines.extend(get_lines(data, f' (predict-{tid})'))
                 widget = Text(Toplevel(self), wrap = NONE)
                 widget.insert(END, '\n'.join(lines))
+                widget.config(state = DISABLED)
                 widget.pack(fill = BOTH, expand = YES)
                 return
             label = Tree.fromstring(self._head.tree)

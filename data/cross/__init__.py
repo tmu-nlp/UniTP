@@ -992,14 +992,14 @@ def draw_str_lines(bottom, top_down, reverse = True, root_stamp = ''):
     str_lines = []
     word_line = ''
     tag_line = ''
-    temp_bars = set()
+    start_bars = set()
     next_top_down = defaultdict(list)
     for bid, word, tag in bottom:
         unit_len = max(len(word), len(tag)) + 2
         word_line += word.center(unit_len)
         tag_line  +=  tag.center(unit_len)
         mid_pos = len(word_line) - round(unit_len // 2)
-        temp_bars.add(mid_pos)
+        start_bars.add(mid_pos)
         next_top_down[bottom_up[bid]].append((bid, mid_pos))
     pic_width = len(word_line)
     str_lines.append(word_line)
@@ -1010,7 +1010,7 @@ def draw_str_lines(bottom, top_down, reverse = True, root_stamp = ''):
         cons_line = ''
         line_line = ''
         future_top_down = defaultdict(list)
-        post_bars = []
+        end_bars = []
         span_tale = SpanTale()
         for pid, cid_pos_pairs in sorted(next_top_down.items(), key = lambda x: min(p for _, p in x[1])):
             num_children = len(cid_pos_pairs)
@@ -1023,8 +1023,8 @@ def draw_str_lines(bottom, top_down, reverse = True, root_stamp = ''):
                 _, mid_pos = cid_pos_pairs[0]
                 unit = '│'
                 line_line += ((mid_pos - len(line_line)) * ' ') + unit
-                if mid_pos in temp_bars:
-                    temp_bars.remove(mid_pos)
+                if mid_pos in start_bars:
+                    start_bars.remove(mid_pos)
                 span_tale.add(mid_pos)
             else:
                 mid_pos = 0
@@ -1032,8 +1032,8 @@ def draw_str_lines(bottom, top_down, reverse = True, root_stamp = ''):
                 _, last_pos = cid_pos_pairs[0]
                 start_pos = last_pos
                 for cnt, (_, pos) in enumerate(cid_pos_pairs):
-                    if pos in temp_bars:
-                        temp_bars.remove(pos)
+                    if pos in start_bars:
+                        start_bars.remove(pos)
                     if cnt == 0:
                         unit = LC
                     elif cnt == num_children - 1:
@@ -1044,20 +1044,22 @@ def draw_str_lines(bottom, top_down, reverse = True, root_stamp = ''):
                     last_pos = pos
                 span_tale.add(start_pos, last_pos)
                 mid_pos //= num_children
-                # if mid_pos in post_bars:
-                #     for i in range(1, 10):
-                #         neg = mid_pos - i
-                #         pos = mid_pos + i
-                #         if 0 < neg and neg not in post_bars or \
-                #            pos < pic_width and pos not in post_bars:
-                #             mid_pos = neg
-                #             break
+                offset = 1
+                mid_mid = mid_pos
+                # import pdb; pdb.set_trace()
+                while any(-3 < mid_pos - bar < 3 for bar in start_bars): # avoid existing
+                    mid_pos = mid_mid + offset
+                    if offset > 0:
+                        offset = 0 - offset
+                    else:
+                        offset = 1 - offset
                 unit_half = mid_pos - start_pos
                 if unit[unit_half] == MC:
                     unit = unit[:unit_half] + '┼' + unit[unit_half + 1:]
                 else:
                     unit = unit[:unit_half] + MP + unit[unit_half + 1:]
                 line_line += ((mid_pos - len(line_line)) * ' ')[:-unit_half] + unit
+                # print('Comp:', unit)
             label = top_down[pid].label
             if pid == root_id:
                 label += root_stamp
@@ -1068,7 +1070,7 @@ def draw_str_lines(bottom, top_down, reverse = True, root_stamp = ''):
                 cons_line += ((mid_pos - len(cons_line)) * ' ') + label
             if pid in bottom_up:
                 future_top_down[bottom_up[pid]].append((pid, mid_pos))
-                post_bars.append(mid_pos)
+                end_bars.append(mid_pos)
         
         len_line = len(line_line)
         len_cons = len(cons_line)
@@ -1077,11 +1079,11 @@ def draw_str_lines(bottom, top_down, reverse = True, root_stamp = ''):
         if len_line < pic_width:
             line_line += (pic_width - len_line) * ' '
             cons_line += (pic_width - len_cons) * ' '
-        if temp_bars:
+        if start_bars:
             new_line = ''
             new_cons = ''
             last_pos = 0
-            for pos in sorted(temp_bars):
+            for pos in sorted(start_bars):
                 new_line += line_line[last_pos:pos] + '│'
                 # if pos >= len(cons_line):
                 #     print(prev_line)
@@ -1096,7 +1098,7 @@ def draw_str_lines(bottom, top_down, reverse = True, root_stamp = ''):
                 last_pos = pos + 1
             line_line = new_line + line_line[last_pos:]
             cons_line = new_cons + cons_line[last_pos:]
-        temp_bars.update(post_bars)
+        start_bars.update(end_bars)
 
         str_lines.append(line_line)
         str_lines.append(cons_line)
