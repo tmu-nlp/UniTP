@@ -147,8 +147,9 @@ M_DEVEL = 'devel'
 M_TEST  = 'test'
 M_INFER = 'infer'
 E_MODE = (M_TRAIN, M_DEVEL, M_TEST, M_INFER)
-E_ORIF = 'left', 'right', 'midin', 'midout'
-O_LFT, O_RGT, O_MIN, O_MOT = E_ORIF
+E_ORIF4 = 'left', 'right', 'midin', 'midout'
+E_ORIF3 = E_ORIF4[:3]
+O_LFT, O_RGT, O_MIN, O_MOT = E_ORIF4
 E_CNF = O_LFT, O_RGT
 
 import os

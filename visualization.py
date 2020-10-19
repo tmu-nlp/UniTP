@@ -448,7 +448,7 @@ if desktop:
 
             super().__init__(root)
             self.master.title(fpath.folder)
-            headbox = Listbox(self, relief = SUNKEN)
+            headbox = Listbox(self, relief = SUNKEN, font = 'TkFixedFont')
             sentbox = Listbox(self, relief = SUNKEN)
             self._boxes = headbox, sentbox
             self.initialize_headbox()
@@ -518,6 +518,7 @@ if desktop:
             fnames = fpath.listdir()
             heads = [f for f in fnames if f.startswith('head.') and f.endswith('.pkl')]
             heads.sort(key = get_batch_id)
+            
             if len(heads) == 0:
                 raise ValueError("'%s' is an invalid dir" % fpath.base)
 
@@ -531,6 +532,7 @@ if desktop:
             else:
                 summary_fscores = {}
 
+            max_id_len = len(str(max(summary_fscores.keys())))
             for h in heads:
                 bid = get_batch_id(h)
 
@@ -543,7 +545,9 @@ if desktop:
                         fscores = f'  ≤{f1:.2f}' if df is None else f'  ≤{f1:.2f} ({df:.2f})'
                 else:
                     fscores = ''
-                headbox.insert(END, h[5:-4].replace('_', '.\t<') + fscores)
+                str_bid, length = h[5:-4].split('_')
+                length = '≤' + length
+                headbox.insert(END, str_bid.rjust(max_id_len) + length.rjust(3) + fscores)
             self._fpath_heads = fpath, heads
             self._last_init_time = time()
 
@@ -1704,7 +1708,7 @@ if desktop:
                     data, _ = self._data[tid]
                     lines.append('')
                     lines.extend(get_lines(data, f' (predict-{tid})'))
-                widget = Text(Toplevel(self), wrap = NONE)
+                widget = Text(Toplevel(self), wrap = NONE, font = 'TkFixedFont')
                 widget.insert(END, '\n'.join(lines))
                 widget.config(state = DISABLED)
                 widget.pack(fill = BOTH, expand = YES)

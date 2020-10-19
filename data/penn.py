@@ -1,4 +1,4 @@
-from utils.types import fill_placeholder, M_TRAIN, M_DEVEL, M_TEST, E_ORIF, UNK, NIL, BOS, EOS
+from utils.types import fill_placeholder, M_TRAIN, M_DEVEL, M_TEST, NIL
 from data.io import load_i2vs
 
 SUB = '_SUB'

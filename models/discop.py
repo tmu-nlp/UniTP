@@ -273,7 +273,7 @@ class DiscoStem(nn.Module):
                 if prev.shape == curr.shape and (prev == curr).all():
                     break
                 elif l_cnt == max_iter_n - 1:
-                    print(f'WARNING: Action layers overflow maximun {l_cnt}', file = stderr)
+                    print(f'WARNING: Action layers overflow maximun {l_cnt}', file = stderr, end = '')
                     break
             joint = self._jnt_fn(unit_emb)
             layers_of_joint.append(joint)

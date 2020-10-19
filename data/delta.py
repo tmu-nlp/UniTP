@@ -3,12 +3,12 @@ from array import array
 from copy import deepcopy
 from random import random
 from nltk.tree import Tree
-from utils.types import E_ORIF, NIL
+from utils.types import E_ORIF4, NIL
 from utils.math_ops import s_index, t_index
 
 OrderX = namedtuple('OrderX', 'sorted, left_slice, neutral_slice, right_slice')
 LogitX = namedtuple('LogitX', 'jnt, det, dir, rgt, phs, ftg')
-OriFct = namedtuple('OriFct', E_ORIF)
+OriFct = namedtuple('OriFct', E_ORIF4)
 
 NIL = '<nil>'
 LNR = '<->'

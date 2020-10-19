@@ -405,7 +405,7 @@ def gap_degree(bottom, top_down, nid, bottom_is_bid = True):
     gap_cnt[bit_fanout(bit_coverage) - 1] += 1
     return gap_cnt, bit_coverage
 
-def bracketing(bottom, top_down, nid, bottom_is_bid = True,
+def bracketing(bottom, top_down, nid, bottom_is_bid = False,
                unlabel = None,
                excluded_labels = None,
                equal_labels = None):
@@ -491,7 +491,6 @@ def _pre_proc(bottom_info, top_down, unary_join_mark = '+'):
 
     return word, new_bottom, node2tag, bottom_unary
 
-from random import random
 def _layer_base(bottom, top_down, completed_nodes, some_or_all, lean_joint, cnf_right, sub_suffix):
     bottom_up = {}
     right_hash = {}
@@ -518,7 +517,7 @@ def _layer_base(bottom, top_down, completed_nodes, some_or_all, lean_joint, cnf_
                 if cid == num_children - 1:
                     right = False
                 elif cnf_right is None:
-                    right = random() > (cid / num_children)
+                    right = (cid / num_children) < 0.5
                 else:
                     right = cnf_right
                 if last_nid == nid - 1: # locality
@@ -574,39 +573,41 @@ def _layer_output(bottom,
         if node in right_hash:
             right = right_hash[node]
             if last_right and not right:
-                if nid in joint_rset:
+                if nid in joint_rset: # [>≥]j<
                     assert new_bottom.pop() == last_node
                     new_bottom.append(bottom_up.pop(node))
-                else: # active swap
+                else: # active swap [>≥]s<
                     last_node = new_bottom.pop()
                     new_bottom += [node, last_node]
                     swap_distance = 0
-            elif not last_direc and not right: # passive swap ≥<
-                if swap_distance != 1:
+            elif not last_direc and not right: # passive swap
+                if swap_distance != 1: # o≥s<
                     right_layer[-1] = True
                     last_node = new_bottom.pop()
                     new_bottom += [node, last_node]
                     swap_distance = 0
-                elif swap_right_priority:
+                elif swap_right_priority: # >s[≥]s< restore lhs
+                    right_layer[-1] = True
                     prev_node = new_bottom.pop(-2)
                     new_bottom += [node, prev_node]
                     swap_distance = 0
-                else:
+                else: # ??
                     new_bottom.append(node)
-            else:
+            else: # >
                 new_bottom.append(node)
             directional = True
         else:
             if last_direc:
-                right = cnf_right
-                if last_right and not cnf_right: # passive swap >≤
+                if last_right: # passive swap >s≤
+                    right = False
                     last_node = new_bottom.pop()
                     new_bottom += [node, last_node]
                     swap_distance = 0
-                else:
+                else: # [<]o[≤≥]
+                    right = cnf_right
                     new_bottom.append(node)
-            else:
-                right = last_right
+            else: # [≤≥]o[≤≥] TODO undetermined right
+                right = cnf_right
                 new_bottom.append(node)
             directional = False
         right_layer.append(right)
@@ -636,7 +637,7 @@ def _layer_output(bottom,
 def cross_signals(bottom, node2tag, bottom_unary, top_down, cnf_right,
                   aggressive = True,
                   swap_right_priority = None,
-                  lean_joint = True,
+                  lean_joint = False,
                   sub_prefix = '_',
                   pos_prefix = '#'):
     if swap_right_priority is None:
@@ -693,6 +694,7 @@ from utils.types import E_CNF, O_RGT
 from copy import deepcopy
 def read_tiger_graph(graph):
     bottom_info, top_down, root_id = _read_graph(graph)
+    # ret_top_down = deepcopy(top_down)
     word, bottom, node2tag, bottom_unary = _pre_proc(bottom_info, top_down)
     bottom_tag = [node2tag[t] for t in bottom]
     gap = gap_degree(bottom, top_down, root_id)
@@ -700,7 +702,7 @@ def read_tiger_graph(graph):
     for cnf_factor in E_CNF:
         new_top_down = deepcopy(top_down) if cnf_factor != O_RGT else top_down
         cnf_layers[cnf_factor] = cross_signals(bottom, node2tag, bottom_unary, new_top_down, cnf_factor == O_RGT)
-    return word, bottom_tag, cnf_layers, gap
+    return word, bottom_tag, cnf_layers, gap #, bottom_info, ret_top_down, root_id
 
 def read_disco_penn(tree):
     bottom_info, top_down, root_id = _read_dpenn(tree)
@@ -735,7 +737,13 @@ def explain_error(error_layer, error_id, sent_len):
         error = 'No action was taken'
     return f'len={sent_len}, {error} at layer {error_layer}'
 
-def disco_tree(word, bottom_tag, layers_of_label, layers_of_right, layers_of_joint, layers_of_direc, fall_back_root_label = None):
+def disco_tree(word, bottom_tag, 
+               layers_of_label,
+               layers_of_right,
+               layers_of_joint,
+               layers_of_direc,
+               fall_back_root_label = None,
+               perserve_sub         = False):
     track_nodes = []
     terminals = []
     non_terminals = {}
@@ -745,7 +753,7 @@ def disco_tree(word, bottom_tag, layers_of_label, layers_of_right, layers_of_joi
     NTS = 500
     for tid, wd_tg in enumerate(zip(word, bottom_tag)):
         terminals.append((tid,) + wd_tg)
-        if layers_of_label[0][tid][0] in '#_':
+        if perserve_sub or layers_of_label[0][tid][0] in '#_':
             track_nodes.append(tid)
         else:
             bottom_unary = layers_of_label[0][tid].split('+')
@@ -760,7 +768,7 @@ def disco_tree(word, bottom_tag, layers_of_label, layers_of_right, layers_of_joi
             
     non_terminal_start = NTS
     def _combine(child_node, parent_node, non_terminals, top_down):
-        if child_node < NTS or non_terminals[child_node][0] not in '#_':
+        if perserve_sub or child_node < NTS or non_terminals[child_node][0] not in '#_':
             top_down[parent_node].add(child_node)
             safe_label = None
         else:
@@ -770,17 +778,24 @@ def disco_tree(word, bottom_tag, layers_of_label, layers_of_right, layers_of_joi
         return safe_label
 
     for lid, (lr, lj, ld) in enumerate(zip(layers_of_right, layers_of_joint, layers_of_direc)):
+        # if not (len(lr) == len(ld) == len(lj) + 1 == len(track_nodes)):
+        #     print(f'{len(lr)} == {len(ld)} == {len(lj)} + 1 == {len(lr)}')
+        #     import pdb; pdb.set_trace()
+        # assert len(lr) == len(ld) == len(track_nodes), f'{len(lr)} == {len(ld)} == {len(lr)} @ {lid}'
+        # if lj:
+        #     assert len(lj) + 1 == len(track_nodes), f'{len(lj)} + 1 == {len(lr)} @ {lid}'
         snapshot_track_nodes = track_nodes.copy()
+        offset = 1
         for nid, (right, direc) in enumerate(zip(lr, ld)):
+            lhs_nid = nid - offset
             if nid == 0:
-                offset = 1
+                pass
             elif len(lj) == 0:
                 error_layer_id = lid, E_SHP, bottom_len
                 break # should be the final | unknown action in the model
             elif lj[nid - 1]: # joint
                 if last_right and not right:
                     # >j<
-                    lhs_nid = nid - offset
                     lhs_node = track_nodes.pop(lhs_nid)
                     rhs_node = track_nodes.pop(lhs_nid)
                     try:
@@ -791,7 +806,7 @@ def disco_tree(word, bottom_tag, layers_of_label, layers_of_right, layers_of_joi
                         error_layer_id = lid, E_SHP, bottom_len # TODO change err_type
                         break
                     labels = layers_of_label[lid + 1][lhs_nid]
-                    labels = [labels] if labels[0] in '#_' else labels.split('+')
+                    labels = [labels] if perserve_sub or labels[0] in '#_' else labels.split('+')
                     non_terminals[non_terminal_start] = labels.pop()
                     _combine(lhs_node, non_terminal_start, non_terminals, top_down) # TODO: safe_label validate
                     _combine(rhs_node, non_terminal_start, non_terminals, top_down)
@@ -802,11 +817,14 @@ def disco_tree(word, bottom_tag, layers_of_label, layers_of_right, layers_of_joi
                     track_nodes.insert(lhs_nid, non_terminal_start)
                     non_terminal_start += 1
                     offset += 1
-            elif last_direc and last_right and (not direc or direc and not right) or not last_direc and direc and not right: # cross (swap)
-                # 1: >[<≤≥]
-                # 2: [≤≥]<
-                lhs_nid = nid - offset
+            elif last_right and not right and (last_direc or direc): # cross (swap)
+                # 1: >[<≤]
+                # 2: [>≥]<
+                # last_right and not right: # cross (swap)
+                #layers_of_label[lid][nid-1:nid+1][::-1] == layers_of_label[lid+1][lhs_nid:lhs_nid+2] and\
+                # 1: [≥>][<≤]
                 rhs_nid = lhs_nid + 1
+                # import pdb; pdb.set_trace()
                 track_nodes[lhs_nid], track_nodes[rhs_nid] = track_nodes[rhs_nid], track_nodes[lhs_nid]
 
             last_right = right
@@ -837,7 +855,10 @@ def xlogit_gen(label_layer, right_layer, direc_layer, joint_layer, current_joint
     for nid, (label, right, direc) in enumerate(zip(label_layer, right_layer, direc_layer)):
         is_phrase = label[0] not in '#_'
         is_joint = current_joints and current_joints[nid]
-        if nid and (last_right or not right):
+        if nid == 0:
+            if not right and not direc:
+                next_joints.append(False)
+        elif last_right or not right:
             if joint_layer:
                 jnt = joint_layer[nid - 1] # and last_right and last_direc and not right and direc
                 if not jnt and (last_right and not right):# or last_right and not direc or not last_direc and not right):
@@ -897,7 +918,7 @@ def unzip_swaps(swapbl, offset = 0):
 from data.trapezoid import trapezoid_to_layers
 from numpy import asarray, array
 from data.delta import get_rgt, get_jnt, get_dir
-def unzip_xlogit(cindex, xtypes):
+def unzip_xlogit(cindex, xtypes): #, the_joints, the_labels):
     xtypes = asarray(xtypes)
     rights = get_rgt(xtypes)
     joints = get_jnt(xtypes)
@@ -906,23 +927,30 @@ def unzip_xlogit(cindex, xtypes):
     layers_of_direc = trapezoid_to_layers(direcs, cindex, cindex, big_endian = False)
     layers_of_right = trapezoid_to_layers(rights, cindex, cindex, big_endian = False)
     layers_of_joint = []
-    for lower_rights, upper_joints in zip(layers_of_right, joints[1:]):
+    count = 0
+    for lower_rights, lower_direcs, upper_joints in zip(layers_of_right, layers_of_direc, joints[1:]):
         joint_layer = []
         upper_joints = list(upper_joints)
         upper_joints.reverse() # pop() should be like dequeue
-        for rid, right in enumerate(lower_rights):
+        for rid, (right, direc) in enumerate(zip(lower_rights, lower_direcs)):
             if rid:
-                if not last_right and right:
+                if not last_right and right and rid > 1 and not cnf_left_starter: # <≤≥>
                     joint_layer.append(False)
                 else:
                     joint = upper_joints.pop()
                     joint_layer.append(joint)
-                    if last_right and not right and not joint: # a swap
-                        assert not upper_joints.pop()
+                    if last_right and not right and not joint: # a swap and (last_direc or direc)
+                        assert not upper_joints.pop(), (count, rid)
+                if cnf_left_starter and right:
+                    cnf_left_starter = False
+            else:
+                cnf_left_starter = not right
             last_right = right
-        if upper_joints:
+            last_direc = direc
+        if upper_joints: # cnf_right_ender
             assert not upper_joints.pop()
         layers_of_joint.append(joint_layer)
+        count += 1
               
                 # if joint_layer[-1] != tj[len(joint_layer) - 1]:
                 #     print(' '.join(path))
@@ -1078,6 +1106,7 @@ def draw_str_lines(bottom, top_down, reverse = True, root_stamp = ''):
         # prev_cons = cons_line
         if len_line < pic_width:
             line_line += (pic_width - len_line) * ' '
+        if len_cons < pic_width:
             cons_line += (pic_width - len_cons) * ' '
         if start_bars:
             new_line = ''

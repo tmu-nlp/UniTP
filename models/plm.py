@@ -2,7 +2,6 @@ from utils.types import BaseType
 E_SUB = S_LFT, S_RGT, S_AVG, S_SGT = 'leftmost rightmost average selfgate'.split()
 subword_proc = BaseType(0, as_index = True, default_set = E_SUB)
 
-from transformers import AutoTokenizer, AutoModel
 from models.utils import condense_helper, condense_left
 from models.backend import torch, nn
 class PreLeaves(nn.Module):
@@ -19,6 +18,8 @@ class PreLeaves(nn.Module):
                  paddings,
                  subword_proc):
         super().__init__() #  
+
+        from transformers import AutoModel
         self._pre_model = AutoModel.from_pretrained(model_key_name)
         self._dp_layer = nn.Dropout(drop_out)
         self._activation = activation()
@@ -231,6 +232,7 @@ class XLNetDatasetHelper(PreDatasetHelper):
         # sent <sep> <cls> <pad>
         # 1234   0     0     0   # 0 was truncated
         if cls.tokenizer is None:
+            from transformers import AutoTokenizer
             cls.tokenizer = t = AutoTokenizer.from_pretrained(xlnet_model_key)
             cls.start_end = [], 1, t.pad_token_id
         return object.__new__(cls)
@@ -291,6 +293,7 @@ class GBertDatasetHelper(PreDatasetHelper):
     @classmethod
     def __new__(cls, *args, **kwargs):
         if cls.tokenizer is None:
+            from transformers import AutoTokenizer
             cls.tokenizer = t = AutoTokenizer.from_pretrained(gbert_model_key)
             cls.start_end = [False], 0, t.pad_token_id
         return object.__new__(cls)

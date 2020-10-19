@@ -157,7 +157,7 @@ def build(save_to_dir,
           **kwargs):
     from multiprocessing import Process, Queue # seamless with threading.Thread
     from data.delta import DeltaX, bottom_up_ftags, xtype_to_logits, lnr_order, OriFct
-    from utils.types import E_ORIF, O_LFT, O_RGT, M_TRAIN, M_DEVEL, M_TEST, num_threads
+    from utils.types import E_ORIF4, O_LFT, O_RGT, M_TRAIN, M_DEVEL, M_TEST, num_threads
     from itertools import count
     from time import sleep
 
@@ -182,7 +182,7 @@ def build(save_to_dir,
             valid_length_cnt = defaultdict(int)
             test_length_cnt  = defaultdict(int)
             non_train_set = devel_set + test_set
-            lrcs = [[0, 0] for _ in E_ORIF]
+            lrcs = [[0, 0] for _ in E_ORIF4]
             word_trace = corp_name == C_KTB
 
             def stat_is_unary(sent_len, fid, sid):
@@ -244,9 +244,9 @@ def build(save_to_dir,
     from utils.file_io import create_join
     from data.io import save_vocab, sort_count
     tok_cnt, pos_cnt, ftag_cnt  = Counter(), Counter(), Counter()
-    xty_cnts = [Counter() for _ in E_ORIF]
-    syn_cnts = [Counter() for _ in E_ORIF]
-    lrcs = [[0, 0] for _ in E_ORIF]
+    xty_cnts = [Counter() for _ in E_ORIF4]
+    syn_cnts = [Counter() for _ in E_ORIF4]
+    lrcs = [[0, 0] for _ in E_ORIF4]
     train_word_cnt = Counter()
     unary_counters = []
     train_length_cnt, valid_length_cnt, test_length_cnt = Counter(), Counter(), Counter()
@@ -265,12 +265,12 @@ def build(save_to_dir,
         f_p  = stack.enter_context(open(join(save_to_dir, M_TEST  + '.tag'),  'w'))
         f_f  = stack.enter_context(open(join(save_to_dir, M_TEST  + '.ftag'), 'w'))
         f_s  = stack.enter_context(open(join(save_to_dir, M_TEST  + '.finc'), 'w'))
-        ftxs = [stack.enter_context(open(join(save_to_dir, f'{M_TRAIN}.xtype.{o}'), 'w')) for o in E_ORIF]
-        ftls = [stack.enter_context(open(join(save_to_dir, f'{M_TRAIN}.label.{o}'), 'w')) for o in E_ORIF]
-        fvxs = [stack.enter_context(open(join(save_to_dir, f'{M_DEVEL}.xtype.{o}'), 'w')) for o in E_ORIF]
-        fvls = [stack.enter_context(open(join(save_to_dir, f'{M_DEVEL}.label.{o}'), 'w')) for o in E_ORIF]
-        f_xs = [stack.enter_context(open(join(save_to_dir, f'{M_TEST}.xtype.{o}' ), 'w')) for o in E_ORIF]
-        f_ls = [stack.enter_context(open(join(save_to_dir, f'{M_TEST}.label.{o}' ), 'w')) for o in E_ORIF]
+        ftxs = [stack.enter_context(open(join(save_to_dir, f'{M_TRAIN}.xtype.{o}'), 'w')) for o in E_ORIF4]
+        ftls = [stack.enter_context(open(join(save_to_dir, f'{M_TRAIN}.label.{o}'), 'w')) for o in E_ORIF4]
+        fvxs = [stack.enter_context(open(join(save_to_dir, f'{M_DEVEL}.xtype.{o}'), 'w')) for o in E_ORIF4]
+        fvls = [stack.enter_context(open(join(save_to_dir, f'{M_DEVEL}.label.{o}'), 'w')) for o in E_ORIF4]
+        f_xs = [stack.enter_context(open(join(save_to_dir, f'{M_TEST}.xtype.{o}' ), 'w')) for o in E_ORIF4]
+        f_ls = [stack.enter_context(open(join(save_to_dir, f'{M_TEST}.label.{o}' ), 'w')) for o in E_ORIF4]
 
         for instance_cnt in count(): # Yes! this edition works fine!
             if q.empty():
@@ -361,7 +361,7 @@ def build(save_to_dir,
         print("Unary:", unary_info, file = stderr)
     pickle_dump(join(save_to_dir, 'info.pkl'), dict(tlc = train_length_cnt, vlc = valid_length_cnt, _lc = test_length_cnt, unary = unary_info, cnf = cnf_diff))
 
-    left, right = E_ORIF.index(O_LFT), E_ORIF.index(O_RGT)
+    left, right = E_ORIF4.index(O_LFT), E_ORIF4.index(O_RGT)
     syn_left_cnt  = syn_cnts[left]
     syn_right_cnt = syn_cnts[right]
     if syn_left_cnt.keys() != syn_right_cnt.keys():
@@ -390,7 +390,7 @@ def build(save_to_dir,
     _,  ss = save_vocab(syn_file, syn_cnt, [NIL])
     _,  fs = save_vocab(ftag_file, ftag_cnt)
     _,  xs = save_vocab(xty_file, xty_cnt, lnr_order(xty_cnt)[0])
-    for o, xcs, scs, lbc in zip(E_ORIF, xty_cnts, syn_cnts, lrcs):
+    for o, xcs, scs, lbc in zip(E_ORIF4, xty_cnts, syn_cnts, lrcs):
         xcs['ling-lb'] = lbc[0]
         xcs['ling-rb'] = lbc[1]
         save_vocab(join(save_to_dir, f'stat.xtype.{o}'), xcs, lnr_order(xcs)[0])

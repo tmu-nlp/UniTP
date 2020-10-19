@@ -357,7 +357,6 @@ class DiscoVis(BaseVis):
         
         evalb = DiscoEvalb()
         data = zip(d_seq_len, h_token, d_tag, d_label, d_right, d_joint, d_direc)
-        # import pdb; pdb.set_trace()
         data, trees, errors = batch_trees(bid_offset, data, d_segment, i2vs, 'VROOT', v_errors = self._v_errors, v_trees = vd_lines_args, **self._evalb_lcfrs_kwargs)
         scores = []
         self._evalb.add_batch_line(batch_id)
@@ -372,7 +371,6 @@ class DiscoVis(BaseVis):
             smy[(batch_id, self.epoch)] = dict(F1 = tf, DF = df)
             pickle_dump(fname, smy)
 
-        # TODO: mpc_word, mpc_phrase, warning, scores, tag_score, label_score, right_score, joint_score, summary
         if self.save_tensors:
             self._dtv.set_data(batch_id, self.epoch, h_token, d_tag, d_label, d_right, d_joint, d_direc, trees, d_segment, d_seq_len, mpc_word, mpc_phrase, errors, scores, tag_score, label_score, right_score, joint_score, direc_score)
 
