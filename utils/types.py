@@ -148,8 +148,9 @@ M_TEST  = 'test'
 M_INFER = 'infer'
 E_MODE = (M_TRAIN, M_DEVEL, M_TEST, M_INFER)
 E_ORIF4 = 'left', 'right', 'midin', 'midout'
-E_ORIF3 = E_ORIF4[:3]
 O_LFT, O_RGT, O_MIN, O_MOT = E_ORIF4
+O_M25, O_M75 = O_MIN + '25', O_MIN + '75'
+E_ORIF5 = O_LFT, O_M25, O_MIN, O_M75, O_RGT
 E_CNF = O_LFT, O_RGT
 
 import os
@@ -162,4 +163,4 @@ binarization = {O_LFT: frac_7,
                 O_RGT: frac_1,
                 O_MIN: frac_1,
                 O_MOT: frac_1}
-binarization_cnf = {O_LFT: frac_7, O_RGT: frac_3}
+binarization_5 = {o: frac_2 for o in E_ORIF5}

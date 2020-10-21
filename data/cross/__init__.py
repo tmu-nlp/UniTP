@@ -491,14 +491,55 @@ def _pre_proc(bottom_info, top_down, unary_join_mark = '+'):
 
     return word, new_bottom, node2tag, bottom_unary
 
-def _layer_base(bottom, top_down, completed_nodes, some_or_all, lean_joint, cnf_right, sub_suffix):
+def locations(node, bottom, top_down, consumed_top_down):
+    locs = []
+    children = consumed_top_down[node] if node in consumed_top_down else top_down[node].children
+    for cid in children:
+        if cid in bottom:
+            locs.append(bottom.index(cid))
+        else:
+            locs.extend(locations(cid, bottom, top_down, consumed_top_down))
+    return locs
+
+from random import random
+def _layer_base(bottom, top_down, completed_nodes, some_or_all, lean_joint, factor, sub_suffix):
     bottom_up = {}
     right_hash = {}
     swappable_locations = []
     joint_rset = []
     bottom_flag = [True for _ in bottom]
+    soft_right = {}
+    consumed_top_down = {}
     for p_node, td in top_down.items():
-        if p_node in completed_nodes or not some_or_all(node in bottom for node in td.children):
+        p_node_complete = p_node in completed_nodes
+        not_enough_child = not some_or_all(node in bottom for node in td.children)
+        if p_node_complete or not_enough_child:
+            if not p_node_complete and not_enough_child:
+                existing_nodes = []
+                shadow_locations = []
+                for node in td.children:
+                    # import pdb; pdb.set_trace()
+                    if node in bottom:
+                        existing_nodes.append(node)
+                    else:
+                        shadow_locations.extend(locations(node, bottom, top_down, consumed_top_down))
+                for node in existing_nodes:
+                    loc = bottom.index(node)
+                    candidates = []
+                    for sloc in shadow_locations:
+                        diff = sloc - loc
+                        candidates.append((diff if diff > 0 else -diff, diff))
+                    # import pdb; pdb.set_trace()
+                    if len(candidates) > 1:
+                        candidates.sort()
+                        if candidates[0][0] == candidates[1][0]:
+                            closest = candidates[randint(0, 1)][1]
+                        else:
+                            closest = candidates[0][1]
+                    else:
+                        closest = candidates[0][1]
+                    soft_right[node] = closest > 0
+                # import pdb; pdb.set_trace()
             continue
         
         location = []
@@ -516,10 +557,12 @@ def _layer_base(bottom, top_down, completed_nodes, some_or_all, lean_joint, cnf_
             else:
                 if cid == num_children - 1:
                     right = False
-                elif cnf_right is None:
-                    right = (cid / num_children) < 0.5
                 else:
-                    right = cnf_right
+                    position = 1 - (cid + 0.5) / num_children
+                    if position == factor == 0.5:
+                        right = random() > 0.5
+                    else:
+                        right = position > factor # T[TfF]F
                 if last_nid == nid - 1: # locality
                     assert last_right or not right # coherent
                     if not lean_joint:
@@ -540,12 +583,13 @@ def _layer_base(bottom, top_down, completed_nodes, some_or_all, lean_joint, cnf_
                         bottom_up[node] = new_node
                         group[new_node] = group.pop(last_node) + '.' + group.pop(node)
                         bottom_flag[last_nid] = False
+                        consumed_top_down[new_node] = last_node, node
                     bottom_flag[nid] = False
                     
             right_hash[node] = last_right = right
             last_nid = nid
             last_node = node
-    return right_hash, joint_rset, swappable_locations, bottom_up
+    return right_hash, joint_rset, swappable_locations, bottom_up, soft_right
 
 def _layer_output(bottom,
                   bottom_up,
@@ -554,8 +598,9 @@ def _layer_output(bottom,
                   bottom_unary,
                   right_hash,
                   joint_rset,
-                  swap_right_priority,
-                  cnf_right,
+                  soft_right,
+                  swap_rhs_priority,
+                  factor,
                   sub_prefix,
                   sub_suffix,
                   pos_prefix):
@@ -586,7 +631,7 @@ def _layer_output(bottom,
                     last_node = new_bottom.pop()
                     new_bottom += [node, last_node]
                     swap_distance = 0
-                elif swap_right_priority: # >s[≥]s< restore lhs
+                elif swap_rhs_priority: # >s[≥]s< restore lhs
                     right_layer[-1] = True
                     prev_node = new_bottom.pop(-2)
                     new_bottom += [node, prev_node]
@@ -604,10 +649,10 @@ def _layer_output(bottom,
                     new_bottom += [node, last_node]
                     swap_distance = 0
                 else: # [<]o[≤≥]
-                    right = cnf_right
+                    right = soft_right.get(node, factor > 0.5)
                     new_bottom.append(node)
             else: # [≤≥]o[≤≥] TODO undetermined right
-                right = cnf_right
+                right = soft_right.get(node, factor > 0.5)
                 new_bottom.append(node)
             directional = False
         right_layer.append(right)
@@ -634,14 +679,15 @@ def _layer_output(bottom,
     return new_bottom, right_layer, joint_layer, label_layer, direc_layer
 
 
-def cross_signals(bottom, node2tag, bottom_unary, top_down, cnf_right,
+def cross_signals(bottom, node2tag, bottom_unary, top_down, factor,
                   aggressive = True,
-                  swap_right_priority = None,
+                  swap_rhs_priority = None,
                   lean_joint = False,
                   sub_prefix = '_',
                   pos_prefix = '#'):
-    if swap_right_priority is None:
-        swap_right_priority = not cnf_right
+    if swap_rhs_priority is None: # 
+        # assert isinstance(factor, bool)
+        swap_rhs_priority = factor > 0.5
 
     some_or_all = has_multiple if aggressive else all
     sub_suffix = '.'
@@ -653,14 +699,14 @@ def cross_signals(bottom, node2tag, bottom_unary, top_down, cnf_right,
     layers_of_swaps = []
     completed_nodes = set()
     while len(bottom) > 1:
-        (right_hash, joint_rset, swappable_locations,
-         bottom_up) = _layer_base(bottom,
-                                  top_down,
-                                  completed_nodes,
-                                  some_or_all,
-                                  lean_joint,
-                                  cnf_right,
-                                  sub_suffix)
+        (right_hash, joint_rset, swappable_locations, bottom_up,
+         soft_right) = _layer_base(bottom,
+                                   top_down,
+                                   completed_nodes,
+                                   some_or_all,
+                                   lean_joint,
+                                   factor,
+                                   sub_suffix)
 
         (new_bottom, right_layer, joint_layer, label_layer,
          direc_layer) = _layer_output(bottom,
@@ -670,8 +716,9 @@ def cross_signals(bottom, node2tag, bottom_unary, top_down, cnf_right,
                                       bottom_unary,
                                       right_hash,
                                       joint_rset,
-                                      swap_right_priority,
-                                      cnf_right,
+                                      soft_right,
+                                      swap_rhs_priority,
+                                      factor,
                                       sub_prefix,
                                       sub_suffix,
                                       pos_prefix)
@@ -685,12 +732,12 @@ def cross_signals(bottom, node2tag, bottom_unary, top_down, cnf_right,
         layers_of_swaps.append(swappable_locations)
 
     if top_down:
-        layers_of_right.append([cnf_right])
+        layers_of_right.append([factor > 0.5])
         layers_of_direc.append([False])
         layers_of_label.append([top_down[bottom.pop()].label])
     return layers_of_label, layers_of_right, layers_of_joint, layers_of_direc, layers_of_swaps
 
-from utils.types import E_CNF, O_RGT
+from utils.types import E_ORIF5, O_RGT
 from copy import deepcopy
 def read_tiger_graph(graph):
     bottom_info, top_down, root_id = _read_graph(graph)
@@ -699,10 +746,10 @@ def read_tiger_graph(graph):
     bottom_tag = [node2tag[t] for t in bottom]
     gap = gap_degree(bottom, top_down, root_id)
     cnf_layers = {}
-    for cnf_factor in E_CNF:
+    for oid, cnf_factor in enumerate(E_ORIF5):
         new_top_down = deepcopy(top_down) if cnf_factor != O_RGT else top_down
-        cnf_layers[cnf_factor] = cross_signals(bottom, node2tag, bottom_unary, new_top_down, cnf_factor == O_RGT)
-    return word, bottom_tag, cnf_layers, gap #, bottom_info, ret_top_down, root_id
+        cnf_layers[cnf_factor] = cross_signals(bottom, node2tag, bottom_unary, new_top_down, (oid + 0.5) / 5)
+    return word, bottom_tag, cnf_layers, gap#, bottom_info, ret_top_down, root_id
 
 def read_disco_penn(tree):
     bottom_info, top_down, root_id = _read_dpenn(tree)
@@ -710,10 +757,58 @@ def read_disco_penn(tree):
     bottom_tag = [node2tag[t] for t in bottom]
     gap = gap_degree(bottom, top_down, root_id)
     cnf_layers = {}
-    for cnf_factor in E_CNF:
+    for oid, cnf_factor in enumerate(E_ORIF5):
         new_top_down = deepcopy(top_down) if cnf_factor != O_RGT else top_down
-        cnf_layers[cnf_factor] = cross_signals(bottom, node2tag, bottom_unary, new_top_down, cnf_factor == O_RGT)
+        cnf_layers[cnf_factor] = cross_signals(bottom, node2tag, bottom_unary, new_top_down, (oid + 0.5) / 5)
     return word, bottom_tag, cnf_layers, gap
+
+from data.cross.evalb_lcfrs import DiscoEvalb
+from random import randint
+class MidinTreeKeeper:
+    @classmethod
+    def from_graph(cls, graph):
+        return cls(*_read_graph(graph))
+
+    @classmethod
+    def from_tree(cls, tree):
+        return cls(*_read_dpenn(tree))
+
+    def __init__(self, bottom_info, top_down, root_id):
+        # print('\n'.join(draw_str_lines(bottom_info, top_down)))
+        # g_brackets = bracketing(bottom_info, top_down, root_id)
+        # self._evalb = DiscoEvalb(), set(bottom_info), g_brackets
+        word, bottom, node2tag, bottom_unary = _pre_proc(bottom_info, top_down)
+        self._word = word
+        self._bottom_tags = [node2tag[t] for t in bottom]
+        self._root_id = root_id
+        self._top_down = top_down
+        self._max_sub = max(len(td.children) for td in top_down.values()) # >= 2
+        self._args = bottom, node2tag, bottom_unary
+
+    def binarize(self, factor):
+        return self._word, self._bottom_tags, cross_signals(*self._args, deepcopy(self._top_down), factor)
+
+    def sample(self):
+        factor = randint(1, self._max_sub - 1) / self._max_sub
+        return self._word, self._bottom_tags, cross_signals(*self._args, deepcopy(self._top_down), factor)
+
+    def __str__(self):
+        lines = ''
+        # evalb, g_tags, g_brackets = self._evalb
+        for i in range(self._max_sub - 1):
+            factor = (i + 1) / self._max_sub
+            args = cross_signals(*self._args, deepcopy(self._top_down), factor)[:4]
+            # evalb_args = disco_tree(self._word, self._bottom_tags, *args)[:3]
+            args = disco_tree(self._word, self._bottom_tags, *args, perserve_sub = True)[:2]
+            lines += f'factor = {factor}\n  '
+            lines += '\n  '.join(draw_str_lines(*args))
+            lines += '\n'
+        #     p_tags = set(evalb_args[0])
+        #     p_brackets = bracketing(*evalb_args)
+        #     evalb.add(p_brackets, p_tags, g_brackets, g_tags)
+        # lines += str(evalb.summary())
+        # assert sum(evalb.summary()[:3]) == 300, evalb.summary()
+        return lines
 
 def targets(right_layer, joint_layer):
     targets = [1 for _ in right_layer]
@@ -947,7 +1042,7 @@ def unzip_xlogit(cindex, xtypes): #, the_joints, the_labels):
                 cnf_left_starter = not right
             last_right = right
             last_direc = direc
-        if upper_joints: # cnf_right_ender
+        if upper_joints: # factor_ender
             assert not upper_joints.pop()
         layers_of_joint.append(joint_layer)
         count += 1

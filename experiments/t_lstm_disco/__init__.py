@@ -27,7 +27,7 @@ def get_configs(recorder = None):
             datasets[C_ABSTRACT] = reader.batch(M_TRAIN, disco.batch_size, disco.bucket_len, train_cnf,
                                                 shuffle_swap = disco.shuffle_swap, max_len = disco.max_len, sort_by_length = disco.sort_by_length)
         else:
-            datasets[C_ABSTRACT] = reader.batch(mode, disco.batch_size, 0, non_train_cnf, max_len = disco.max_len)
+            datasets[C_ABSTRACT] = reader.batch(mode, disco.batch_size, 0, non_train_cnf)
         return datasets
 
     task_params = {pname: reader.get_to_model(pname) for pname in ('initial_weights', 'num_tokens', 'num_tags', 'num_labels', 'paddings')}

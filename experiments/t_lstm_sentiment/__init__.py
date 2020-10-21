@@ -74,14 +74,14 @@ def get_configs(recorder = None):
             datasets[C_SSTB] = stan_reader.batch(M_TRAIN, stan.batch_size, stan.bucket_len,
                                                 max_len = stan.max_len, sort_by_length = stan.sort_by_length)
         else:
-            datasets[C_SSTB] = stan_reader.batch(mode, stan.batch_size, 0, max_len = stan.max_len)
+            datasets[C_SSTB] = stan_reader.batch(mode, stan.batch_size, 0)
 
         if penn_reader is not None:
             if mode == M_TRAIN:
                 datasets[C_PTB] = penn_reader.batch(M_TRAIN, penn.batch_size, penn.bucket_len, train_cnf,
                                                     max_len = penn.max_len, sort_by_length = penn.sort_by_length)
             else:
-                datasets[C_PTB] = penn_reader.batch(mode, penn.batch_size, 0, non_train_cnf, max_len = penn.max_len)
+                datasets[C_PTB] = penn_reader.batch(mode, penn.batch_size, 0, non_train_cnf)
         return datasets
 
     model = StanRnnTree(**model_config, **task_params)

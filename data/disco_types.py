@@ -5,15 +5,15 @@ E_DISCO = C_TGR, C_DPTB
 
 from data.io import make_call_fasttext, check_fasttext, check_vocab, split_dict
 build_params = {C_DPTB: split_dict(   '2-21',          '22',          '23'),
-                C_TGR:  split_dict('1-18602', '18603-19603', '19603-20603')}
+                C_TGR:  split_dict('1-40474', '40475-45474', '45475-50474')}
                 # C_KTB: dict(train_set = 'non_numeric_naming') }
 ft_bin = {C_DPTB: 'en', C_TGR: 'de'}
 call_fasttext = make_call_fasttext(ft_bin)
 
-from utils.types import none_type, false_type, true_type, binarization_cnf, NIL
+from utils.types import none_type, false_type, true_type, binarization_5, NIL
 from utils.types import train_batch_size, train_max_len, train_bucket_len, vocab_size
 disco_config = dict(vocab_size     = vocab_size,
-                    binarization   = binarization_cnf,
+                    binarization   = binarization_5,
                     batch_size     = train_batch_size,
                     max_len        = train_max_len,
                     bucket_len     = train_bucket_len,
@@ -44,7 +44,7 @@ def build(save_to_dir,
     from utils.shell_io import byte_style
     from data.io import SourcePool, distribute_jobs
     from multiprocessing import Process, Queue
-    from utils.types import E_CNF, O_LFT, O_RGT, M_TRAIN, M_DEVEL, M_TEST, num_threads
+    from utils.types import E_ORIF5, M_TRAIN, M_DEVEL, M_TEST, num_threads
     from contextlib import ExitStack
     from time import sleep
     from data.delta import logits_to_xtype
@@ -58,9 +58,10 @@ def build(save_to_dir,
             errors   = []
             word_cnt = Counter()
             tag_cnt  = Counter()
-            gap_cnt  = Counter()
-            label_cnts = {o: Counter() for o in E_CNF}
-            xtype_cnts = {o: Counter() for o in E_CNF}
+            sent_gap_cnt   = defaultdict(int)
+            phrase_gap_cnt = Counter()
+            label_cnts = {o: Counter() for o in E_ORIF5}
+            xtype_cnts = {o: Counter() for o in E_ORIF5}
             q, sents, read_func = self._args
             for sent_tag, sent in sents:
                 try:
@@ -84,7 +85,8 @@ def build(save_to_dir,
                     swapbl = zip_swaps(lsp) + '\n'
                     cnf_bundle[cnf_factor] = cindex, labels, xtypes, swapbl
 
-                gap_cnt += Counter(gd.values())
+                phrase_gap_cnt += Counter(gd.values())
+                sent_gap_cnt[max(gd.values())] += 1
                 word_cnt += Counter(wd)
                 tag_cnt  += Counter(bt)
                 wd = ' '.join(wd) + '\n'
@@ -92,7 +94,7 @@ def build(save_to_dir,
                 bundle = sent_tag, len(wd), wd, bt, cnf_bundle
                 q.put(bundle)
 
-            bundle = len(sents) - len(errors), errors, word_cnt, tag_cnt, label_cnts, xtype_cnts, gap_cnt
+            bundle = len(sents) - len(errors), errors, word_cnt, tag_cnt, label_cnts, xtype_cnts, phrase_gap_cnt, sent_gap_cnt
             q.put(bundle)
 
     if corp_name == C_DPTB:
@@ -147,9 +149,10 @@ def build(save_to_dir,
     thread_join_cnt = 0
     word_cnt = Counter()
     tag_cnt  = Counter()
-    gap_cnt  = Counter()
-    label_cnts = {o: Counter() for o in E_CNF}
-    xtype_cnts = {o: Counter() for o in E_CNF}
+    sent_gap_cnt   = Counter()
+    phrase_gap_cnt = Counter()
+    label_cnts = {o: Counter() for o in E_ORIF5}
+    xtype_cnts = {o: Counter() for o in E_ORIF5}
     length_stat = dict(tlc = defaultdict(int), vlc = defaultdict(int), _lc = defaultdict(int))
     with ExitStack() as stack, tqdm(desc = f'  Receiving samples from {num_threads} threads') as qbar:
         ftw  = stack.enter_context(open(join(save_to_dir, M_TRAIN + '.word'), 'w'))
@@ -158,16 +161,16 @@ def build(save_to_dir,
         fvp  = stack.enter_context(open(join(save_to_dir, M_DEVEL + '.tag'),  'w'))
         f_w  = stack.enter_context(open(join(save_to_dir, M_TEST  + '.word'), 'w'))
         f_p  = stack.enter_context(open(join(save_to_dir, M_TEST  + '.tag'),  'w'))
-        ftxs = { o:stack.enter_context(open(join(save_to_dir, f'{M_TRAIN}.xtype.{o}'), 'w')) for o in E_CNF}
-        ftls = { o:stack.enter_context(open(join(save_to_dir, f'{M_TRAIN}.label.{o}'), 'w')) for o in E_CNF}
-        ftis = { o:stack.enter_context(open(join(save_to_dir, f'{M_TRAIN}.index.{o}'), 'w')) for o in E_CNF}
-        ftss = { o:stack.enter_context(open(join(save_to_dir, f'{M_TRAIN}.swap.{o}' ), 'w')) for o in E_CNF}
-        fvxs = { o:stack.enter_context(open(join(save_to_dir, f'{M_DEVEL}.xtype.{o}'), 'w')) for o in E_CNF}
-        fvls = { o:stack.enter_context(open(join(save_to_dir, f'{M_DEVEL}.label.{o}'), 'w')) for o in E_CNF}
-        fvis = { o:stack.enter_context(open(join(save_to_dir, f'{M_DEVEL}.index.{o}'), 'w')) for o in E_CNF}
-        f_xs = { o:stack.enter_context(open(join(save_to_dir, f'{M_TEST}.xtype.{o}' ), 'w')) for o in E_CNF}
-        f_ls = { o:stack.enter_context(open(join(save_to_dir, f'{M_TEST}.label.{o}' ), 'w')) for o in E_CNF}
-        f_is = { o:stack.enter_context(open(join(save_to_dir, f'{M_TEST}.index.{o}' ), 'w')) for o in E_CNF}
+        ftxs = { o:stack.enter_context(open(join(save_to_dir, f'{M_TRAIN}.xtype.{o}'), 'w')) for o in E_ORIF5}
+        ftls = { o:stack.enter_context(open(join(save_to_dir, f'{M_TRAIN}.label.{o}'), 'w')) for o in E_ORIF5}
+        ftis = { o:stack.enter_context(open(join(save_to_dir, f'{M_TRAIN}.index.{o}'), 'w')) for o in E_ORIF5}
+        ftss = { o:stack.enter_context(open(join(save_to_dir, f'{M_TRAIN}.swap.{o}' ), 'w')) for o in E_ORIF5}
+        fvxs = { o:stack.enter_context(open(join(save_to_dir, f'{M_DEVEL}.xtype.{o}'), 'w')) for o in E_ORIF5}
+        fvls = { o:stack.enter_context(open(join(save_to_dir, f'{M_DEVEL}.label.{o}'), 'w')) for o in E_ORIF5}
+        fvis = { o:stack.enter_context(open(join(save_to_dir, f'{M_DEVEL}.index.{o}'), 'w')) for o in E_ORIF5}
+        f_xs = { o:stack.enter_context(open(join(save_to_dir, f'{M_TEST}.xtype.{o}' ), 'w')) for o in E_ORIF5}
+        f_ls = { o:stack.enter_context(open(join(save_to_dir, f'{M_TEST}.label.{o}' ), 'w')) for o in E_ORIF5}
+        f_is = { o:stack.enter_context(open(join(save_to_dir, f'{M_TEST}.index.{o}' ), 'w')) for o in E_ORIF5}
         
         for _ in count(): # Yes! this edition works fine!
             if q.empty():
@@ -195,9 +198,9 @@ def build(save_to_dir,
                         if fss is not None:
                             fss[cnf_factor].write(swaps)
                     qbar.update(1)
-                elif len(t) == 7:
+                elif len(t) == 8:
                     thread_join_cnt += 1
-                    ic, es, wc, tc, lcs, xcs, gc = t
+                    ic, es, wc, tc, lcs, xcs, pgc, sgc = t
                     if qbar.total:
                         qbar.total += ic
                     else:
@@ -205,8 +208,9 @@ def build(save_to_dir,
                     errors.extend(es)
                     word_cnt += wc
                     tag_cnt  += tc
-                    gap_cnt  += gc
-                    for o in E_CNF:
+                    phrase_gap_cnt += pgc
+                    sent_gap_cnt   += sgc
+                    for o in E_ORIF5:
                         label_cnts[o] += lcs[o]
                         xtype_cnts[o] += xcs[o]
                     qbar.desc = f'  {thread_join_cnt} of {num_threads} threads ended with {qbar.total} samples, receiving'
@@ -224,13 +228,14 @@ def build(save_to_dir,
         qbar.desc = (f'All {thread_str} threads ended with {sample_str} samples, {error_str0} errors{error_str1}')
         instance_cnt = qbar.total
 
-    non_gap = gap_cnt.pop(0)
+    non_gap = sent_gap_cnt.pop(0)
     non_gap_percentage = byte_style(f'{100 - non_gap / instance_cnt * 100:.2f} % ({instance_cnt - non_gap})', '2')
     print(f'Gap degree distribution among {non_gap_percentage} trees which contain gaps:', file = stderr)
-    print(histo_count(gap_cnt, bin_size = 1 if corp_name == C_DPTB else 2), file = stderr)
-    gap_cnt[0] = non_gap
+    print(histo_count(sent_gap_cnt, bin_size = 3 if corp_name == C_DPTB else 2), file = stderr)
+    sent_gap_cnt[0] = non_gap
 
-    length_stat['gap'] = gap_cnt
+    length_stat['gap'] = sent_gap_cnt
+    length_stat['phrase.gap'] = phrase_gap_cnt
     pickle_dump(join(save_to_dir, 'info.pkl'), length_stat)
     tok_file = join(save_to_dir, 'vocab.word')
     tag_file = join(save_to_dir, 'vocab.tag' )
@@ -239,9 +244,9 @@ def build(save_to_dir,
     # ftag_file = join(save_to_dir, 'vocab.ftag')
     _, ts = save_vocab(tok_file, word_cnt, [NIL])
     _, ps = save_vocab(tag_file, tag_cnt,  [NIL])
-    _, ss = save_vocab(syn_file, label_cnts[O_LFT] + label_cnts[O_RGT], [NIL])
-    _, xs = save_vocab(xty_file, xtype_cnts[O_LFT] + xtype_cnts[O_RGT])
-    for o in E_CNF:
+    _, ss = save_vocab(syn_file, sum(label_cnts.values(), Counter()), [NIL])
+    _, xs = save_vocab(xty_file, sum(xtype_cnts.values(), Counter()))
+    for o in E_ORIF5:
         save_vocab(join(save_to_dir, f'stat.xtype.{o}'), xtype_cnts[o])
         save_vocab(join(save_to_dir, f'stat.label.{o}'), label_cnts[o])
     from data.disco import DiscoReader

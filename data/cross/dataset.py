@@ -9,7 +9,7 @@ from itertools import zip_longest
 
 fields = 'token', 'tag'
 
-class CrossDataset(LengthOrderedDataset):
+class StaticCrossDataset(LengthOrderedDataset):
     def __init__(self,
                  dir_join,
                  prefix,
@@ -221,3 +221,15 @@ class CrossDataset(LengthOrderedDataset):
             self._swap_cache = None # clear batch
             field_columns['swap'] = [torch.as_tensor(x, dtype = torch.long, device = self._device) for x in swappers]
         return field_columns
+
+
+# class DynamicCrossDataset(LengthOrderedDataset):
+#     def __init__(self,
+#                  dir_join,
+#                  trees,
+#                  field_v2is,
+#                  device,
+#                  factors  = None,
+#                  min_len  = 0,
+#                  max_len  = None,
+#                  extra_text_helper = None):

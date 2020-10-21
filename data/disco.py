@@ -51,6 +51,6 @@ class DiscoReader(WordBaseReader):
                            extra_text_helper = extra_text_helper,
                            train_indexing_cnn = train_indexing_cnn)
 
-        from data.cross.dataset import CrossDataset
-        len_sort_ds = CrossDataset(self.dir_join, mode, **common_args)
+        from data.cross.dataset import StaticCrossDataset
+        len_sort_ds = StaticCrossDataset(self.dir_join, mode, **common_args)
         return post_batch(mode, len_sort_ds, sort_by_length, bucket_length, batch_size)
