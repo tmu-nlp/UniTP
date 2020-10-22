@@ -1487,7 +1487,7 @@ if desktop:
             stat.make(self._conf.show_paddings, self._conf.pc_x, self._conf.pc_y)
             is_continuous = 'offset' in data._fields
             if is_continuous:
-                self.__draw_board(data, stat, fg_color, to_color)
+                board_item_coord, level_unit = self.__draw_board(data, stat, fg_color, to_color)
 
                 if len_score == 12: # conti. parsing
                     title += ' |  ' + '  '.join(i+f'({data.scores[j]})' for i, j in zip(('len.', 'P.', 'R.', 'tag.'), (1, 3, 4, 11)))
@@ -1496,10 +1496,21 @@ if desktop:
             else:
                 tm, tp, tg, dm, dp, dg, mt, gt = data.scores
                 title += f' |  ({tp}>{tm}<{tg}) ({dp}>{dm}<{dg}) ({mt}<{gt})'
-                self.__draw_board_x(data, stat, fg_color, x_fg, to_color)
+                board_item_coord, level_unit = self.__draw_board_x(data, stat, fg_color, x_fg, to_color)
+
+            if self._spotlight_subjects:
+                self._spotlight_subjects = (board_item_coord, self._conf.word_width, level_unit) + self._spotlight_subjects[-3:]
+            else:
+                self._spotlight_subjects = board_item_coord, self._conf.word_width, level_unit, None, None, None
+
             if self._conf.statistics:
                 if is_continuous:
-                    self.__draw_stat_board(data.label, data.offset, data.length, stat, stat_fg, stat_bg, to_color)
+                    offset = data.offset
+                    length = data.length
+                else:
+                    offset = 1
+                    length = data.seg_length
+                self.__draw_stat_board(data.label, offset, length, stat, stat_fg, stat_bg, to_color)
             
             self._time_change_callback(title, epoch) # [(fname, data)]
 
@@ -1816,7 +1827,7 @@ if desktop:
                              half_word_height = self._conf.half_word_height,
                              distance  = self._conf.gauss if self._conf.apply_gauss else None,
                              bin_width = self._conf.gauss * histo_width)
-            bottom_offset_length = None if self._conf.show_paddings else (offset, length)
+            bottom_offset_length = None if self._conf.show_paddings else (offset, length[0] if length.shape else length)
             level_tag(offy, tag = 'W')
 
             if self._conf.align_coord:
@@ -1838,8 +1849,8 @@ if desktop:
                     offy += incre_y
                     nega += 1
                     continue
-                if self._conf.show_paddings or l < length: # watch out for not showing and len <= 2
-                    cond_level_len  = None if self._conf.show_paddings else (offset, length - l)
+                if self._conf.show_paddings or length[l] if length.shape else (l < length): # watch out for not showing and len <= 2
+                    cond_level_len  = None if self._conf.show_paddings else (offset, length[l] + offset if length.shape else (length - l))
                     cond_nil_filter = None if self._conf.show_nil else plabel_layer > nil # interesting! tuple is not a good filter here, list is proper!
                     level_tag(offy, str(l - nega))
                     sci = _scatter(offy = offy, stat = layer_phrase_energy, offset_length = cond_level_len, filtered = cond_nil_filter, height = height, xlab = xlab, ylab = xlab, clab = not xlab).items()
@@ -2140,7 +2151,7 @@ if desktop:
                         elems.append(board.create_line(last_x, last_y, to_x, last_line_bo,
                                                        width = line_width, fill = color,# dashoffset = r,
                                                        capstyle = capstyle,
-                                                       dash = (line_width, r, line_width, r), tags = ('elems', 'c_line')))
+                                                       dash = (1, line_width << 1), tags = ('elems', 'c_line')))
                         # if not apply_dash and decorate:
                         #     elems.append(board.create_oval(last_x - r, last_y - r,
                         #                                    last_x + r, last_y + r,
@@ -2153,10 +2164,7 @@ if desktop:
                 #     break
             for elem in errors:
                 board.tag_raise(elem)
-            if self._spotlight_subjects:
-                self._spotlight_subjects = (board_item_coord, self._conf.word_width, level_unit) + self._spotlight_subjects[-3:]
-            else:
-                self._spotlight_subjects = board_item_coord, self._conf.word_width, level_unit, None, None, None
+            return board_item_coord, level_unit
 
         def __draw_board_x(self, data, stat, fg_color, jnt_color, to_color):
             head   = self._head
@@ -2359,12 +2367,7 @@ if desktop:
 
             # for elem in errors:
             #     board.tag_raise(elem)
-            if False:# self._spotlight_subjects:
-                self._spotlight_subjects = (board_item_coord, self._conf.word_width, level_unit) + self._spotlight_subjects[-3:]
-            else:
-                self._spotlight_subjects = board_item_coord, self._conf.word_width, level_unit, None, None, None
-
-
+            return board_item_coord, level_unit
 
 
     import argparse
