@@ -31,6 +31,7 @@ class DiscoReader(WordBaseReader):
               shuffle_swap   = False,
               min_len        = 2,
               max_len        = None,
+              min_gap        = None,
               sort_by_length = True):
         load_label, extra_text_helper, train_indexing_cnn = self._load_options
         assert mode in (M_TRAIN, M_DEVEL, M_TEST)
@@ -46,7 +47,8 @@ class DiscoReader(WordBaseReader):
                            device = self.device,
                            factors = binarization,
                            min_len = min_len,
-                           max_len = max_len, 
+                           max_len = max_len,
+                           min_gap = min_gap,
                            swapper = mode == M_TRAIN and shuffle_swap,
                            extra_text_helper = extra_text_helper,
                            train_indexing_cnn = train_indexing_cnn)

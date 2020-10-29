@@ -41,7 +41,7 @@ def _new_status():
                                 ft_lower = False),
                 evalb = dict(path = fill_placeholder + 'evalb',
                              prm  = fill_placeholder + 'default.prm'),
-                evalb_lcfrs_prm = 'discop-dop.prm')
+                evalb_lcfrs_prm = 'disco-dop.prm')
     data_status = {}
     dat_modules = {}
     for module_name in data.types:

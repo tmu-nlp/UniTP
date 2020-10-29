@@ -1,5 +1,5 @@
 from models.backend import torch, InputLeaves, Contextual, input_config, contextual_config
-from models.discop import BaseRnnTree, model_type
+from models.dccp import BaseRnnTree, model_type
 from utils.types import word_dim
 
 model_type = model_type.copy()

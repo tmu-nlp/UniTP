@@ -52,10 +52,11 @@ disco_orient_type = BaseType(-1, as_index = True, as_exception = True, default_s
 'i:add|1'
 def parse_joint_type(x):
     x = x.split(':')
-    if len(x) == 1:
+    n = len(x)
+    if n == 1:
         if x[0] in ('add', 'iadd'):
             return x
-    elif len(x) == 3:
+    elif n == 3:
         out, size, act = x
         size = int(size)
         if out not in ('add', 'iadd', 'cat', 'icat'):
@@ -64,6 +65,16 @@ def parse_joint_type(x):
             return False
         if activation_type.validate(act):
             return out, size, activation_type[act]
+    elif n == 5:
+        out, size_1, act_1, size_2, act_2 = x
+        size_1 = int(size_1)
+        size_2 = int(size_2)
+        if out not in ('add', 'iadd', 'cat', 'icat'):
+            return False
+        if out in ('cat', 'icat') and (size_1 % 2 or size_1 < 2):
+            return False
+        if activation_type.validate(act_1) and activation_type.validate(act_2) and size_2 > 1:
+            return out, size_1, activation_type[act_1], size_2, activation_type[act_2]
     return False
 joint_type = BaseType('iadd', validator = parse_joint_type)
 
@@ -168,30 +179,54 @@ class DiscoStem(nn.Module):
         self._stem_dp = dp_layer = nn.Dropout(drop_out)
         self._ori_dir = nn.Linear(orient_dim, orient_bits)
         joint_type = parse_joint_type(joint_type)
-        if len(joint_type) == 1:
+        jnt_n = len(joint_type)
+        if jnt_n == 1:
             self._jnt_lhs = jnt_lhs = nn.Linear(model_dim, 1)
             self._jnt_rhs = jnt_rhs = nn.Linear(model_dim, 1, bias = False) if joint_type[0] != 'iadd' else self._jnt_lhs
             def jnt_fn(x):
                 x = jnt_lhs(x[:, :-1]) + jnt_rhs(x[:, 1:])
                 return x.squeeze(dim = 2)
         else:
-            out, jnt_size, jnt_act = joint_type
+            if jnt_n == 3:
+                out, jnt_size, jnt_act = joint_type
+            else:
+                out, jnt_size, jnt_act, jnt_sec_size, jnt_sec_act = joint_type
             is_cat = out.endswith('cat')
             hid_size = (jnt_size >> 1) if is_cat else jnt_size
             self._jnt_lhs = jnt_lhs = nn.Linear(model_dim, hid_size)
             self._jnt_rhs = jnt_rhs = nn.Linear(model_dim, hid_size, bias = False) if out[0] != 'i' else jnt_lhs
-            self._jnt_hid = jnt_hid = jnt_act()
-            self._jnt_lgt = jnt_lgt = nn.Linear(jnt_size, 1)
-            if is_cat:
-                def jnt_fn(x):
-                    x = torch.cat([jnt_lhs(x[:, :-1]), jnt_rhs(x[:, 1:])], dim = 2)
-                    x = dp_layer(x)
-                    return jnt_lgt(jnt_hid(x)).squeeze(dim = 2)
+            self._jnt_act = jnt_act = jnt_act()
+            if jnt_n == 3:
+                self._jnt_lgt = jnt_lgt = nn.Linear(jnt_size, 1)
+                if is_cat:
+                    def jnt_fn(x):
+                        x = torch.cat([jnt_lhs(x[:, :-1]), jnt_rhs(x[:, 1:])], dim = 2)
+                        x = dp_layer(x)
+                        return jnt_lgt(jnt_act(x)).squeeze(dim = 2)
+                else:
+                    def jnt_fn(x):
+                        x = jnt_lhs(x[:, :-1]) + jnt_rhs(x[:, 1:])
+                        x = dp_layer(x)
+                        return jnt_lgt(jnt_act(x)).squeeze(dim = 2)
             else:
-                def jnt_fn(x):
-                    x = jnt_lhs(x[:, :-1]) + jnt_rhs(x[:, 1:])
-                    x = dp_layer(x)
-                    return jnt_lgt(jnt_hid(x)).squeeze(dim = 2)
+                self._jnt_sec_hid = jnt_sec_hid = nn.Linear(jnt_size, jnt_sec_size)
+                self._jnt_sec_act = jnt_sec_act = jnt_sec_act()
+                self._jnt_lgt = jnt_lgt = nn.Linear(jnt_sec_size, 1)
+                if is_cat:
+                    def jnt_fn(x):
+                        x = torch.cat([jnt_lhs(x[:, :-1]), jnt_rhs(x[:, 1:])], dim = 2)
+                        x = dp_layer(x)
+                        x = jnt_sec_hid(jnt_act(x))
+                        x = dp_layer(x)
+                        return jnt_lgt(jnt_sec_act(x)).squeeze(dim = 2)
+                else:
+                    def jnt_fn(x):
+                        x = jnt_lhs(x[:, :-1]) + jnt_rhs(x[:, 1:])
+                        x = dp_layer(x)
+                        x = jnt_sec_hid(jnt_act(x))
+                        x = dp_layer(x)
+                        return jnt_lgt(jnt_sec_act(x)).squeeze(dim = 2)
+
         self._jnt_fn = jnt_fn
         self.combine = get_combinator(combine_type, model_dim)
         if trainable_initials:
@@ -262,15 +297,19 @@ class DiscoStem(nn.Module):
             layers_of_right_direc.append(right_direc)
             layers_of_existence.append(existence)
             if teacher_forcing and swap is not None:
-                # if l_cnt == 0 or random() < 0.1:
-                base = torch.zeros_like(unit_emb)
-                base = base.scatter(1, swap[l_cnt].unsqueeze(2).expand_as(unit_emb), unit_emb)
+                if l_cnt == 0:# or random() < 0.1:
+                    base = torch.zeros_like(unit_emb)
+                    base = base.scatter(1, swap[l_cnt].unsqueeze(2).expand_as(unit_emb), unit_emb)
                 layers_of_shuffled_right_direc.append(self.predict_orient_direc(base, h0c0))
             if seg_len == 2:
                 break # teacher forcing or a good model
             elif len(history) > 1:
-                prev, curr = history
-                if prev.shape == curr.shape and (prev == curr).all():
+                if len(history) > 2:
+                    pprev, prev, curr = history
+                else:
+                    pprev = None
+                    prev, curr = history
+                if prev.shape == curr.shape and (prev == curr).all() or pprev is not None and pprev.shape == curr.shape and (pprev == curr).all():
                     break
                 elif l_cnt == max_iter_n - 1:
                     print(f'WARNING: Action layers overflow maximun {l_cnt}', file = stderr, end = '')
@@ -301,7 +340,7 @@ class DiscoStem(nn.Module):
 
             if not teacher_forcing:
                 history.append(ids)
-                if len(history) > 2:
+                if len(history) > 3:
                     history.pop(0)
 
         embeddings  = torch.cat(layers_of_u_emb,       dim = 1)

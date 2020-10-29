@@ -11,19 +11,20 @@ ft_bin = {C_DPTB: 'en', C_TGR: 'de'}
 call_fasttext = make_call_fasttext(ft_bin)
 
 from utils.types import none_type, false_type, true_type, binarization_5, NIL
-from utils.types import train_batch_size, train_max_len, train_bucket_len, vocab_size
+from utils.types import train_batch_size, train_max_len, train_bucket_len, vocab_size, tune_epoch_type
 disco_config = dict(vocab_size     = vocab_size,
                     binarization   = binarization_5,
                     batch_size     = train_batch_size,
                     max_len        = train_max_len,
                     bucket_len     = train_bucket_len,
+                    min_gap        = tune_epoch_type,
                     shuffle_swap   = true_type,
                     unify_sub      = true_type,
                     sort_by_length = false_type)
 
 # tree = '/Users/zchen/KK/corpora/tiger_release_aug07.corrected.16012013.xml'
 
-from utils.file_io import join, remove, isfile, parpath
+from utils.file_io import join, remove, isfile, parpath, create_join
 from sys import stderr
 def build(save_to_dir,
           corp_path,
@@ -65,7 +66,7 @@ def build(save_to_dir,
             q, sents, read_func = self._args
             for sent_tag, sent in sents:
                 try:
-                    wd, bt, cnf_layers, gd = read_func(sent)
+                    wd, bt, cnf_layers, gd, lines = read_func(sent)
                 except (ValueError, AssertionError):
                     errors.append(sent_tag)
                     continue
@@ -86,12 +87,13 @@ def build(save_to_dir,
                     cnf_bundle[cnf_factor] = cindex, labels, xtypes, swapbl
 
                 phrase_gap_cnt += Counter(gd.values())
-                sent_gap_cnt[max(gd.values())] += 1
+                sent_gap_degree = max(gd.values())
+                sent_gap_cnt[sent_gap_degree] += 1
                 word_cnt += Counter(wd)
                 tag_cnt  += Counter(bt)
                 wd = ' '.join(wd) + '\n'
                 bt = ' '.join(bt) + '\n'
-                bundle = sent_tag, len(wd), wd, bt, cnf_bundle
+                bundle = sent_tag, len(wd), wd, bt, cnf_bundle, sent_gap_degree, '\n'.join(lines)
                 q.put(bundle)
 
             bundle = len(sents) - len(errors), errors, word_cnt, tag_cnt, label_cnts, xtype_cnts, phrase_gap_cnt, sent_gap_cnt
@@ -154,13 +156,18 @@ def build(save_to_dir,
     label_cnts = {o: Counter() for o in E_ORIF5}
     xtype_cnts = {o: Counter() for o in E_ORIF5}
     length_stat = dict(tlc = defaultdict(int), vlc = defaultdict(int), _lc = defaultdict(int))
+    gap_bin_size = 1 if corp_name == C_DPTB else 2
+    lines_by_gap_degree = defaultdict(list)
     with ExitStack() as stack, tqdm(desc = f'  Receiving samples from {num_threads} threads') as qbar:
         ftw  = stack.enter_context(open(join(save_to_dir, M_TRAIN + '.word'), 'w'))
         ftp  = stack.enter_context(open(join(save_to_dir, M_TRAIN + '.tag'),  'w'))
+        ftg  = stack.enter_context(open(join(save_to_dir, M_TRAIN + '.gap'),  'w'))
         fvw  = stack.enter_context(open(join(save_to_dir, M_DEVEL + '.word'), 'w'))
         fvp  = stack.enter_context(open(join(save_to_dir, M_DEVEL + '.tag'),  'w'))
+        fvg  = stack.enter_context(open(join(save_to_dir, M_DEVEL + '.gap'),  'w'))
         f_w  = stack.enter_context(open(join(save_to_dir, M_TEST  + '.word'), 'w'))
         f_p  = stack.enter_context(open(join(save_to_dir, M_TEST  + '.tag'),  'w'))
+        f_g  = stack.enter_context(open(join(save_to_dir, M_TEST  + '.gap'),  'w'))
         ftxs = { o:stack.enter_context(open(join(save_to_dir, f'{M_TRAIN}.xtype.{o}'), 'w')) for o in E_ORIF5}
         ftls = { o:stack.enter_context(open(join(save_to_dir, f'{M_TRAIN}.label.{o}'), 'w')) for o in E_ORIF5}
         ftis = { o:stack.enter_context(open(join(save_to_dir, f'{M_TRAIN}.index.{o}'), 'w')) for o in E_ORIF5}
@@ -177,26 +184,28 @@ def build(save_to_dir,
                 sleep(0.01)
             else:
                 t = q.get()
-                if len(t) == 5:
-                    sent_tag, sent_len, wd, bt, cnf_bundle = t
+                if len(t) == 7:
+                    sent_tag, sent_len, wd, bt, cnf_bundle, sent_gap_degree, lines = t
                     if in_devel_set(sent_tag):
                         length_stat['vlc'][sent_len] += 1
-                        fw, ft, fxs, fls, fis, fss = fvw, fvp, fvxs, fvls, fvis, None
+                        fw, ft, fxs, fls, fis, fss, fg = fvw, fvp, fvxs, fvls, fvis, None, fvg
                     elif in_test_set(sent_tag):
                         length_stat['_lc'][sent_len] += 1
-                        fw, ft, fxs, fls, fis, fss = f_w, f_p, f_xs, f_ls, f_is, None
+                        fw, ft, fxs, fls, fis, fss, fg = f_w, f_p, f_xs, f_ls, f_is, None, f_g
                     else:
                         assert in_train_set(sent_tag)
                         length_stat['tlc'][sent_len] += 1
-                        fw, ft, fxs, fls, fis, fss = ftw, ftp, ftxs, ftls, ftis, ftss
+                        fw, ft, fxs, fls, fis, fss, fg = ftw, ftp, ftxs, ftls, ftis, ftss, ftg
                     fw.write(wd)
                     ft.write(bt)
+                    fg.write(f'{sent_gap_degree}\n')
                     for cnf_factor, (cindex, labels, xtypes, swaps) in cnf_bundle.items():
                         fis[cnf_factor].write(cindex)
                         fls[cnf_factor].write(labels)
                         fxs[cnf_factor].write(xtypes)
                         if fss is not None:
                             fss[cnf_factor].write(swaps)
+                    lines_by_gap_degree[sent_gap_degree // gap_bin_size].append((sent_len, sent_gap_degree, lines))
                     qbar.update(1)
                 elif len(t) == 8:
                     thread_join_cnt += 1
@@ -231,8 +240,15 @@ def build(save_to_dir,
     non_gap = sent_gap_cnt.pop(0)
     non_gap_percentage = byte_style(f'{100 - non_gap / instance_cnt * 100:.2f} % ({instance_cnt - non_gap})', '2')
     print(f'Gap degree distribution among {non_gap_percentage} trees which contain gaps:', file = stderr)
-    print(histo_count(sent_gap_cnt, bin_size = 3 if corp_name == C_DPTB else 2), file = stderr)
+    print(histo_count(sent_gap_cnt, bin_size = gap_bin_size), file = stderr)
     sent_gap_cnt[0] = non_gap
+
+    fpath = create_join(save_to_dir, 'gap_trees')
+    for gap_bin, len_gap_lines in lines_by_gap_degree.items():
+        len_gap_lines.sort(key = lambda x: x[:2])
+        with open(join(fpath, f'{gap_bin:02d}.trees.({len(len_gap_lines)})'), 'w') as fw:
+            for tid, (sent_len, gap, lines) in enumerate(len_gap_lines):
+                fw.write(f'{tid}, gap = {gap}\n' + lines + '\n\n')
 
     length_stat['gap'] = sent_gap_cnt
     length_stat['phrase.gap'] = phrase_gap_cnt

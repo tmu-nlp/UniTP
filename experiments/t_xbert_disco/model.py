@@ -1,4 +1,4 @@
-from models.discop import torch, BaseRnnTree, model_type
+from models.dccp import torch, BaseRnnTree, model_type
 from utils.types import word_dim, num_ctx_layer, frac_2, frac_4
 from models.plm import subword_proc
 

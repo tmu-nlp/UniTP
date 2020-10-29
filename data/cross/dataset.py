@@ -19,6 +19,7 @@ class StaticCrossDataset(LengthOrderedDataset):
                  min_len  = 0,
                  max_len  = None,
                  swapper  = False,
+                 min_gap  = 0,
                  extra_text_helper = None,
                  train_indexing_cnn = False):
 
@@ -90,7 +91,13 @@ class StaticCrossDataset(LengthOrderedDataset):
                                 columns[('direc', factor)] = c_direc
                         else:
                             raise ValueError('Unknown field: ' + field)
-                    
+        
+        if min_gap:
+            with open(dir_join(f'{prefix}.gap')) as fr:
+                for lid, gap in enumerate(fr):
+                    if int(gap) < min_gap:
+                        lengths[lid] = 0
+            assert len(lengths) == lid + 1
         assert all(len(lengths) == len(col) for col in columns.values())
 
         for factor, column in factored_indices.items():

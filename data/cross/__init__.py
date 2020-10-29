@@ -385,13 +385,13 @@ def gap_degree(bottom, top_down, nid, bottom_is_bid = True):
         finally_return = False
     else:
         if not top_down:
-            return {0: 1}
+            return {nid: 0}
         if bottom_is_bid:
             bottom = {bid: 1 << eid for eid, bid in enumerate(bottom)}
         else:
             bottom = {bid: 1 << eid for eid, (bid, _, _) in enumerate(bottom)}
 
-    gap_cnt = Counter()
+    gap_cnt = {}
     bit_coverage = 0 # set()
     for cid in top_down[nid].children:
         child_gaps, child_coverage = gap_degree(bottom, top_down, cid)
@@ -402,7 +402,7 @@ def gap_degree(bottom, top_down, nid, bottom_is_bid = True):
         assert bit_fanout(bit_coverage) == 1
         return gap_cnt
 
-    gap_cnt[bit_fanout(bit_coverage) - 1] += 1
+    gap_cnt[nid] = bit_fanout(bit_coverage) - 1
     return gap_cnt, bit_coverage
 
 def bracketing(bottom, top_down, nid, bottom_is_bid = False,
@@ -502,7 +502,7 @@ def locations(node, bottom, top_down, consumed_top_down):
     return locs
 
 from random import random
-def _layer_base(bottom, top_down, completed_nodes, some_or_all, lean_joint, factor, sub_suffix):
+def _layer_base(bottom, top_down, completed_nodes, some_or_all, lean_joint, factor, sub_suffix, get_soft_right):
     bottom_up = {}
     right_hash = {}
     swappable_locations = []
@@ -514,7 +514,7 @@ def _layer_base(bottom, top_down, completed_nodes, some_or_all, lean_joint, fact
         p_node_complete = p_node in completed_nodes
         not_enough_child = not some_or_all(node in bottom for node in td.children)
         if p_node_complete or not_enough_child:
-            if not p_node_complete and not_enough_child:
+            if get_soft_right and not p_node_complete and not_enough_child:
                 existing_nodes = []
                 shadow_locations = []
                 for node in td.children:
@@ -682,6 +682,7 @@ def _layer_output(bottom,
 def cross_signals(bottom, node2tag, bottom_unary, top_down, factor,
                   aggressive = True,
                   swap_rhs_priority = None,
+                  get_soft_right = False,
                   lean_joint = False,
                   sub_prefix = '_',
                   pos_prefix = '#'):
@@ -706,7 +707,8 @@ def cross_signals(bottom, node2tag, bottom_unary, top_down, factor,
                                    some_or_all,
                                    lean_joint,
                                    factor,
-                                   sub_suffix)
+                                   sub_suffix,
+                                   get_soft_right)
 
         (new_bottom, right_layer, joint_layer, label_layer,
          direc_layer) = _layer_output(bottom,
@@ -741,7 +743,7 @@ from utils.types import E_ORIF5, O_RGT
 from copy import deepcopy
 def read_tiger_graph(graph):
     bottom_info, top_down, root_id = _read_graph(graph)
-    # ret_top_down = deepcopy(top_down)
+    lines = draw_str_lines(bottom_info, top_down)
     word, bottom, node2tag, bottom_unary = _pre_proc(bottom_info, top_down)
     bottom_tag = [node2tag[t] for t in bottom]
     gap = gap_degree(bottom, top_down, root_id)
@@ -749,10 +751,11 @@ def read_tiger_graph(graph):
     for oid, cnf_factor in enumerate(E_ORIF5):
         new_top_down = deepcopy(top_down) if cnf_factor != O_RGT else top_down
         cnf_layers[cnf_factor] = cross_signals(bottom, node2tag, bottom_unary, new_top_down, (oid + 0.5) / 5)
-    return word, bottom_tag, cnf_layers, gap#, bottom_info, ret_top_down, root_id
+    return word, bottom_tag, cnf_layers, gap, lines#, bottom_info, ret_top_down, root_id
 
 def read_disco_penn(tree):
     bottom_info, top_down, root_id = _read_dpenn(tree)
+    lines = draw_str_lines(bottom_info, top_down)
     word, bottom, node2tag, bottom_unary = _pre_proc(bottom_info, top_down)
     bottom_tag = [node2tag[t] for t in bottom]
     gap = gap_degree(bottom, top_down, root_id)
@@ -760,7 +763,7 @@ def read_disco_penn(tree):
     for oid, cnf_factor in enumerate(E_ORIF5):
         new_top_down = deepcopy(top_down) if cnf_factor != O_RGT else top_down
         cnf_layers[cnf_factor] = cross_signals(bottom, node2tag, bottom_unary, new_top_down, (oid + 0.5) / 5)
-    return word, bottom_tag, cnf_layers, gap
+    return word, bottom_tag, cnf_layers, gap, lines
 
 from data.cross.evalb_lcfrs import DiscoEvalb
 from random import randint
