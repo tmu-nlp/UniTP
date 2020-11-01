@@ -41,7 +41,7 @@ def _new_status():
                                 ft_lower = False),
                 evalb = dict(path = fill_placeholder + 'evalb',
                              prm  = fill_placeholder + 'default.prm'),
-                evalb_lcfrs_prm = 'disco-dop.prm')
+                evalb_lcfrs_prm = 'discodop.prm')
     data_status = {}
     dat_modules = {}
     for module_name in data.types:
@@ -166,7 +166,7 @@ class Manager:
         
         if isfile(tools['fasttext']['path']):
             fasttext = tools['fasttext']
-        else:
+        else: # TODO: make this an option.
             fasttext = None
             verbose['fasttext'].append('Invalid path for executive fasttext')
 
@@ -385,8 +385,6 @@ def get_args():
     parser.add_argument('-x', '--train',     help = 'fv=3:30:4,max=100,& [fine validation starts from the 3rd consecutive key score wandering, ends at the 30th wandering, occuring 4 times during one epoch. AND should test scores.]', type = str, default = '')
     parser.add_argument('-s', '--select',    help = 'select (a sub-layer config id)[/data][:folder] name to run', type = str)
     parser.add_argument('-i', '--instance',  help = 'test an trained model by the folder id without its suffix name', type = str)
-    parser.add_argument('-b', '--beams',     help = 'beam sizes for test and infer', nargs = 2, type = int, default = [0, 0])
-    parser.add_argument('-v', '--visualize', help = 'for parsing and its joint task, calc recall and f1, for others, make visualization and other detailded analysis') # , action = 'store_const', const = ''
     args = parser.parse_args()
     if args.base is None or not isdir(args.base):
         parser.print_help()
@@ -401,10 +399,7 @@ if __name__ == '__main__':
     if args.threads > 0:
         from utils import types
         types.num_threads = args.threads
-    # os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
-    if args.menu:# args.experiments
-        manager.ready_experiments()
-    elif args.select:
+    if args.select:
         manager.select_and_run(args)
         # except ValueError as ve:
         #     print('Dev: ValueError [Exit]')
@@ -413,3 +408,4 @@ if __name__ == '__main__':
         manager.check_data(build_if_not_yet = args.prepare)
         with DelayedKeyboardInterrupt():
             manager.list_experiments_status() # refine this one
+        manager.ready_experiments()
