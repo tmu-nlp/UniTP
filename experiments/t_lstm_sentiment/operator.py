@@ -1,4 +1,4 @@
-from experiments.t_lstm_parse import PennOperator, train_type
+from experiments.t_lstm_nccp import PennOperator, train_type
 from data.stan_types import C_SSTB
 from utils.types import M_TRAIN, rate_5, NIL
 from time import time

@@ -2,9 +2,10 @@ from data.penn import PennReader
 from data.penn_types import C_ABSTRACT, parsing_config, select_and_split_corpus
 from utils.types import M_TRAIN, M_DEVEL, M_TEST
 from utils.param_ops import HParams, get_sole_key
+from utils.shell_io import byte_style
 
-from experiments.t_lstm_parse.model import PennRnnTree, model_type
-from experiments.t_lstm_parse.operator import PennOperator, train_type
+from experiments.t_lstm_nccp.model import PennRnnTree, model_type
+from experiments.t_lstm_nccp.operator import PennOperator, train_type
 
 require_source_path = False
 
@@ -27,6 +28,10 @@ def get_configs(recorder = None):
                                         penn.data_splits.test_set)
         data_splits = {k:v for k,v in zip((M_TRAIN, M_DEVEL, M_TEST), specs[-1])}
         trapezoid_specs = specs[:-1] + (data_splits, penn.trapezoid_height)
+        prompt = f'Use trapezoidal data ({penn.trapezoid_height})', '2'
+    else:
+        prompt = f'Use triangular data', '3'
+    print(byte_style(*prompt))
 
     reader = PennReader(penn.data_path,
                         penn.vocab_size,

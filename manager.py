@@ -312,10 +312,10 @@ class Manager:
 
         def diff_recorder(config_dict_or_instance):
             task_dir = create_join(self._work_dir, task)
-            if task.endswith('_parse'):
+            if task.endswith('_nccp') or task.endswith('_sentiment'):
                 evalb = status['tool']['evalb']
                 evalb = abspath(evalb['path']), '-p', abspath(evalb['prm'])
-            elif task.endswith('_disco'):
+            elif task.endswith('_dccp'):
                 evalb = abspath(status['tool']['evalb_lcfrs_prm'])
             else:
                 evalb = None
@@ -382,7 +382,7 @@ def get_args():
     parser.add_argument('-P', '--threads',   help = 'a number of threads for pre-processing the data', type = int, default = -1)
     parser.add_argument('-m', '--menu',      help = 'list available sublayer configurations', action = 'store_true', default = False)
     parser.add_argument('-g', '--gpu',       help = 'pass to environment', type = str, default = '0')
-    parser.add_argument('-x', '--train',     help = 'fv=3:30:4,max=100,& [fine validation starts from the 3rd consecutive key score wandering, ends at the 30th wandering, occuring 4 times during one epoch. AND should test scores.]', type = str, default = '')
+    parser.add_argument('-x', '--train',     help = 'fv=3:30:4,max=100,! [fine validation starts from the 3rd consecutive key score wandering, ends at the 30th wandering, occuring 4 times during one epoch. !test with devel set!]', type = str, default = '')
     parser.add_argument('-s', '--select',    help = 'select (a sub-layer config id)[/data][:folder] name to run', type = str)
     parser.add_argument('-i', '--instance',  help = 'test an trained model by the folder id without its suffix name', type = str)
     args = parser.parse_args()

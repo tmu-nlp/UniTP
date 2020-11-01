@@ -777,7 +777,7 @@ def bottom_up_ftags(ftags, seq_to_str = True):
 
     def bottom_up(sid):
         tid = t_index(sid)
-        print(tid)
+        # print(tid)
         return -tid[0], tid[1]
 
     pos_ftags = []

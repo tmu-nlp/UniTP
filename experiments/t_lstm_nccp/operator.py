@@ -150,9 +150,10 @@ class PennOperator(Operator):
         if use_test_set:
             if final_test:
                 folder = 'penn_test'
+                save_tensors = True
             else:
                 folder = 'penn_test_with_devel'
-            save_tensors = True
+                save_tensors = is_bin_times(int(float(epoch)) - 1)
             length_bins = test_bins
             scores_of_bins = True
         else:
@@ -174,17 +175,18 @@ class PennOperator(Operator):
                       scores_of_bins)
         vis = VisRunner(vis, async_ = True) # wrapper
         vis.before()
-        length_bins = vis.length_bins
-        if length_bins is not None:
-            if use_test_set:
-                self._mode_length_bins = devel_bins, length_bins # change test
-            else:
-                self._mode_length_bins = length_bins, test_bins # change devel
         self._vis_mode = vis, use_test_set, final_test
 
     def _after_validation(self, ds_name, count, seconds):
         vis, use_test_set, final_test = self._vis_mode
         scores, desc, logg = vis.after()
+        length_bins = vis.length_bins
+        devel_bins, test_bins = self._mode_length_bins
+        if length_bins is not None:
+            if use_test_set:
+                self._mode_length_bins = devel_bins, length_bins # change test
+            else:
+                self._mode_length_bins = length_bins, test_bins # change devel
         speed = float(f'{count / seconds:.1f}')
         if vis.is_async:
             rate = vis.proc_time / seconds

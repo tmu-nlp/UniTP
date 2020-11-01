@@ -22,7 +22,7 @@ def check_instances_operation(instance):
     return op_code, exp_ids
 
 def check_train(train_str):
-    # fv=4:30:4,max=100,&
+    # fv=4:30:4,max=100,!
     train = dict(test_with_validation = False,
                  fine_validation_at_nth_wander = 5,
                  stop_at_nth_wander = 100,
@@ -47,7 +47,7 @@ def check_train(train_str):
         elif group.startswith('update='):
             train['update_every_n_batch'] = int(group[7:])
     
-        elif group == '&':
+        elif group == '!':
             train['test_with_validation'] = True
 
         elif group:

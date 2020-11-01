@@ -4,8 +4,8 @@ from utils.types import M_TRAIN
 from utils.param_ops import HParams, get_sole_key
 
 from models.plm import XLNetDatasetHelper, XLNetLeaves, GBertDatasetHelper, GBertLeaves
-from experiments.t_xbert_disco.model import DiscoPlmTree, model_type
-from experiments.t_lstm_disco.operator import DiscoOperator, train_type
+from experiments.t_xbert_dccp.model import DiscoPlmTree, model_type
+from experiments.t_lstm_dccp.operator import DiscoOperator, train_type
 
 def get_any_disco(dptb = None, tiger = None):
     if dptb is None:

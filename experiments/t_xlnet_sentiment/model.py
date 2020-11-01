@@ -1,4 +1,4 @@
-from experiments.t_xlnet_parse.model import XLNetPennTree, model_type
+from experiments.t_xlnet_nccp.model import XLNetPennTree, model_type
 from models.sentiment import SentimentExtention, inject_sentiment_type
 
 model_type = inject_sentiment_type(model_type)

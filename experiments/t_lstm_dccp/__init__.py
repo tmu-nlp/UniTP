@@ -3,8 +3,8 @@ from data.disco_types import C_ABSTRACT, disco_config
 from utils.types import M_TRAIN
 from utils.param_ops import HParams
 
-from experiments.t_lstm_disco.model import DiscoRnnTree, model_type
-from experiments.t_lstm_disco.operator import DiscoOperator, train_type
+from experiments.t_lstm_dccp.model import DiscoRnnTree, model_type
+from experiments.t_lstm_dccp.operator import DiscoOperator, train_type
 
 require_source_path = False
 

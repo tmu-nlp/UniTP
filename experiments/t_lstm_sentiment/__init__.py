@@ -6,6 +6,7 @@ from experiments.t_lstm_sentiment.operator import StanOperator, train_type
 from experiments.t_lstm_sentiment.model import StanRnnTree, model_type
 from utils.types import M_TRAIN, M_DEVEL, M_TEST
 from utils.param_ops import HParams
+from utils.shell_io import byte_style
 
 def get_configs(recorder = None):
     if recorder is None:
@@ -16,8 +17,11 @@ def get_configs(recorder = None):
     stan = HParams(data_config[C_SSTB])
     if stan.trapezoid_height:
         trapezoid_specs = stan.trapezoid_height, stan.source_path
+        prompt = f'Use trapezoidal data ({stan.trapezoid_height}) for SST', '2'
     else:
         trapezoid_specs = None
+        prompt = f'Use triangular data for SST', '3'
+    print(byte_style(*prompt), end = '; ')
 
     stan_reader = StanReader(stan.data_path,
                              stan.vocab_size,
@@ -40,6 +44,10 @@ def get_configs(recorder = None):
                                             penn.data_splits.test_set)
             data_splits = {k:v for k,v in zip((M_TRAIN, M_DEVEL, M_TEST), specs[-1])}
             trapezoid_specs = specs[:-1] + (data_splits, penn.trapezoid_height)
+            prompt = f'use trapezoidal data ({penn.trapezoid_height}) for PTB', '2'
+        else:
+            prompt = f'use triangular data for PTB', '3'
+        print(byte_style(*prompt))
 
         penn_reader = PennReader(penn.data_path,
                                  penn.vocab_size,
@@ -65,6 +73,7 @@ def get_configs(recorder = None):
         task_params = 'initial_weights', 'num_tokens', 'num_polars', 'paddings'
         task_params = {pname: stan_reader.get_to_model(pname) for pname in task_params}
         task_params['num_tags'] = task_params['num_labels'] = penn_reader = None
+        print(byte_style(f'not using PTB', '1'))
         
     
     def get_datasets(mode):

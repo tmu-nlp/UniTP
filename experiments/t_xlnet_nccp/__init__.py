@@ -4,8 +4,8 @@ from utils.types import M_TRAIN, M_DEVEL, M_TEST
 from utils.param_ops import HParams, get_sole_key
 
 from models.plm import XLNetDatasetHelper
-from experiments.t_xlnet_parse.model import XLNetPennTree, model_type
-from experiments.t_lstm_parse.operator import PennOperator, train_type
+from experiments.t_xlnet_nccp.model import XLNetPennTree, model_type
+from experiments.t_lstm_nccp.operator import PennOperator, train_type
 
 get_any_penn = lambda ptb = None, ctb = None: ptb or ctb
 def get_configs(recorder = None):
