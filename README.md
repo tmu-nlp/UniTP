@@ -2,14 +2,14 @@
 Unified Tokenization and Parsing framework in PyTorch
 
 ## requirement
-- `pip install -r requirements/visual` to visualize remote tensors locally through sftp. (funny!)
-- `pip install -r requirements/full` to train or test our models with PyTorch.
-  - Evalb is necessary.
+- `pip install -r requirements/visual.txt` to visualize remote tensors locally through sftp. (funny!)
+- `pip install -r requirements/full.txt` to train or test our models with PyTorch.
+  - [Evalb](https://nlp.cs.nyu.edu/evalb/) is necessary.
   - [FastText](https://fasttext.cc/) and [Discontinuous DOP](https://github.com/andreasvc/disco-dop) are optional.
   (recommmend for reproduce the results.)
 
 ## Models
-- NCCP: Neural Combinatory Constituency Parsing
+- NCCP: Neural Combinatory Constituency Parsing (continuous)
 - DCCP: Discontinuous Combinatory Constituency Parsing
 
 ## Usage
@@ -42,3 +42,6 @@ If you want a new work folder, try `mkdir Oh-My-Folder; ./manager.py Oh-My-Folde
   - Use `-s [lstm_disco|xbert_parse]/[dptb/tiger]` to choose a discontinuous parsing experiment.
   - Use `-s [lstm_sentiment|xlnet_sentiment]` to run a joint task with [Stanford Sentiment Treebank](https://nlp.stanford.edu/sentiment/treebank.html). Set `task/lstm_sentiment/model/hidden_dim: null` as so to turn off the joint task. You can also check the SST tensors with `Oh-My-Folder/lstm_sentiment/0.Oh-My-Model/stan_devel` in a remove/local folder or similar test folders.
   - Use `-s [lstm_tokenization]/[ptb/ctb/ktb]` run a BPE-style neural tokenization. Also try visualization:)
+
+### Tips
+- Try modifying the hyper-parameters in your `Oh-My-Folder/manager.yaml`.
