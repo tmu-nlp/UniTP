@@ -2,7 +2,6 @@ from data.disco import DiscoReader
 from data.disco_types import C_ABSTRACT, disco_config
 from utils.types import M_TRAIN
 from utils.param_ops import HParams, get_sole_key
-from data.cross.evalb_lcfrs import read_param
 
 from models.plm import XLNetDatasetHelper, XLNetLeaves, GBertDatasetHelper, GBertLeaves
 from experiments.t_xbert_disco.model import DiscoPlmTree, model_type
@@ -44,4 +43,4 @@ def get_configs(recorder = None):
 
     model = DiscoPlmTree(Leaves, **model_config, **task_params)
     model.to(reader.device)
-    return DiscoOperator(model, get_datasets, recorder, reader.i2vs, train_config, read_param(recorder.evalb))
+    return DiscoOperator(model, get_datasets, recorder, reader.i2vs, train_config, recorder.evalb)

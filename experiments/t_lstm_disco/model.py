@@ -41,7 +41,7 @@ class DiscoRnnTree(BaseRnnTree):
             if self._half_dim_diff:
                 zero_pads = torch.zeros(batch_size, batch_len, self._half_dim_diff, dtype = static.dtype, device = static.device)
                 static = torch.cat([zero_pads, static, zero_pads], dim = 2)
-            base_inputs  = static + dynamic * bottom_existence
+            base_inputs  = dynamic * bottom_existence # + static
         base_returns = super().forward(base_inputs, bottom_existence.squeeze(dim = 2), ingore_logits, **kw_args)
         top3_labels  = super().get_label(top3_hidden) if top3_hidden is not None else None
         return (batch_size, batch_len, static, top3_labels) + base_returns

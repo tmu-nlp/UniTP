@@ -3,7 +3,7 @@
 # Version: January 24, 2014
 # Modified By zchen0420@github, 2020
 
-from collections import Counter
+from collections import Counter, defaultdict
 from utils.math_ops import bit_fanout
 from utils.param_ops import HParams
 
@@ -210,3 +210,40 @@ def continuous_evalb(pred_fname, gold_fname, prm_fname):
             g_brackets = bracketing(g_bt, g_td, g_rt, False, **args)
             evalb.add(p_brackets, filter_bottom(p_bt), g_brackets, filter_bottom(g_bt))
     print(evalb)
+
+class ExportWriter:
+    def __init__(self):
+        self._lines = []
+
+    def add(self, bottom, top_down, root_id):
+        n = len(self._lines) + 1
+        self._lines.append(export_string(n, bottom, top_down, root_id))
+
+    def dump(self, fname):
+        with open(fname, 'w') as fw:
+            fw.write('\n'.join(self._lines))
+
+def export_string(sent_id, bottom, top_down, root_id):
+    lines = f'#BOS {sent_id}\n'
+    bottom_up = {}
+    has_vroot = False
+    node_dict = defaultdict(lambda: len(node_dict) + 500)
+    for pid, td in top_down.items():
+        if pid == root_id and td.label == 'VROOT':
+            pid = 0
+            has_vroot = True
+        else:
+            pid = node_dict[pid]
+        for cid in td.children:
+            bottom_up[cid] = pid
+    for tid, word, tag in bottom:
+        pid = bottom_up.pop(tid)
+        lines += f'{word}\t\t\t{tag}\t--\t--\t{pid}\n'
+    bottom_up = list(bottom_up.items())
+    bottom_up.reverse()
+    while bottom_up:
+        cid, pid = bottom_up.pop()
+        lines += f'#{node_dict[cid]}\t\t\t{top_down[cid].label}\t--\t--\t{pid}\n'
+    if not has_vroot:
+        lines+= f'#{node_dict[root_id]}\t\t\t{top_down[root_id].label}\t--\t--\t0\n'
+    return lines + f'#EOS {sent_id}'

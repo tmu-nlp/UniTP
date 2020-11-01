@@ -123,6 +123,7 @@ stem_config = dict(orient_dim   = orient_dim,
                    combine_type = combine_type,
                    orient_type  = disco_orient_type,
                    joint_type   = joint_type,
+                   local_joint  = true_type,
                    threshold    = dict(right = frac_5, direc = frac_4, joint = frac_4),
                    num_layers   = num_ori_layer,
                    rnn_drop_out = frac_2,
@@ -137,6 +138,7 @@ class DiscoStem(nn.Module):
                  orient_dim,
                  combine_type,
                  joint_type,
+                 local_joint,
                  threshold,
                  num_layers,
                  orient_type,
@@ -180,9 +182,10 @@ class DiscoStem(nn.Module):
         self._ori_dir = nn.Linear(orient_dim, orient_bits)
         joint_type = parse_joint_type(joint_type)
         jnt_n = len(joint_type)
+        joint_in_size = model_dim if local_joint else orient_dim
         if jnt_n == 1:
-            self._jnt_lhs = jnt_lhs = nn.Linear(model_dim, 1)
-            self._jnt_rhs = jnt_rhs = nn.Linear(model_dim, 1, bias = False) if joint_type[0] != 'iadd' else self._jnt_lhs
+            self._jnt_lhs = jnt_lhs = nn.Linear(joint_in_size, 1)
+            self._jnt_rhs = jnt_rhs = nn.Linear(joint_in_size, 1, bias = False) if joint_type[0] != 'iadd' else self._jnt_lhs
             def jnt_fn(x):
                 x = jnt_lhs(x[:, :-1]) + jnt_rhs(x[:, 1:])
                 return x.squeeze(dim = 2)
@@ -193,8 +196,8 @@ class DiscoStem(nn.Module):
                 out, jnt_size, jnt_act, jnt_sec_size, jnt_sec_act = joint_type
             is_cat = out.endswith('cat')
             hid_size = (jnt_size >> 1) if is_cat else jnt_size
-            self._jnt_lhs = jnt_lhs = nn.Linear(model_dim, hid_size)
-            self._jnt_rhs = jnt_rhs = nn.Linear(model_dim, hid_size, bias = False) if out[0] != 'i' else jnt_lhs
+            self._jnt_lhs = jnt_lhs = nn.Linear(joint_in_size, hid_size)
+            self._jnt_rhs = jnt_rhs = nn.Linear(joint_in_size, hid_size, bias = False) if out[0] != 'i' else jnt_lhs
             self._jnt_act = jnt_act = jnt_act()
             if jnt_n == 3:
                 self._jnt_lgt = jnt_lgt = nn.Linear(jnt_size, 1)
@@ -227,7 +230,7 @@ class DiscoStem(nn.Module):
                         x = dp_layer(x)
                         return jnt_lgt(jnt_sec_act(x)).squeeze(dim = 2)
 
-        self._jnt_fn = jnt_fn
+        self._jnt_fn_local_flag = jnt_fn, local_joint
         self.combine = get_combinator(combine_type, model_dim)
         if trainable_initials:
             c0 = torch.randn(num_layers * 2, 1, hidden_size)
@@ -258,7 +261,7 @@ class DiscoStem(nn.Module):
     def predict_orient_direc(self, unit_hidden, h0c0):
         orient_hidden, _ = self._orient_emb(unit_hidden, h0c0)
         orient_hidden = self._stem_dp(orient_hidden)
-        return self._ori_dir(orient_hidden)
+        return self._ori_dir(orient_hidden), orient_hidden
     
     def forward(self,
                 unit_emb,
@@ -285,6 +288,7 @@ class DiscoStem(nn.Module):
             jnt_start = 0
         segment, seg_length = [], []
         history = []
+        jnt_fn, local_joint = self._jnt_fn_local_flag
 
         for l_cnt in range(max_iter_n): # max_iter | max_tree_high (unit_emb ** 2).sum().backward()
             # existence = unit_idx > 0
@@ -292,7 +296,7 @@ class DiscoStem(nn.Module):
                 segment   .append(seg_len)
                 seg_length.append(existence.sum(dim = 1))
 
-            right_direc = self.predict_orient_direc(unit_emb, h0c0)
+            right_direc, rd_hidden = self.predict_orient_direc(unit_emb, h0c0)
             layers_of_u_emb.append(unit_emb)
             layers_of_right_direc.append(right_direc)
             layers_of_existence.append(existence)
@@ -300,7 +304,8 @@ class DiscoStem(nn.Module):
                 if l_cnt == 0:# or random() < 0.1:
                     base = torch.zeros_like(unit_emb)
                     base = base.scatter(1, swap[l_cnt].unsqueeze(2).expand_as(unit_emb), unit_emb)
-                layers_of_shuffled_right_direc.append(self.predict_orient_direc(base, h0c0))
+                shuffled_right_direc, shuffled_rd_hidden = self.predict_orient_direc(base, h0c0)
+                layers_of_shuffled_right_direc.append(shuffled_right_direc)
             if seg_len == 2:
                 break # teacher forcing or a good model
             elif len(history) > 1:
@@ -314,7 +319,7 @@ class DiscoStem(nn.Module):
                 elif l_cnt == max_iter_n - 1:
                     print(f'WARNING: Action layers overflow maximun {l_cnt}', file = stderr, end = '')
                     break
-            joint = self._jnt_fn(unit_emb)
+            joint = jnt_fn(unit_emb if local_joint else rd_hidden)
             layers_of_joint.append(joint)
 
             if teacher_forcing:
@@ -327,7 +332,7 @@ class DiscoStem(nn.Module):
                 direc = None # not important for
 
                 if swap is not None:
-                    layers_of_shuffled_joint.append(self._jnt_fn(base))
+                    layers_of_shuffled_joint.append(jnt_fn(base if local_joint else shuffled_rd_hidden))
                     lhs, rhs, jnt, _ = split(base, right, joint, existence, direc)
                     base = self.combine(lhs, rhs, jnt.unsqueeze(dim = 2))
             else:

@@ -65,3 +65,45 @@ def rpt_summary(rpt_lines, get_individual, get_summary):
     if get_individual:
         return individuals, summary
     return summary
+
+def has_discodop():
+    try:
+        command = ['discodop', 'eval']
+        dst = run(command, stdout = PIPE, stderr = PIPE)
+    except:
+        return False
+    return True
+    
+def discodop_eval(fhead, fdata, prm_file, rpt_file = None):
+    command = ['discodop', 'eval', fhead, fdata, prm_file]
+    dst = run(command, stdout = PIPE, stderr = PIPE)
+    total = dst.stdout.decode('ascii')
+    smy_string = total.rfind('_________ Summary _________')
+    smy_string = total[smy_string:].split('\n')
+    smy = dict(TF = 0, TP = 0, TR = 0, DF = 0, DP = 0, DR = 0)
+    for line in smy_string:
+        if line.startswith('labeled recall:'):
+            smy['TR'] = float(line.split()[2])
+        elif line.startswith('labeled precision:'):
+            smy['TP'] = float(line.split()[2])
+        elif line.startswith('labeled f-measure:'):
+            smy['TF'] = float(line.split()[2])
+    command.append('--disconly')
+    dst = run(command, stdout = PIPE, stderr = PIPE)
+    discontinuous = dst.stdout.decode('ascii')
+    smy_string = discontinuous.rfind('_________ Summary _________')
+    discontinuous = discontinuous[smy_string:]
+    for line in discontinuous.split('\n'):
+        if line.startswith('labeled recall:'):
+            smy['DR'] = float(line.split()[2])
+        elif line.startswith('labeled precision:'):
+            smy['DP'] = float(line.split()[2])
+        elif line.startswith('labeled f-measure:'):
+            smy['DF'] = float(line.split()[2])
+
+    if rpt_file:
+        rpt_file.write('\nResults from discodop eval: [Total]\n\n')
+        rpt_file.write(total)
+        rpt_file.write('\n [Discontinuous Only]')
+        rpt_file.write(discontinuous)
+    return smy
