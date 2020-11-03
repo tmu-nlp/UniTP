@@ -1,6 +1,8 @@
 # UniTP
 Unified Tokenization and Parsing framework in PyTorch
 
+![NCCP](000/figures/nccp.eps)
+
 ## Requirements
 - `pip install -r requirements/visual.txt` to visualize remote tensors locally through sftp. (funny!)
 - `pip install -r requirements/full.txt` to train or test our models with PyTorch.

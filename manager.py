@@ -303,7 +303,7 @@ class Manager:
         task, corp_name, name = check_select(args.select)
         op_code, exp_ids = check_instances_operation(args.instance)
         assert op_code in (None, False, 'r', 'd'), f'Unknown operation {op_code}, neither [r]esume or [d]elete'
-        
+
         assert task in self._exp_modules, f'No such task module {task} in [' + ', '.join(self._exp_modules.keys()) + ']'
         assert task in ready_tasks, f'No such ready task_spec {task} in [' + ', '.join(ready_paths.keys()) + ']'
         module = self._exp_modules[task]

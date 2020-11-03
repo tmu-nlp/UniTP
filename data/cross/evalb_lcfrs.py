@@ -57,17 +57,17 @@ def _scores(bracket_match, p_num_brackets, g_num_brackets):
     return prec, rec, fb1
 
 def incomplete_sent_line(disc_mark, sent_cnt, g_num_brackets, g_disc_num_brackets, g_tag_count, *p_tag_match_count):
-    sent_line = f'| {disc_mark} {sent_cnt:5d} |                       |       {g_num_brackets:3d}       '
+    sent_line = f'╎ {disc_mark} {sent_cnt:5d} ╎                       ╎       {g_num_brackets:3d}       '
     if g_disc_num_brackets:
-        sent_line += f'|       {g_disc_num_brackets:3d}       '
+        sent_line += f'╎       {g_disc_num_brackets:3d}       '
     else:
-        sent_line += f'|                 '
+        sent_line += f'╎                 '
     if p_tag_match_count:
         tag_match, p_tag_count = p_tag_match_count
-        sent_line += f'|  {tag_match:3d}   {p_tag_count:3d}  '
-        sent_line += '   |' if g_tag_count == p_tag_count else ' x |'
+        sent_line += f'╎  {tag_match:3d}   {p_tag_count:3d}  '
+        sent_line += '   ╎' if g_tag_count == p_tag_count else ' x ╎'
     else:
-        sent_line += f'|          {g_tag_count:3d}     |'
+        sent_line += f'╎          {g_tag_count:3d}     ╎'
     return sent_line
 
 class DiscoEvalb:
@@ -123,15 +123,15 @@ class DiscoEvalb:
         if g_disc_num_brackets and g_disc_brackets == p_disc_brackets:
             self._disc_exact += 1
         sent_prec, sent_rec, sent_fb1 = _scores(bracket_match, p_num_brackets, g_num_brackets)
-        sent_line =  f'| {disc_mark} {self._total_sents - self._tick:5d} |'
-        sent_line += f' {sent_prec:6.2f} {sent_rec:6.2f}  {sent_fb1:6.2f} |'
-        sent_line += f' {bracket_match:3d}   {g_num_brackets:3d}   {p_num_brackets:3d} |'
+        sent_line =  f'╎ {disc_mark} {self._total_sents - self._tick:5d} ╎'
+        sent_line += f' {sent_prec:6.2f} {sent_rec:6.2f}  {sent_fb1:6.2f} ╎'
+        sent_line += f' {p_num_brackets:3d}   {bracket_match:3d}   {g_num_brackets:3d} ╎'
         if g_disc_num_brackets or p_disc_num_brackets:
-            sent_line += f' {disc_bracket_match:3d}   {g_disc_num_brackets:3d}   {p_disc_num_brackets:3d} |'
+            sent_line += f' {p_disc_num_brackets:3d}   {disc_bracket_match:3d}   {g_disc_num_brackets:3d} ╎'
         else:
-            sent_line += '                 |'
+            sent_line += '                 ╎'
         sent_line += f'  {tag_match:3d}   {p_tag_count:3d}  '
-        sent_line += '   |' if g_tag_count == p_tag_count else ' x |'
+        sent_line += '   ╎' if g_tag_count == p_tag_count else ' x ╎'
         self._sent_lines.append(sent_line)
         self._total_match += bracket_match
         self._total_pred += p_num_brackets
@@ -142,16 +142,16 @@ class DiscoEvalb:
     def add_batch_line(self, batch_id):
         batch_id = str(batch_id).rjust(4, '0')
         self._tick = self._total_sents
-        self._sent_lines.append(f'|- B{batch_id} ------------------------------------------------------------------------------|')
+        self._sent_lines.append(f'├─ B{batch_id} ─┼───────────────────────┼─────────────────┼─────────────────┼────────────────┤')
 
     def __str__(self):
         tp, tr, tf, dp, dr, df = self.summary()
-        line =  '|======================================================================================|\n'
-        line += '|  Batch  |                     Total               |      Disco.     |        PoS     |\n'
-        line += '| d sent. |  prec.   rec.    F1   | match gold test | match gold test | match gold err |\n'
-        # line += '|--------------------------------------------------------------------------------------|\n'
+        line =  '╒═════════╤═════════════════════════════════════════╤═════════════════╤════════════════╕\n'
+        line += '╎  Batch  ╎                     Total               ╎      Disco.     ╎        PoS     ╎\n'
+        line += '╎ d sent. ╎  prec.   rec.    F1   | test match gold ╎ test match gold ╎ match gold err ╎\n'
+        # line += '|──────────────────────────────────────────────────────────────────────────────────────|\n'
         line += '\n'.join(self._sent_lines) + '\n'
-        line += '|======================================================================================|\n\n\n'
+        line += '╘═════════╧═══════════════════════╧═════════════════╧═════════════════╧════════════════╛\n\n\n'
         line += 'Sentences in key'.ljust(30) + f': {self._total_sents}\n'
         line += 'Sentences missing in answer'.ljust(30) + f': {self._missing}\n'
         line += 'Total edges in key'.ljust(30) + f': {self._total_gold}\n'

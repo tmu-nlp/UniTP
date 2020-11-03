@@ -91,6 +91,7 @@ class Operator:
         else:
             prefix = '   ⌙→ Test ' # match length of validation
         scores, ds_logg, from_start = self.validation_or_test(M_TEST, ds_total, ds_names, ds_iters, '🔮', epoch, final_test)
+        scores['epoch'] = epoch
         self._recorder.log(timestamp(epoch, prefix) + f' - {ds_logg} ({from_start} from start).')
         return scores
 

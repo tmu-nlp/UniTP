@@ -11,9 +11,9 @@ from models.utils import PCA, fraction, hinge_score
 from models.loss import binary_cross_entropy, hinge_loss
 from experiments.helper import warm_adam
 
-train_type = dict(loss_weight = dict(tag    = BaseType(0.3, validator = frac_open_0),
-                                     label  = BaseType(0.1, validator = frac_open_0),
-                                     orient = BaseType(0.6, validator = frac_open_0)),
+train_type = dict(loss_weight = dict(tag    = BaseType(0.2, validator = frac_open_0),
+                                     label  = BaseType(0.3, validator = frac_open_0),
+                                     orient = BaseType(0.5, validator = frac_open_0)),
                   learning_rate = BaseType(0.001, validator = frac_open_0),
                   tune_pre_trained_from_nth_epoch = tune_epoch_type,
                   lr_factor_for_tuning = frac_06,
@@ -150,12 +150,12 @@ class PennOperator(Operator):
         if use_test_set:
             if final_test:
                 folder = 'penn_test'
-                save_tensors = True
+                scores_of_bins = save_tensors = True
             else:
                 folder = 'penn_test_with_devel'
                 save_tensors = is_bin_times(int(float(epoch)) - 1)
+                scores_of_bins = False
             length_bins = test_bins
-            scores_of_bins = True
         else:
             folder = 'penn_devel'
             length_bins = devel_bins

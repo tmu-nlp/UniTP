@@ -103,8 +103,9 @@ def discodop_eval(fhead, fdata, prm_file, rpt_file = None):
             smy['DF'] = float(line.split()[2])
 
     if rpt_file:
-        rpt_file.write('\nResults from discodop eval: [Total]\n\n')
+        rpt_file.write('\n═══════════════════════════════════════════════════════════════════════════════════════\n')
+        rpt_file.write('Results from discodop eval: [Total]\n')
         rpt_file.write(total)
-        rpt_file.write('\n [Discontinuous Only]')
+        rpt_file.write('\n [Discontinuous Only]\n')
         rpt_file.write(discontinuous)
     return smy
