@@ -21,8 +21,8 @@ Once you `git clone https://github.com/tmu-nlp/UniTP` this repository, the folde
 our best pre-trained LSTM models and visualization samples.
 
 - Use `./visualization.py '000/lstm_nccp/0.ptb/penn_devel'` to see English continuous parsing training process.
-- Use `./visualization.py '000/lstm_dccp/0.dptb/disco_devel'` to see Engish discontinuous parsing training process.
-- Use `./visualization.py '000/lstm_dccp/0.tiger/disco_devel'` to see German discontinuous parsing training process.
+- Use `./visualization.py '000/lstm_dccp/1.dptb/disco_devel'` to see Engish discontinuous parsing training process.
+- Use `./visualization.py '000/lstm_dccp/2.tiger/disco_devel'` to see German discontinuous parsing training process.
 (We use freely available Penn Treebank/PTB sections for this visualization.)
 
 You can also train a new model with your corpus to see more details.
