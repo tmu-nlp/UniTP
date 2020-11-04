@@ -736,6 +736,7 @@ if desktop:
                                         stat = SentenceEnergy(num_word, sample.mpc_word, sample.mpc_phrase,
                                                               1, None, sample.segment, sample.seg_length, False)
                                         data_.append((sample, stat))
+                                        # import pdb; pdb.set_trace()
                                     self._sent_cache[fname_time] = data_, data[-1]
                     self._selected = bid, num_word, head_
 

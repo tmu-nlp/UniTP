@@ -31,7 +31,7 @@ def create_join(base_path, *succ, **kwargs):
 def rm_rf(fpath, print_to):
     for path, _, fnames in walk(fpath, False):
         if print_to:
-            print(f'clean {len(fnames)} files at ' + path, file = print_to)
+            print(f'clear {len(fnames)} files in ' + path, file = print_to)
         for fname in fnames:
             remove(join(path, fname))
         rmdir(path)

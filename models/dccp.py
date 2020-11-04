@@ -149,10 +149,10 @@ class DiscoStem(nn.Module):
         hidden_size = orient_dim // 2
         hinge_score = lambda x: hinge_score_(x, False)
         self._orient_type = orient_type = disco_orient_to_dict(orient_type)
-        self._jnt_act, joint_loss = (hinge_score, hinge_loss) if orient_type['j'] == 'hinge' else (nn.Sigmoid(), binary_cross_entropy)
+        self._jnt_score, joint_loss = (hinge_score, hinge_loss) if orient_type['j'] == 'hinge' else (nn.Sigmoid(), binary_cross_entropy)
         if 'ce' in orient_type.values():
             orient_bits = 3
-            self._orient_act = convert32
+            self._orient_scores = convert32
             # right_inv = direc_inv = inv_sigmoid
             self._loss_fns = joint_loss
         else:
@@ -161,11 +161,11 @@ class DiscoStem(nn.Module):
             right_act, right_loss = (hinge_score, hinge_loss) if orient_type['r'] == 'hinge' else (nn.Sigmoid(), binary_cross_entropy)
             self._rgt_act = right_act
             self._dir_act = direc_act
-            def orient_act(right_direc):
+            def orient_scores(right_direc):
                 right = right_act(right_direc[:, :, 0])
                 direc = direc_act(right_direc[:, :, 1])
                 return right, direc
-            self._orient_act = orient_act
+            self._orient_scores = orient_scores
             self._loss_fns = right_loss, direc_loss, joint_loss
         # bias_fns = DiscoThresholds(right_inv, joint_inv, direc_inv)
         self._raw_threshold = raw_threshold = DiscoThresholds(**threshold)
@@ -371,8 +371,8 @@ class DiscoStem(nn.Module):
         return callable(self._loss_fns)
 
     def get_stem_score(self, right_direc, joint):
-        right_score, direc_score = self._orient_act(right_direc)
-        joint_score = self._jnt_act(joint)
+        right_score, direc_score = self._orient_scores(right_direc)
+        joint_score = self._jnt_score(joint)
         return right_score, joint_score, direc_score
 
     def get_stem_prediction(self, right_direc, joint, get_score = False):

@@ -148,13 +148,13 @@ class Manager:
             task_path = join(self._work_dir, task_name)
             if not isdir(task_path):
                 continue
-            print(f'In task ==={task_name}===', file = print_file)
+            print(f'In task <<< {task_name} >>>', file = print_file)
             status = Recorder.experiments_status(task_path)
-            for key, vlist in status.items():
+            for status_key, vlist in status.items():
                 if vlist:
-                    print(f'  {key}:', file = print_file)
+                    print(f'  {status_key}:', file = print_file)
                     for info in vlist:
-                        print(info, file = print_file)
+                        print('    ' + info, file = print_file)
 
     def check_data(self, build_if_not_yet = False, num_thread = 1):
         modified = []

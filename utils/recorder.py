@@ -255,7 +255,7 @@ class Recorder:
         rt_file = join(task_path, _rt_file)
         rt_lock = join(task_path, _rt_lock)
         (instance_status, unlock), modifed = load_yaml(rt_file, rt_lock, True), False
-        status = dict(locking = [], unlocked = [], other = [])
+        status = dict(locking = [], unlocked = [], other = [], tested = [])
         folders = listdir(task_path)
 
         name_len = 0
@@ -293,8 +293,11 @@ class Recorder:
                 fpath = new_fpath + '\t<- ' + folder
                 instance = _instance
                 modifed = True
-            key = instance_status[instance].get('key', '?????')
-            status['unlocked'].append(f'({key})\t {fpath}')
+            key = instance_status[instance].get('key')
+            if key:
+                status['tested'].append(f'({key:.2f})    {fpath}')
+            else:
+                status['unlocked'].append(f'(?)            {fpath}')
 
         unlock()
         if modifed:
