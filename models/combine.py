@@ -277,10 +277,11 @@ class Interpolation(Add):
         self._compose = _compose
 
     def compose(self, lw_emb, rw_emb, is_jnt):
-        if self._use_condenser and is_jnt is not None and is_jnt.shape[1] > 1:
+        if self._use_condenser and is_jnt.any():
             helper = condense_helper(is_jnt.squeeze(dim = 2), as_existence = True)
             cds_lw, seq_idx = condense_left(lw_emb, helper, get_indice = True)
             cds_rw          = condense_left(rw_emb, helper)
+            # print(f'helper {helper[1]} {cds_lw.shape}, {is_jnt.shape} {is_jnt.sum()}')
             cds_cmb = self._compose(cds_lw, cds_rw)
             return release_left(cds_cmb, seq_idx)
         return self._compose(lw_emb, rw_emb)

@@ -144,11 +144,12 @@ class Manager:
     def list_experiments_status(self, print_file = sys.stdout):
         from utils.recorder import Recorder
         task_status = load_yaml(*self._mfile_lfile)['task']
+        print(byte_style('::Experiment MONITOR::', '2'), file = print_file)
         for task_name in task_status:
             task_path = join(self._work_dir, task_name)
             if not isdir(task_path):
                 continue
-            print(f'In task <<< {task_name} >>>', file = print_file)
+            print(f'In task <<< {byte_style(task_name, "6")} >>>', file = print_file)
             status = Recorder.experiments_status(task_path)
             for status_key, vlist in status.items():
                 if vlist:
@@ -156,7 +157,7 @@ class Manager:
                     for info in vlist:
                         print('    ' + info, file = print_file)
 
-    def check_data(self, build_if_not_yet = False, num_thread = 1):
+    def check_data(self, build_if_not_yet = False, num_thread = 1, print_file = sys.stderr):
         modified = []
         ready_paths = {}
         verbose = defaultdict(list)
@@ -164,6 +165,7 @@ class Manager:
         tools  = status['tool']
         data_status   = status['data']
         
+        print(byte_style('::Data STATUS::', '2'), file = print_file)
         if isfile(tools['fasttext']['path']):
             fasttext = tools['fasttext']
         else: # TODO: make this an option.
@@ -198,10 +200,10 @@ class Manager:
                 ds_ready = True
                 if ft_ready:
                     ready_paths[corp_name] = elp
-                    print(f"*local dataset '{byte_style(corp_name, '3')}' is ready", file = sys.stderr)
+                    print(f"*local dataset '{byte_style(corp_name, '3')}' is ready", file = print_file)
                     continue # ready, no need to build
             elif build_if_not_yet:
-                print(f"(Re)build local dataset '{corp_name}'", file = sys.stderr)
+                print(f"(Re)build local dataset '{corp_name}'", file = print_file)
                 # try:
                 sizes = m.build(create_join(self._work_dir, 'data', corp_name), sp, corp_name,
                                 **datum['build_params'], num_thread = num_thread)
@@ -221,10 +223,10 @@ class Manager:
             if fasttext and ds_ready and not ft_ready:
                 m.call_fasttext(fasttext, elp, corp_name)
 
-        if verbose:
-            print('data:', file = sys.stderr)
+        if print_file and verbose:
+            print('data:', file = print_file)
             for data, msg in verbose.items():
-                print(data.rjust(15), byte_style('; '.join(msg), '1') + '.', file = sys.stderr)
+                print(data.rjust(15), byte_style('; '.join(msg), '1') + '.', file = print_file)
         if modified:
             # reload for consistency, update only modified data
             file_status = load_yaml(*self._mfile_lfile)
@@ -233,7 +235,7 @@ class Manager:
             save_yaml(file_status, *self._mfile_lfile)
         return ready_paths, status
 
-    def check_task_settings(self):
+    def check_task_settings(self, print_file = sys.stderr):
         ready_tasks = {}
         ready_dpaths, status = self.check_data()
         verbose = {}
@@ -245,6 +247,9 @@ class Manager:
             evalb_errors.append('Invalid evalb path')
         if not isfile(evalb['prm']):
             evalb_errors.append('Invalid evalb prm file')
+        evalb_lcfrs_errors = []
+        if not isfile(evalb_lcfrs):
+            evalb_lcfrs_errors.append('Invalid evalb_lcfrs_prm file')
 
         for module_name, task_config in status['task'].items():
             m = self._exp_modules[module_name]
@@ -252,21 +257,31 @@ class Manager:
             data_config = task_config['data']
             errors = []
 
-            if data_config.keys() > ready_dpaths.keys():
-                errors.append('Data is not ready: ' + ', '.join(data_config.keys() - ready_dpaths.keys()))
-            else:
-                if any(d == C_PENN_ABS for d in data_config):
-                    errors.extend(evalb_errors)
-                if any(d == C_DISCO_ABS for d in data_config) and not isfile(evalb_lcfrs):
-                    errors.append('Invalid evalb_lcfrs_prm file')
-                for k, mnp, unp in iter_zipped_nt_params(data_type, data_config):
-                    if not mnp.validate(unp):
-                        errors.append(f'Invalid data_config: {k} = {unp}')
-                    # try:
-                    #     if not ( or isinstance(unp, int) and mnp.is_valid(mnp[unp])):
-                            
-                    # except Exception as e:
-                    #     errors.append(f'{e} raised by {k}({mnp}) with input {unp}')
+            if 'nccp' in module_name:
+                errors.extend(evalb_errors)
+                datasets = ('ptb', 'ctb', 'ktb')
+                if not any(x in ready_dpaths for x in datasets):
+                    errors.append('None of \'' + "', '".join(datasets) + '\' is ready')
+            elif 'dccp' in module_name:
+                errors.extend(evalb_lcfrs_errors)
+                datasets = ('tiger', 'dptb')
+                if not any(x in ready_dpaths for x in datasets):
+                    errors.append('Neither \'' + "' or '".join(datasets) + '\' is ready')
+            elif 'sentiment' in module_name:
+                if 'sstb' not in ready_dpaths:
+                    errors.append('Core data \'sstb\' is not ready')
+            elif 'tokenization' in module_name:
+                if not ready_dpaths:
+                    errors.append('None of the datasets is ready')
+                
+            for k, mnp, unp in iter_zipped_nt_params(data_type, data_config):
+                if not mnp.validate(unp):
+                    errors.append(f'Invalid data_config: {k} = {unp}')
+                # try:
+                #     if not ( or isinstance(unp, int) and mnp.is_valid(mnp[unp])):
+                        
+                # except Exception as e:
+                #     errors.append(f'{e} raised by {k}({mnp}) with input {unp}')
 
             for k, mnp, unp in iter_zipped_nt_params(model_type, task_config['model']):
                 if not mnp.validate(unp): #( or isinstance(unp, int) and mnp.is_valid(mnp[unp])):
@@ -281,16 +296,16 @@ class Manager:
             else:
                 ready_tasks[module_name] = task_config
 
-        if verbose:
-            print('task:', file = sys.stderr)
-            for task_name, msg in verbose.items():
-                print(task_name.rjust(15), byte_style('; '.join(msg) + '.', '1'), file = sys.stderr)
+        if print_file and verbose:
+            print('task:', file = print_file)
+            for task_name, msg in sorted(verbose.items(), key = lambda x: x[0][::-1]):
+                print(task_name.rjust(15), byte_style('; '.join(msg) + '.', '1'), file = print_file)
 
         return ready_dpaths, ready_tasks, status
 
     def ready_experiments(self, print_file = sys.stdout):
-        ready_dpaths, ready_tasks, status = self.check_task_settings()
-        print('Ready experiments:', ', '.join(ready_tasks.keys()), file = print_file)
+        ready_dpaths, ready_tasks, status = self.check_task_settings(None)
+        print('Ready experiments:', ', '.join(byte_style(x, '3') for x in ready_tasks.keys()), file = print_file)
         return ready_dpaths, ready_tasks, status
 
     def select_and_run(self, args):
@@ -399,13 +414,14 @@ if __name__ == '__main__':
     if args.threads > 0:
         from utils import types
         types.num_threads = args.threads
+    if args.prepare:
+        manager.check_data(build_if_not_yet = True, print_file = sys.stderr if args.select else None)
     if args.select:
         manager.select_and_run(args)
         # except ValueError as ve:
         #     print('Dev: ValueError [Exit]')
         #     print(ve)
     else:
-        manager.check_data(build_if_not_yet = args.prepare)
         with DelayedKeyboardInterrupt():
             manager.list_experiments_status() # refine this one
         manager.ready_experiments()

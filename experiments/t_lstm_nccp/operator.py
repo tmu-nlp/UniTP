@@ -10,6 +10,7 @@ from utils.types import M_TRAIN, BaseType, frac_open_0, true_type, tune_epoch_ty
 from models.utils import PCA, fraction, hinge_score
 from models.loss import binary_cross_entropy, hinge_loss
 from experiments.helper import warm_adam
+from utils.shell_io import byte_style
 
 train_type = dict(loss_weight = dict(tag    = BaseType(0.2, validator = frac_open_0),
                                      label  = BaseType(0.3, validator = frac_open_0),
@@ -337,8 +338,11 @@ class PennVis(BaseVis):
                     remove(fhead)
                     remove(fdata)
 
-        desc = f'Evalb({scores["LP"]:.2f}/{scores["LR"]:.2f}/{scores["F1"]:.2f})'
-        return scores, desc, f'N: {scores["N"]} {desc}'
+        desc = f'Evalb({scores["LP"]:.2f}/{scores["LR"]:.2f}/'
+        key_score = f'{scores["F1"]:.2f}'
+        desc_for_screen = desc + byte_style(key_score, underlined = True) + ')'
+        desc_for_logger = f'N: {scores["N"]} {desc}{key_score})'
+        return scores, desc_for_screen, desc_for_logger
 
 # an example of Unmatched Length from evalb
 # head

@@ -399,7 +399,7 @@ def gap_degree(bottom, top_down, nid, bottom_is_bid = True):
         bit_coverage ^= child_coverage
 
     if finally_return: # or nid.endswith('_VROOT'):
-        assert bit_fanout(bit_coverage) == 1
+        assert bit_fanout(bit_coverage) == 1, 'discontinuous root'
         return gap_cnt
 
     gap_cnt[nid] = bit_fanout(bit_coverage) - 1
@@ -442,7 +442,7 @@ def bracketing(bottom, top_down, nid, bottom_is_bid = False,
     if not excluded_labels or label not in excluded_labels:
         bracket_cnt[(label, bit_coverage)] += 1
     if final_check:
-        assert bit_coverage + ~bit_coverage == -1
+        assert bit_coverage + ~bit_coverage == -1, 'Discontinuous root'
     return bracket_cnt
 
 # def swappable_layers(layers_of_label, layers_of_right, layers_of_joint, layers_of_direc):
@@ -502,7 +502,29 @@ def locations(node, bottom, top_down, consumed_top_down):
     return locs
 
 from random import random
-def _layer_base(bottom, top_down, completed_nodes, some_or_all, lean_joint, factor, sub_suffix, get_soft_right):
+def _positional_right(cid, num_children, factor):
+    position = 1 - (cid + 0.5) / num_children
+    if position == factor == 0.5:
+        right = random() > 0.5
+    else:
+        right = position > factor # T[TfF]F
+    return right
+
+def _new_dep(dependency, d_node, h_node, new_node):
+    head = dependency.pop(h_node)
+    head.children.update(dependency.pop(d_node).children)
+    dependency[new_node] = head
+
+from utils.math_ops import lr_gen
+def _layer_base(bottom,
+                top_down,
+                completed_nodes,
+                some_or_all,
+                lean_joint,
+                factor,
+                sub_suffix,
+                get_soft_right,
+                dependency):
     bottom_up = {}
     right_hash = {}
     swappable_locations = []
@@ -510,6 +532,7 @@ def _layer_base(bottom, top_down, completed_nodes, some_or_all, lean_joint, fact
     bottom_flag = [True for _ in bottom]
     soft_right = {}
     consumed_top_down = {}
+    depend_on = lambda d_node, h_node: dependency[d_node].label in dependency[h_node].children
     for p_node, td in top_down.items():
         p_node_complete = p_node in completed_nodes
         not_enough_child = not some_or_all(node in bottom for node in td.children)
@@ -557,14 +580,28 @@ def _layer_base(bottom, top_down, completed_nodes, some_or_all, lean_joint, fact
             else:
                 if cid == num_children - 1:
                     right = False
-                else:
-                    position = 1 - (cid + 0.5) / num_children
-                    if position == factor == 0.5:
-                        right = random() > 0.5
+                elif dependency:
+                    internal_dep = False
+                    for hid, h_node in lr_gen(location_children, cid):
+                        if node not in dependency or h_node not in dependency:
+                            # if 'VROOT' not in node and 'VROOT' not in h_node:
+                            #     print(node, h_node)
+                            #     import pdb; pdb.set_trace()
+                            continue
+                            # continue # not compactible
+                        if depend_on(node, h_node):
+                            internal_dep = True
+                            break
+                    # import pdb; pdb.set_trace()
+                    if internal_dep:
+                        right = nid < hid # towards head
                     else:
-                        right = position > factor # T[TfF]F
+                        right = _positional_right(cid, num_children, factor)
+                else:
+                    right = _positional_right(cid, num_children, factor)
                 if last_nid == nid - 1: # locality
-                    assert last_right or not right # coherent
+                    if not dependency:
+                        assert last_right or not right, 'incoherent' # coherent
                     if not lean_joint:
                         joint_rset.append(nid)
                     if last_right and not right: # agreeable_orients
@@ -580,6 +617,11 @@ def _layer_base(bottom, top_down, completed_nodes, some_or_all, lean_joint, fact
                             while new_node + f'{sub_suffix}{sub_id}' in group:
                                 sub_id += 1
                             new_node += f'{sub_suffix}{sub_id}'
+                        if dependency and node in dependency and last_node in dependency:
+                            if depend_on(last_node, node): # dep -> head
+                                _new_dep(dependency, last_node, node, new_node)
+                            elif depend_on(node, last_node): # head <- dep
+                                _new_dep(dependency, node, last_node, new_node)
                         bottom_up[node] = new_node
                         group[new_node] = group.pop(last_node) + '.' + group.pop(node)
                         bottom_flag[last_nid] = False
@@ -619,7 +661,7 @@ def _layer_output(bottom,
             right = right_hash[node]
             if last_right and not right:
                 if nid in joint_rset: # [>≥]j<
-                    assert new_bottom.pop() == last_node
+                    assert new_bottom.pop() == last_node, 'bad join'
                     new_bottom.append(bottom_up.pop(node))
                 else: # active swap [>≥]s<
                     last_node = new_bottom.pop()
@@ -674,18 +716,20 @@ def _layer_output(bottom,
         else:
             label_layer.append(top_down[node].label)
 
-    assert len(right_layer) == len(label_layer) == len(direc_layer)
-    assert len(right_layer) - 1 == len(joint_layer)
+    assert len(right_layer) == len(label_layer) == len(direc_layer), 'unmatched layers'
+    assert len(right_layer) - 1 == len(joint_layer), 'unmatched joint layers'
     return new_bottom, right_layer, joint_layer, label_layer, direc_layer
 
 
 def cross_signals(bottom, node2tag, bottom_unary, top_down, factor,
+                  dependency = None,
                   aggressive = True,
                   swap_rhs_priority = None,
                   get_soft_right = False,
                   lean_joint = False,
                   sub_prefix = '_',
                   pos_prefix = '#'):
+    factor = 1 - factor # range and type
     if swap_rhs_priority is None: # 
         # assert isinstance(factor, bool)
         swap_rhs_priority = factor > 0.5
@@ -708,7 +752,8 @@ def cross_signals(bottom, node2tag, bottom_unary, top_down, factor,
                                    lean_joint,
                                    factor,
                                    sub_suffix,
-                                   get_soft_right)
+                                   get_soft_right,
+                                   dependency)
 
         (new_bottom, right_layer, joint_layer, label_layer,
          direc_layer) = _layer_output(bottom,
@@ -739,21 +784,25 @@ def cross_signals(bottom, node2tag, bottom_unary, top_down, factor,
         layers_of_label.append([top_down[bottom.pop()].label])
     return layers_of_label, layers_of_right, layers_of_joint, layers_of_direc, layers_of_swaps
 
-from utils.types import E_ORIF5, O_RGT
+from utils.types import E_ORIF5, O_RGT, O_HEAD
 from copy import deepcopy
-def read_tiger_graph(graph):
+def read_tiger_graph(graph, dep_head = None):
     bottom_info, top_down, root_id = _read_graph(graph)
     lines = draw_str_lines(bottom_info, top_down)
     word, bottom, node2tag, bottom_unary = _pre_proc(bottom_info, top_down)
     bottom_tag = [node2tag[t] for t in bottom]
     gap = gap_degree(bottom, top_down, root_id)
     cnf_layers = {}
+    if dep_head:
+        dep_head = {node: TopDown(head, set([node])) for node, head in dep_head.items()}
+        cnf_layers[O_HEAD] = cross_signals(bottom, node2tag, bottom_unary, deepcopy(top_down), 0.5, dep_head)
     for oid, cnf_factor in enumerate(E_ORIF5):
         new_top_down = deepcopy(top_down) if cnf_factor != O_RGT else top_down
         cnf_layers[cnf_factor] = cross_signals(bottom, node2tag, bottom_unary, new_top_down, (oid + 0.5) / 5)
     return word, bottom_tag, cnf_layers, gap, lines#, bottom_info, ret_top_down, root_id
 
-def read_disco_penn(tree):
+def read_disco_penn(tree, dep_head = None):
+    assert dep_head is None, 'dep is not supported for PTB'
     bottom_info, top_down, root_id = _read_dpenn(tree)
     lines = draw_str_lines(bottom_info, top_down)
     word, bottom, node2tag, bottom_unary = _pre_proc(bottom_info, top_down)
@@ -785,8 +834,12 @@ class MidinTreeKeeper:
         self._bottom_tags = [node2tag[t] for t in bottom]
         self._root_id = root_id
         self._top_down = top_down
-        self._max_sub = max(len(td.children) for td in top_down.values()) # >= 2
+        self._max_sub = max(len(td.children) for td in top_down.values()) if top_down else 0 # >= 2
         self._args = bottom, node2tag, bottom_unary
+        self._dep = None
+
+    def set_dependency(self, dep):
+        self._dep = dep
 
     def binarize(self, factor):
         return self._word, self._bottom_tags, cross_signals(*self._args, deepcopy(self._top_down), factor)
@@ -804,6 +857,13 @@ class MidinTreeKeeper:
             # evalb_args = disco_tree(self._word, self._bottom_tags, *args)[:3]
             args = disco_tree(self._word, self._bottom_tags, *args, perserve_sub = True)[:2]
             lines += f'factor = {factor}\n  '
+            lines += '\n  '.join(draw_str_lines(*args))
+            lines += '\n'
+        if self._dep:
+            args = cross_signals(*self._args, deepcopy(self._top_down), 0.5, self._dep)
+            # evalb_args = disco_tree(self._word, self._bottom_tags, *args)[:3]
+            args = disco_tree(self._word, self._bottom_tags, *args, perserve_sub = True)[:2]
+            lines += f'factor = dependency\n  '
             lines += '\n  '.join(draw_str_lines(*args))
             lines += '\n'
         #     p_tags = set(evalb_args[0])

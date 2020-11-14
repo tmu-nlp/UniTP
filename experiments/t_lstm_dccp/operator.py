@@ -399,8 +399,10 @@ class DiscoVis(BaseVis):
                 tp, tr, tf, dp, dr, df = self._evalb.summary()
                 scores = dict(TP = tp, TR = tr, TF = tf, DP = dp, DR = dr, DF = df, N = total_sents)
 
-        desc = f'Evalb({tp:.2f}/{tr:.2f}/{tf:.2f}|{dp:.2f}/{dr:.2f}/{df:.2f})'
-        return scores, desc, f'N: {scores["N"]} {desc}', self._head_batches
+        desc_for_screen = f'Evalb({tp:.2f}/{tr:.2f}/' + byte_style(f'{tf:.2f}', underlined = True)
+        desc_for_screen += f'|{dp:.2f}/{dr:.2f}/' + byte_style(f'{df:.2f}', underlined = True) + ')'
+        desc_for_logger = f'N: {total_sents} Evalb({tp:.2f}/{tr:.2f}/{tf:.2f}|{dp:.2f}/{dr:.2f}/{df:.2f})'
+        return scores, desc_for_screen, desc_for_logger, self._head_batches
 
         # if self._vd_lines:
         #     with open(self._dtv.join(f'ascii.{self.epoch}.art'), 'w') as fw:

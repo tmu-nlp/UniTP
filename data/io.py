@@ -117,7 +117,7 @@ def gen_vocab(fname):
             yield tok
 
 def check_vocab(fname, expected_size = None):
-    print('check', fname, file = sys.stderr)
+    # print('check', fname, file = sys.stderr)
     special_bound = None
     _delim = __fmt_cnt[0]
     try:

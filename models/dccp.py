@@ -178,6 +178,7 @@ class DiscoStem(nn.Module):
                                    bidirectional = True,
                                    batch_first   = True,
                                    dropout = rnn_drop_out if num_layers > 1 else 0)
+        # self._orient_emb = nn.Linear(model_dim, orient_dim)
         self._stem_dp = dp_layer = nn.Dropout(drop_out)
         self._ori_dir = nn.Linear(orient_dim, orient_bits)
         joint_type = parse_joint_type(joint_type)
@@ -260,6 +261,7 @@ class DiscoStem(nn.Module):
 
     def predict_orient_direc(self, unit_hidden, h0c0):
         orient_hidden, _ = self._orient_emb(unit_hidden, h0c0)
+        # orient_hidden = self._orient_emb(unit_hidden) #
         orient_hidden = self._stem_dp(orient_hidden)
         return self._ori_dir(orient_hidden), orient_hidden
     

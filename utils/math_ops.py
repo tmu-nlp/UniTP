@@ -48,6 +48,23 @@ def uneven_split(threshold, score):
         score /= threshold
     return score
 
+def lr_gen(list_or_tuple, start):
+    n = len(list_or_tuple) - 1
+    radius = 1
+    while True:
+        lhs = start - radius
+        has_lhs = 0 <= lhs
+        if has_lhs:
+            yield list_or_tuple[lhs]
+        rhs = start + radius
+        has_rhs = rhs <= n
+        if has_rhs:
+            yield list_or_tuple[rhs]
+        if has_lhs or has_rhs:
+            radius += 1
+            continue
+        break
+
 if __name__ == '__main__1':
     def max_nil_relay(n):
         if n < 3:

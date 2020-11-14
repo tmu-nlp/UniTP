@@ -6,14 +6,13 @@ E_DISCO = C_TGR, C_DPTB
 from data.io import make_call_fasttext, check_fasttext, check_vocab, split_dict
 build_params = {C_DPTB: split_dict(   '2-21',          '22',          '23'),
                 C_TGR:  split_dict('1-40474', '40475-45474', '45475-50474')}
-                # C_KTB: dict(train_set = 'non_numeric_naming') }
 ft_bin = {C_DPTB: 'en', C_TGR: 'de'}
 call_fasttext = make_call_fasttext(ft_bin)
 
-from utils.types import none_type, false_type, true_type, binarization_5, NIL
+from utils.types import none_type, false_type, true_type, binarization_5_head, NIL
 from utils.types import train_batch_size, train_max_len, train_bucket_len, vocab_size, tune_epoch_type
 disco_config = dict(vocab_size     = vocab_size,
-                    binarization   = binarization_5,
+                    binarization   = binarization_5_head,
                     batch_size     = train_batch_size,
                     max_len        = train_max_len,
                     bucket_len     = train_bucket_len,
@@ -45,7 +44,7 @@ def build(save_to_dir,
     from utils.shell_io import byte_style
     from data.io import SourcePool, distribute_jobs
     from multiprocessing import Process, Queue
-    from utils.types import E_ORIF5, M_TRAIN, M_DEVEL, M_TEST, num_threads
+    from utils.types import E_ORIF5_HEAD, E_ORIF5, M_TRAIN, M_DEVEL, M_TEST, num_threads
     from contextlib import ExitStack
     from time import sleep
     from data.delta import logits_to_xtype
@@ -61,14 +60,17 @@ def build(save_to_dir,
             tag_cnt  = Counter()
             sent_gap_cnt   = defaultdict(int)
             phrase_gap_cnt = Counter()
-            label_cnts = {o: Counter() for o in E_ORIF5}
-            xtype_cnts = {o: Counter() for o in E_ORIF5}
-            q, sents, read_func = self._args
-            for sent_tag, sent in sents:
+            q, sents, read_func, enum_ori = self._args
+            label_cnts = {o: Counter() for o in enum_ori}
+            xtype_cnts = {o: Counter() for o in enum_ori}
+            for sent_id, sent, sent_dep in sents:
                 try:
-                    wd, bt, cnf_layers, gd, lines = read_func(sent)
-                except (ValueError, AssertionError):
-                    errors.append(sent_tag)
+                    wd, bt, cnf_layers, gd, lines = read_func(sent, sent_dep)
+                except ValueError as e:
+                    errors.append(sent_id + f' Value {e}')
+                    continue
+                except AssertionError as e:
+                    errors.append(sent_id + f' Assert {e}')
                     continue
                 except UnboundLocalError: # No
                     # if len(sent[0][0]) > 1 and len(sent[0][1]) > 0:
@@ -93,7 +95,7 @@ def build(save_to_dir,
                 tag_cnt  += Counter(bt)
                 wd = ' '.join(wd) + '\n'
                 bt = ' '.join(bt) + '\n'
-                bundle = sent_tag, len(wd), wd, bt, cnf_bundle, sent_gap_degree, '\n'.join(lines)
+                bundle = sent_id, len(wd), wd, bt, cnf_bundle, sent_gap_degree, '\n'.join(lines)
                 q.put(bundle)
 
             bundle = len(sents) - len(errors), errors, word_cnt, tag_cnt, label_cnts, xtype_cnts, phrase_gap_cnt, sent_gap_cnt
@@ -119,9 +121,11 @@ def build(save_to_dir,
         corpus = []
         for fp in all_folders:
             for sent in reader.parsed_sents(fp):
-                corpus.append((fp[:2], sent))
+                corpus.append((fp[:2], sent, None))
         read_func = read_disco_penn
+        enum_binarizations = E_ORIF5
     elif corp_name == C_TGR:
+        from data.cross.tiger2dep import get_tiger_heads
         devel_set = strange_to(devel_set)
         test_set  = strange_to(test_set)
         non_train_set = devel_set + test_set
@@ -136,14 +140,20 @@ def build(save_to_dir,
             in_corpus = lambda x: int(x[1:]) in all_sets
             in_train_set = lambda x: int(x[1:]) in train_set
         root = ElementTree.parse(corp_path).getroot()
-        corpus = [(sent.get('id'), sent) for sent in root[1] if in_corpus(sent.get('id'))]
+        dep_root = get_tiger_heads(corp_path)
+        corpus = []
+        for sent in root[1]:
+            sid = sent.get('id')
+            if in_corpus(sid):
+                corpus.append((sid, sent, dep_root.pop(sid)))
         read_func = read_tiger_graph
+        enum_binarizations = E_ORIF5_HEAD
 
     num_threads = min(num_threads, len(corpus))
     workers = distribute_jobs(corpus, num_threads)
     q = Queue()
     for i in range(num_threads):
-        w = WorkerX(q, workers[i], read_func)
+        w = WorkerX(q, workers[i], read_func, enum_binarizations)
         w.start()
         workers[i] = w
 
@@ -153,8 +163,8 @@ def build(save_to_dir,
     tag_cnt  = Counter()
     sent_gap_cnt   = Counter()
     phrase_gap_cnt = Counter()
-    label_cnts = {o: Counter() for o in E_ORIF5}
-    xtype_cnts = {o: Counter() for o in E_ORIF5}
+    label_cnts = {o: Counter() for o in enum_binarizations}
+    xtype_cnts = {o: Counter() for o in enum_binarizations}
     length_stat = dict(tlc = defaultdict(int), vlc = defaultdict(int), _lc = defaultdict(int))
     gap_bin_size = 1 if corp_name == C_DPTB else 2
     lines_by_gap_degree = defaultdict(list)
@@ -168,16 +178,16 @@ def build(save_to_dir,
         f_w  = stack.enter_context(open(join(save_to_dir, M_TEST  + '.word'), 'w'))
         f_p  = stack.enter_context(open(join(save_to_dir, M_TEST  + '.tag'),  'w'))
         f_g  = stack.enter_context(open(join(save_to_dir, M_TEST  + '.gap'),  'w'))
-        ftxs = { o:stack.enter_context(open(join(save_to_dir, f'{M_TRAIN}.xtype.{o}'), 'w')) for o in E_ORIF5}
-        ftls = { o:stack.enter_context(open(join(save_to_dir, f'{M_TRAIN}.label.{o}'), 'w')) for o in E_ORIF5}
-        ftis = { o:stack.enter_context(open(join(save_to_dir, f'{M_TRAIN}.index.{o}'), 'w')) for o in E_ORIF5}
-        ftss = { o:stack.enter_context(open(join(save_to_dir, f'{M_TRAIN}.swap.{o}' ), 'w')) for o in E_ORIF5}
-        fvxs = { o:stack.enter_context(open(join(save_to_dir, f'{M_DEVEL}.xtype.{o}'), 'w')) for o in E_ORIF5}
-        fvls = { o:stack.enter_context(open(join(save_to_dir, f'{M_DEVEL}.label.{o}'), 'w')) for o in E_ORIF5}
-        fvis = { o:stack.enter_context(open(join(save_to_dir, f'{M_DEVEL}.index.{o}'), 'w')) for o in E_ORIF5}
-        f_xs = { o:stack.enter_context(open(join(save_to_dir, f'{M_TEST}.xtype.{o}' ), 'w')) for o in E_ORIF5}
-        f_ls = { o:stack.enter_context(open(join(save_to_dir, f'{M_TEST}.label.{o}' ), 'w')) for o in E_ORIF5}
-        f_is = { o:stack.enter_context(open(join(save_to_dir, f'{M_TEST}.index.{o}' ), 'w')) for o in E_ORIF5}
+        ftxs = { o:stack.enter_context(open(join(save_to_dir, f'{M_TRAIN}.xtype.{o}'), 'w')) for o in enum_binarizations}
+        ftls = { o:stack.enter_context(open(join(save_to_dir, f'{M_TRAIN}.label.{o}'), 'w')) for o in enum_binarizations}
+        ftis = { o:stack.enter_context(open(join(save_to_dir, f'{M_TRAIN}.index.{o}'), 'w')) for o in enum_binarizations}
+        ftss = { o:stack.enter_context(open(join(save_to_dir, f'{M_TRAIN}.swap.{o}' ), 'w')) for o in enum_binarizations}
+        fvxs = { o:stack.enter_context(open(join(save_to_dir, f'{M_DEVEL}.xtype.{o}'), 'w')) for o in enum_binarizations}
+        fvls = { o:stack.enter_context(open(join(save_to_dir, f'{M_DEVEL}.label.{o}'), 'w')) for o in enum_binarizations}
+        fvis = { o:stack.enter_context(open(join(save_to_dir, f'{M_DEVEL}.index.{o}'), 'w')) for o in enum_binarizations}
+        f_xs = { o:stack.enter_context(open(join(save_to_dir, f'{M_TEST}.xtype.{o}' ), 'w')) for o in enum_binarizations}
+        f_ls = { o:stack.enter_context(open(join(save_to_dir, f'{M_TEST}.label.{o}' ), 'w')) for o in enum_binarizations}
+        f_is = { o:stack.enter_context(open(join(save_to_dir, f'{M_TEST}.index.{o}' ), 'w')) for o in enum_binarizations}
         
         for _ in count(): # Yes! this edition works fine!
             if q.empty():
@@ -185,15 +195,15 @@ def build(save_to_dir,
             else:
                 t = q.get()
                 if len(t) == 7:
-                    sent_tag, sent_len, wd, bt, cnf_bundle, sent_gap_degree, lines = t
-                    if in_devel_set(sent_tag):
+                    sent_id, sent_len, wd, bt, cnf_bundle, sent_gap_degree, lines = t
+                    if in_devel_set(sent_id):
                         length_stat['vlc'][sent_len] += 1
                         fw, ft, fxs, fls, fis, fss, fg = fvw, fvp, fvxs, fvls, fvis, None, fvg
-                    elif in_test_set(sent_tag):
+                    elif in_test_set(sent_id):
                         length_stat['_lc'][sent_len] += 1
                         fw, ft, fxs, fls, fis, fss, fg = f_w, f_p, f_xs, f_ls, f_is, None, f_g
                     else:
-                        assert in_train_set(sent_tag)
+                        assert in_train_set(sent_id)
                         length_stat['tlc'][sent_len] += 1
                         fw, ft, fxs, fls, fis, fss, fg = ftw, ftp, ftxs, ftls, ftis, ftss, ftg
                     fw.write(wd)
@@ -219,7 +229,7 @@ def build(save_to_dir,
                     tag_cnt  += tc
                     phrase_gap_cnt += pgc
                     sent_gap_cnt   += sgc
-                    for o in E_ORIF5:
+                    for o in enum_binarizations:
                         label_cnts[o] += lcs[o]
                         xtype_cnts[o] += xcs[o]
                     qbar.desc = f'  {thread_join_cnt} of {num_threads} threads ended with {qbar.total} samples, receiving'
@@ -262,7 +272,7 @@ def build(save_to_dir,
     _, ps = save_vocab(tag_file, tag_cnt,  [NIL])
     _, ss = save_vocab(syn_file, sum(label_cnts.values(), Counter()), [NIL])
     _, xs = save_vocab(xty_file, sum(xtype_cnts.values(), Counter()))
-    for o in E_ORIF5:
+    for o in enum_binarizations:
         save_vocab(join(save_to_dir, f'stat.xtype.{o}'), xtype_cnts[o])
         save_vocab(join(save_to_dir, f'stat.label.{o}'), label_cnts[o])
     from data.disco import DiscoReader

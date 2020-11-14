@@ -21,9 +21,9 @@ Once you `git clone https://github.com/tmu-nlp/UniTP` this repository, the folde
 our best pre-trained LSTM models and visualization samples.
 
 - Use `./visualization.py '000/lstm_nccp/0.ptb/penn_devel'` to see English continuous parsing training process.
+(We use freely available Penn Treebank/PTB sections for this visualization.)
 - Use `./visualization.py '000/lstm_dccp/1.dptb/disco_devel'` to see Engish discontinuous parsing training process.
 - Use `./visualization.py '000/lstm_dccp/2.tiger/disco_devel'` to see German discontinuous parsing training process.
-(We use freely available Penn Treebank/PTB sections for this visualization.)
 
 You can also train a new model with your corpus to see more details.
 
@@ -49,3 +49,13 @@ If you want a new work folder, try `mkdir Oh-My-Folder; ./manager.py Oh-My-Folde
 ### Tips
 - Try modifying the hyper-parameters in your `Oh-My-Folder/manager.yaml`.
 - `Oh-My-Folder/lstm_nccp/register_and_tests.yaml` contains the scores for this experiment.
+
+### Tips for Developers
+- All modules in `experiments` prefixed with `t_` will be recognized by `manager.py`.
+  - Feel free to write any model in your own experiment. For example, `t_lstm_tokenization` is 
+  a young and underdeveloped experiment. We wrote most codes in the local `model.py` rather than in
+  `models/`.
+  - `models/` contains our sophisticated models' base classes such as `nccp.py` and `dccp.py`.
+  If you are looking for our implementation, these two files along with `combine.py` are what you need.
+- Our reported top speed is high as 818 sent/sec, but it can be higher if you bring more thread power in your implementation.
+This framework is mainly for research. We do not pack vocabulary to the model. 
