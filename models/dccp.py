@@ -1,6 +1,7 @@
 import torch
 from torch import nn, Tensor
 from models.backend import Stem, activation_type, logit_type
+from models.self_att import SelfAttention
 
 from utils.types import orient_dim, hidden_dim, num_ori_layer, true_type, frac_2, frac_4, frac_5, BaseWrapper, BaseType
 from utils.math_ops import inv_sigmoid
@@ -120,16 +121,31 @@ def convert23_gold(right, direc):
 
 hinge_bias = lambda x: x - 0.5
 
+class SAL(nn.Module):
+    def __init__(self, in_size, out_size, num_layers):
+        super().__init__()
+        self._sa = SelfAttention(in_size, 10, num_layers)
+        self._fi = nn.Linear(in_size, out_size)
+        self._a1 = nn.ReLU()
+        self._a2 = nn.Tanh()
+
+    def forward(self, base, seq_len):
+        return self._a2(self._fi(self._a1(self._sa(base, seq_len))))
+
+to_name = lambda x: x.__name__
+orient_module = BaseType(0, as_index = True, as_exception = True, default_set = BaseWrapper.from_gen((nn.LSTM, nn.GRU, SAL), to_name))
+
 from models.combine import get_combinator, get_components, combine_type, valid_trans_compound
-stem_config = dict(orient_dim   = orient_dim,
-                   combine_type = combine_type,
-                   orient_type  = disco_orient_type,
-                   joint_type   = joint_type,
-                   local_joint  = true_type,
-                   threshold    = dict(right = frac_5, direc = frac_4, joint = frac_4),
-                   num_layers   = num_ori_layer,
-                   rnn_drop_out = frac_2,
-                   drop_out     = frac_4,
+stem_config = dict(orient_dim    = orient_dim,
+                   combine_type  = combine_type,
+                   orient_module = orient_module,
+                   orient_type   = disco_orient_type,
+                   joint_type    = joint_type,
+                   local_joint   = true_type,
+                   threshold     = dict(right = frac_5, direc = frac_4, joint = frac_4),
+                   num_layers    = num_ori_layer,
+                   rnn_drop_out  = frac_2,
+                   drop_out      = frac_4,
                    trainable_initials = true_type)
 from models.loss import cross_entropy, hinge_loss, binary_cross_entropy
 from models.utils import hinge_score as hinge_score_
@@ -142,6 +158,7 @@ class DiscoStem(nn.Module):
                  joint_type,
                  local_joint,
                  threshold,
+                 orient_module,
                  num_layers,
                  orient_type,
                  rnn_drop_out,
@@ -175,11 +192,15 @@ class DiscoStem(nn.Module):
         assert 0 < raw_threshold.direc < 1
         # self._thresholds = DiscoThresholds(*(fn(x) for fn, x in zip(bias_fns, raw_threshold)))
         
-        self._orient_emb = nn.LSTM(model_dim, hidden_size,
-                                   num_layers    = num_layers,
-                                   bidirectional = True,
-                                   batch_first   = True,
-                                   dropout = rnn_drop_out if num_layers > 1 else 0)
+        self._is_sal = is_sal = orient_module is SAL
+        if is_sal:
+            self._orient_emb = SAL(model_dim, orient_dim, num_layers)
+        else:
+            self._orient_emb = orient_module(model_dim, hidden_size,
+                                             num_layers    = num_layers,
+                                             bidirectional = True,
+                                             batch_first   = True,
+                                             dropout = rnn_drop_out if num_layers > 1 else 0)
         # self._orient_emb = nn.Linear(model_dim, orient_dim)
         self._stem_dp = dp_layer = nn.Dropout(drop_out)
         self._ori_dir = nn.Linear(orient_dim, orient_bits)
@@ -261,8 +282,11 @@ class DiscoStem(nn.Module):
             h0c0 = None
         return h0c0
 
-    def predict_orient_direc(self, unit_hidden, h0c0):
-        orient_hidden, _ = self._orient_emb(unit_hidden, h0c0)
+    def predict_orient_direc(self, unit_hidden, h0c0, seq_len):
+        if self._is_sal:
+            orient_hidden = self._orient_emb(unit_hidden, seq_len)
+        else:
+            orient_hidden, _ = self._orient_emb(unit_hidden, h0c0)
         # orient_hidden = self._orient_emb(unit_hidden) #
         orient_hidden = self._stem_dp(orient_hidden)
         return self._ori_dir(orient_hidden), orient_hidden
@@ -296,11 +320,12 @@ class DiscoStem(nn.Module):
 
         for l_cnt in range(max_iter_n): # max_iter | max_tree_high (unit_emb ** 2).sum().backward()
             # existence = unit_idx > 0
+            seq_len = existence.sum(dim = 1)
             if not teacher_forcing:
                 segment   .append(seg_len)
-                seg_length.append(existence.sum(dim = 1))
+                seg_length.append(seq_len)
 
-            right_direc, rd_hidden = self.predict_orient_direc(unit_emb, h0c0)
+            right_direc, rd_hidden = self.predict_orient_direc(unit_emb, h0c0, seq_len)
             layers_of_u_emb.append(unit_emb)
             layers_of_right_direc.append(right_direc)
             layers_of_existence.append(existence)
@@ -308,7 +333,7 @@ class DiscoStem(nn.Module):
                 if l_cnt == 0:# or random() < 0.1:
                     base = torch.zeros_like(unit_emb)
                     base = base.scatter(1, swap[l_cnt].unsqueeze(2).expand_as(unit_emb), unit_emb)
-                shuffled_right_direc, shuffled_rd_hidden = self.predict_orient_direc(base, h0c0)
+                shuffled_right_direc, shuffled_rd_hidden = self.predict_orient_direc(base, h0c0, seq_len)
                 layers_of_shuffled_right_direc.append(shuffled_right_direc)
             if seg_len == 2:
                 break # teacher forcing or a good model

@@ -1,4 +1,4 @@
-from utils.types import M_TRAIN, M_DEVEL, M_TEST, E_ORIF5
+from utils.types import M_TRAIN, M_DEVEL, M_TEST, E_ORIF5, E_ORIF4
 from sys import argv
 from collections import defaultdict
 from os.path import join
@@ -40,6 +40,20 @@ def to_csv(corp_name):
             fw.write('size,ratio,count\n')
             for (last_size, this_size), cnt in lt_cnt.items():
                 fw.write(f'{last_size},{this_size/last_size},{cnt}\n')
+    
+    with open(f'R_ggplot/orient_{corp_name}.csv', 'w') as fw:
+        fw.write('fct,lft,non,rgh\n')
+        for fct in E_ORIF5:
+            nlr = defaultdict(int)
+            with open(join(base_path, 'data', corp_name, f'stat.xtype.{fct}')) as fr:
+                for line in fr:
+                    xtype, cnt = line.split()
+                    nlr[xtype[0]] += int(cnt)
+            fw.write(f"{fct},{nlr['<']},{nlr['-']},{nlr['>']}\n")
 
 to_csv('tiger')
 to_csv('dptb')
+
+# to_csv('ptb')
+# to_csv('ctb')
+# to_csv('ktb')

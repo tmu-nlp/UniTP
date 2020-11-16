@@ -5,6 +5,9 @@ from nltk.corpus import BracketParseCorpusReader
 from data.io import load_i2vs, encapsulate_vocabs
 from utils.types import num_threads, E_ORIF4
 from utils.str_ops import strange_to
+
+base_name = '001'
+
 def from_penn(vocab_path, corp_path, trapezoid_height, factors):
 
     i2vs = load_i2vs(vocab_path, 'word tag label'.split())
@@ -65,6 +68,16 @@ def to_csv(keepers, corp_name, factors):
             fw.write('size,ratio,count\n')
             for (last_size, this_size), cnt in lt_cnt.items():
                 fw.write(f'{last_size},{this_size/last_size},{cnt}\n')
+
+    with open(f'R_ggplot/orient_{corp_name}.csv', 'w') as fw:
+        fw.write('fct,lft,non,rgh\n')
+        for fct in E_ORIF4:
+            nlr = defaultdict(int)
+            with open(join(base_path, 'data', corp_name, f'stat.xtype.{fct}')) as fr:
+                for line in fr:
+                    xtype, cnt = line.split()
+                    nlr[xtype[0]] += int(cnt)
+            fw.write(f"{fct},{nlr['<']},{nlr['-']},{nlr['>']}\n")
 
 data = from_penn('001/data/ctb', '/cldata/LDC/ctb9.0/data/bracketed', 1, E_ORIF4)
 to_csv(data, 'ctb', E_ORIF4)
