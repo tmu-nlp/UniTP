@@ -150,9 +150,9 @@ E_MODE = (M_TRAIN, M_DEVEL, M_TEST, M_INFER)
 E_ORIF4 = 'left', 'right', 'midin', 'midout'
 O_LFT, O_RGT, O_MIN, O_MOT = E_ORIF4
 O_HEAD = 'head'
-O_M25, O_M75 = O_MIN + '25', O_MIN + '75'
-E_ORIF5 = O_LFT, O_M25, O_MIN, O_M75, O_RGT
-E_ORIF5_HEAD = O_LFT, O_M25, O_MIN, O_M75, O_RGT, O_HEAD
+O_M25, O_M50, O_M75 = (O_MIN + x for x in ('25', '50', '75'))
+E_ORIF5 = O_LFT, O_M25, O_M50, O_M75, O_RGT
+E_ORIF5_HEAD = O_LFT, O_M25, O_M50, O_M75, O_RGT, O_HEAD
 E_CNF = O_LFT, O_RGT
 
 import os
@@ -168,3 +168,5 @@ binarization = {O_LFT: frac_7,
 frac_close_0 = BaseType(0.0, frac_close)
 frac_close_2 = BaseType(0.2, frac_close)
 binarization_5_head = {o: frac_close_0 if o == O_HEAD else frac_close_2 for o in E_ORIF5_HEAD}
+S_ALL, S_EXH = 'all', 'except_head'
+swapper = BaseType(0, default_set = (None, S_ALL, S_EXH), as_index = True)

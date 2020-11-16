@@ -9,7 +9,7 @@ build_params = {C_DPTB: split_dict(   '2-21',          '22',          '23'),
 ft_bin = {C_DPTB: 'en', C_TGR: 'de'}
 call_fasttext = make_call_fasttext(ft_bin)
 
-from utils.types import none_type, false_type, true_type, binarization_5_head, NIL
+from utils.types import none_type, false_type, true_type, binarization_5_head, NIL, swapper
 from utils.types import train_batch_size, train_max_len, train_bucket_len, vocab_size, tune_epoch_type
 disco_config = dict(vocab_size     = vocab_size,
                     binarization   = binarization_5_head,
@@ -17,7 +17,7 @@ disco_config = dict(vocab_size     = vocab_size,
                     max_len        = train_max_len,
                     bucket_len     = train_bucket_len,
                     min_gap        = tune_epoch_type,
-                    shuffle_swap   = true_type,
+                    shuffle_swap   = swapper,
                     unify_sub      = true_type,
                     sort_by_length = false_type)
 

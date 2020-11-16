@@ -44,7 +44,7 @@ for i in range((1 << 3 )+ 2):
         else:
             do_type = 'bce.' + ''.join(crsen)
     else:
-        do_type = ('hinge' if i & 1 else 'bce') + '.j;ce.dr'
+        do_type = ('hinge' if i & 1 else 'bce') + '.j;ce.dr' # hinge.jl;ce.dr;
     disco_orient_type.append(DiscoOrient(do_type))
 disco_orient_type = BaseType(-1, as_index = True, as_exception = True, default_set = disco_orient_type)
 
@@ -104,11 +104,13 @@ def split(hidden, right_layer, joint_layer, existence, direc_layer = None):
     rhs_hidden = hidden[indices, rhs_indices]
     return lhs_hidden, rhs_hidden, rhs_indices > 0, lhs_indices + rhs_indices
 
-def convert32(left_undirec_right):
+def convert32(left_undirec_right, right_only = False):
     left_undirec_right = torch.exp(left_undirec_right)
     right = left_undirec_right[:, :, 2]
     direc = left_undirec_right[:, :, 1]  + right
     right = right / direc
+    if right_only:
+        return right
     direc = direc / (direc + 2 * left_undirec_right[:, :, 0]) # this is a 2 to 1 battle, make it fair
     return right, direc # all in sigmoid range
 

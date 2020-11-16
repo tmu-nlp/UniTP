@@ -6,6 +6,7 @@ from data.delta import E_XDIM
 from data.cross import unzip_xlogit, targets, unzip_swaps
 from data.trapezoid import trapezoid_to_layers
 from itertools import zip_longest
+from utils.types import O_HEAD, S_EXH
 
 fields = 'token', 'tag'
 
@@ -121,6 +122,7 @@ class StaticCrossDataset(LengthOrderedDataset):
                 self._swap[factor] = swap
                 assert len(lengths) == len(swap)
         self._swap_cache = None
+        self._except_head = swapper == S_EXH
 
         self._columns = columns
         self._device = device
@@ -221,6 +223,8 @@ class StaticCrossDataset(LengthOrderedDataset):
                 layer.shape = (batch_size, size)
                 swappers.append(layer)
             for sid, (factor, swap) in enumerate(self._swap_cache):
+                if self._except_head and factor == O_HEAD:
+                    continue
                 for layer, layer_tensor in zip(swap, swappers):
                     for (group_idx, group_ctn) in layer:
                         np.random.shuffle(group_ctn)

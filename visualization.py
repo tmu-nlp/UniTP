@@ -355,7 +355,7 @@ if desktop:
         assert isinstance(curve(0), float), 'should return a float number'
         return curve
 
-    BoolList = namedtuple('BoolList', 'delta_shape, show_errors, show_paddings, show_nil, dark_background, inverse_brightness, align_coord, show_color, statistics')
+    BoolList = namedtuple('BoolList', 'delta_shape, show_errors, show_paddings, show_nil, dark_background, inverse_brightness, align_coord, show_color, force_bottom_color, statistics')
     CombList = namedtuple('CombList', 'curve, dash, gauss, picker, spotlight')
     DynamicSettings = namedtuple('DynamicSettings', BoolList._fields + tuple('apply_' + f for f in CombList._fields) + CombList._fields)
     NumbList = namedtuple('NumbList', 'font, pc_x, pc_y, line_width, offset_x, offset_y, word_width, word_height, yx_ratio, histo_width, scatter_width')
@@ -433,7 +433,7 @@ if desktop:
         def __init__(self,
                      root,
                      fpath,
-                     initial_bools = BoolList(True, False, False, False, False, True, False, True, False),
+                     initial_bools = BoolList(True, False, False, False, False, True, False, True, False, False),
                      initial_numbs = NumbList('System 6 15', (1, 1, 9, 1), (2, 1, 9, 1), (4, 2, 10, 2), (0, -200, 200, 10), (0, -200, 200, 10), (80, 60, 200, 5), (22, 12, 99, 2), (0.9, 0.5, 2, 0.1), (60, 50, 120, 10), (60, 50, 120, 10)),
                      initial_panel = PanelList(False, False),
                      initial_combs = CombList((True, 'x ** 0.5'), (False, (0.5, 0.1, 0.9, 0.1)), (True, (0.04, 0.01, 0.34, 0.01)), (True, (0.2, 0.1, 0.9, 0.1)), (False, (200, 100, 500, 100)))):
@@ -781,6 +781,8 @@ if desktop:
                 self._checkboxes.show_errors.ckb.invoke()
             elif char == '|':
                 self._checkboxes.align_coord.ckb.invoke()
+            elif char == ',':
+                self._checkboxes.force_bottom_color.ckb.invoke()
             # elif char == 'v':
             #     self._checkboxes.hard_split.ckb.invoke()
             #     if self._last_bools.apply_dash:
@@ -1722,7 +1724,7 @@ if desktop:
                     lines.extend(get_lines(data, f' (predict-{tid})'))
                 widget = Text(Toplevel(self), wrap = NONE, font = 'TkFixedFont')
                 widget.insert(END, '\n'.join(lines))
-                widget.config(state = DISABLED)
+                # widget.config(state = DISABLED)
                 widget.pack(fill = BOTH, expand = YES)
                 return
             label = Tree.fromstring(self._head.tree)
@@ -2220,11 +2222,12 @@ if desktop:
                     wbox = (left_x, 0       )
                     pbox = (left_x, w_p_s[1])
 
-                if self._conf.show_errors:
+                if self._conf.show_errors or not self._conf.force_bottom_color:
                     track_color = 1.0 if apply_dash else stat.tag[i]
                     word_color = tag_color = to_color(track_color)
-                    track_colors.append(track_color)
-                else:
+                    if self._conf.show_errors:
+                        track_colors.append(track_color)
+                else: # .7 - x ** 10000 * 0.1
                     word_color = fg_color if apply_dash else to_color(stat.token[i])
                     tag_color  = to_color(data.tag_score if apply_dash else stat.tag[i] if i < len(stat.tag) else (0,0,0))
 
