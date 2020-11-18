@@ -132,8 +132,19 @@ class SAL(nn.Module):
     def forward(self, base, seq_len):
         return self._a2(self._fi(self._a1(self._sa(base, seq_len))))
 
+class LSA(nn.Module):
+    def __init__(self, in_size, out_size, num_layers):
+        super().__init__()
+        self._fi = nn.Linear(in_size, out_size)
+        self._sa = SelfAttention(out_size, 10, num_layers, norm_dims = 2)
+        self._a1 = nn.ReLU()
+        self._a2 = nn.Tanh()
+
+    def forward(self, base, seq_len):
+        return self._a2(self._sa(self._a1(self._fi(base)), seq_len))
+
 to_name = lambda x: x.__name__
-orient_module = BaseType(0, as_index = True, as_exception = True, default_set = BaseWrapper.from_gen((nn.LSTM, nn.GRU, SAL), to_name))
+orient_module = BaseType(0, as_index = True, as_exception = True, default_set = BaseWrapper.from_gen((nn.LSTM, nn.GRU, SAL, LSA), to_name))
 
 from models.combine import get_combinator, get_components, combine_type, valid_trans_compound
 stem_config = dict(orient_dim    = orient_dim,
@@ -192,9 +203,9 @@ class DiscoStem(nn.Module):
         assert 0 < raw_threshold.direc < 1
         # self._thresholds = DiscoThresholds(*(fn(x) for fn, x in zip(bias_fns, raw_threshold)))
         
-        self._is_sal = is_sal = orient_module is SAL
-        if is_sal:
-            self._orient_emb = SAL(model_dim, orient_dim, num_layers)
+        self._is_sa = is_sa = orient_module in (SAL, LSA)
+        if is_sa:
+            self._orient_emb = orient_module(model_dim, orient_dim, num_layers)
         else:
             self._orient_emb = orient_module(model_dim, hidden_size,
                                              num_layers    = num_layers,
@@ -283,7 +294,7 @@ class DiscoStem(nn.Module):
         return h0c0
 
     def predict_orient_direc(self, unit_hidden, h0c0, seq_len):
-        if self._is_sal:
+        if self._is_sa:
             orient_hidden = self._orient_emb(unit_hidden, seq_len)
         else:
             orient_hidden, _ = self._orient_emb(unit_hidden, h0c0)

@@ -1,0 +1,1 @@
+from data.cross.ptb2dep.StanfordDependencies import StanfordDependencies

@@ -1,6 +1,6 @@
 from os import listdir
 from math import sqrt
-from utils.types import E_ORIF4, E_ORIF5
+from utils.types import E_ORIF4, E_ORIF5_HEAD
 
 def avg_fn(fname):
     situations = []
@@ -72,12 +72,13 @@ for corp_name in ('ptb', 'ctb', 'ktb'):
 
 print()
 for corp_name in ('dptb', 'tiger'):
+    factors = E_ORIF5_HEAD
     lnr = ratio_fn(corp_name, True)
-    for factor in E_ORIF5:
+    for factor in factors:
         avg, std, cnt = files[(corp_name, factor)]
         cnt = f'{cnt / 10 ** 6:.2f}M'
         print(f'${avg:.2f}\\ _{{\pm{std:.2f}}}$', end = ' & ')
     print()
-    for factor in E_ORIF5:
+    for factor in factors:
         print(f'\\small ${lnr[factor]}$', end = ' & ')
     print()

@@ -802,13 +802,15 @@ def read_tiger_graph(graph, dep_head = None):
     return word, bottom_tag, cnf_layers, gap, lines#, bottom_info, ret_top_down, root_id
 
 def read_disco_penn(tree, dep_head = None):
-    assert dep_head is None, 'dep is not supported for PTB'
     bottom_info, top_down, root_id = _read_dpenn(tree)
     lines = draw_str_lines(bottom_info, top_down)
     word, bottom, node2tag, bottom_unary = _pre_proc(bottom_info, top_down)
     bottom_tag = [node2tag[t] for t in bottom]
     gap = gap_degree(bottom, top_down, root_id)
     cnf_layers = {}
+    if dep_head:
+        dep_head = {node: TopDown(f'n_{head}', set(['n_{node}'])) for node, head in dep_head.items()}
+        cnf_layers[O_HEAD] = cross_signals(bottom, node2tag, bottom_unary, deepcopy(top_down), 0.5, dep_head)
     for oid, cnf_factor in enumerate(E_ORIF5):
         new_top_down = deepcopy(top_down) if cnf_factor != O_RGT else top_down
         cnf_layers[cnf_factor] = cross_signals(bottom, node2tag, bottom_unary, new_top_down, (oid + 0.5) / 5)

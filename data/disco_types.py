@@ -44,9 +44,9 @@ def build(save_to_dir,
     from utils.shell_io import byte_style
     from data.io import SourcePool, distribute_jobs
     from multiprocessing import Process, Queue
-    from utils.types import E_ORIF5_HEAD, E_ORIF5, M_TRAIN, M_DEVEL, M_TEST, num_threads
+    from utils.types import E_ORIF5_HEAD, M_TRAIN, M_DEVEL, M_TEST, num_threads
     from contextlib import ExitStack
-    from time import sleep
+    from time import sleep, time
     from data.delta import logits_to_xtype
 
     class WorkerX(Process):
@@ -60,9 +60,9 @@ def build(save_to_dir,
             tag_cnt  = Counter()
             sent_gap_cnt   = defaultdict(int)
             phrase_gap_cnt = Counter()
-            q, sents, read_func, enum_ori = self._args
-            label_cnts = {o: Counter() for o in enum_ori}
-            xtype_cnts = {o: Counter() for o in enum_ori}
+            q, sents, read_func = self._args
+            label_cnts = {o: Counter() for o in E_ORIF5_HEAD}
+            xtype_cnts = {o: Counter() for o in E_ORIF5_HEAD}
             for sent_id, sent, sent_dep in sents:
                 try:
                     wd, bt, cnf_layers, gd, lines = read_func(sent, sent_dep)
@@ -102,6 +102,8 @@ def build(save_to_dir,
             q.put(bundle)
 
     if corp_name == C_DPTB:
+        from data.cross.ptb2dep import StanfordDependencies
+        from utils.file_io import parpath
         folder_pattern = lambda x: f'{x:02}'
         reader = BracketParseCorpusReader(corp_path, r".*/wsj_.*\.mrg")
         devel_set = strange_to(devel_set, folder_pattern)
@@ -118,12 +120,21 @@ def build(save_to_dir,
         in_train_set = lambda fn: fn in train_set
         in_devel_set = lambda fn: fn in devel_set
         in_test_set  = lambda fn: fn in test_set
+
         corpus = []
+        dtrees = []
         for fp in all_folders:
-            for sent in reader.parsed_sents(fp):
-                corpus.append((fp[:2], sent, None))
+            for tree in reader.parsed_sents(fp):
+                corpus.append([fp[:2], tree])
+                dtrees.append(tree)
+        print(byte_style('Acquiring PTB head info from Stanford CoreNLP ...', '3'), file = stderr)
+        start = time()
+        dep_root = StanfordDependencies(parpath(save_to_dir), print_func = lambda x: print(byte_style(x, dim = True), file = stderr)).convert_corpus(dtrees)
+        start = time() - start
+        print('  finished in ' + byte_style(f'{start:.0f}', 3) + ' sec. (' + byte_style(f'{len(corpus) / start:.2f}', '3')+ ' sents/sec.)', file = stderr)
+        for duet, dep in zip(corpus, dep_root):
+            duet.append(dep)
         read_func = read_disco_penn
-        enum_binarizations = E_ORIF5
     elif corp_name == C_TGR:
         from data.cross.tiger2dep import get_tiger_heads
         devel_set = strange_to(devel_set)
@@ -140,20 +151,23 @@ def build(save_to_dir,
             in_corpus = lambda x: int(x[1:]) in all_sets
             in_train_set = lambda x: int(x[1:]) in train_set
         root = ElementTree.parse(corp_path).getroot()
+        print(byte_style('Acquiring Tiger head info with Tiger2Dep ...', '3'), file = stderr)
+        start = time()
         dep_root = get_tiger_heads(corp_path)
+        start = time() - start
+        print('  finished in ' + byte_style(f'{start:.0f}', 3) + ' sec. (' + byte_style(f'{len(root[1]) / start:.2f}', '3')+ ' sents/sec.)', file = stderr)
         corpus = []
         for sent in root[1]:
             sid = sent.get('id')
             if in_corpus(sid):
                 corpus.append((sid, sent, dep_root.pop(sid)))
         read_func = read_tiger_graph
-        enum_binarizations = E_ORIF5_HEAD
 
     num_threads = min(num_threads, len(corpus))
     workers = distribute_jobs(corpus, num_threads)
     q = Queue()
     for i in range(num_threads):
-        w = WorkerX(q, workers[i], read_func, enum_binarizations)
+        w = WorkerX(q, workers[i], read_func)
         w.start()
         workers[i] = w
 
@@ -163,8 +177,8 @@ def build(save_to_dir,
     tag_cnt  = Counter()
     sent_gap_cnt   = Counter()
     phrase_gap_cnt = Counter()
-    label_cnts = {o: Counter() for o in enum_binarizations}
-    xtype_cnts = {o: Counter() for o in enum_binarizations}
+    label_cnts = {o: Counter() for o in E_ORIF5_HEAD}
+    xtype_cnts = {o: Counter() for o in E_ORIF5_HEAD}
     length_stat = dict(tlc = defaultdict(int), vlc = defaultdict(int), _lc = defaultdict(int))
     gap_bin_size = 1 if corp_name == C_DPTB else 2
     lines_by_gap_degree = defaultdict(list)
@@ -178,16 +192,16 @@ def build(save_to_dir,
         f_w  = stack.enter_context(open(join(save_to_dir, M_TEST  + '.word'), 'w'))
         f_p  = stack.enter_context(open(join(save_to_dir, M_TEST  + '.tag'),  'w'))
         f_g  = stack.enter_context(open(join(save_to_dir, M_TEST  + '.gap'),  'w'))
-        ftxs = { o:stack.enter_context(open(join(save_to_dir, f'{M_TRAIN}.xtype.{o}'), 'w')) for o in enum_binarizations}
-        ftls = { o:stack.enter_context(open(join(save_to_dir, f'{M_TRAIN}.label.{o}'), 'w')) for o in enum_binarizations}
-        ftis = { o:stack.enter_context(open(join(save_to_dir, f'{M_TRAIN}.index.{o}'), 'w')) for o in enum_binarizations}
-        ftss = { o:stack.enter_context(open(join(save_to_dir, f'{M_TRAIN}.swap.{o}' ), 'w')) for o in enum_binarizations}
-        fvxs = { o:stack.enter_context(open(join(save_to_dir, f'{M_DEVEL}.xtype.{o}'), 'w')) for o in enum_binarizations}
-        fvls = { o:stack.enter_context(open(join(save_to_dir, f'{M_DEVEL}.label.{o}'), 'w')) for o in enum_binarizations}
-        fvis = { o:stack.enter_context(open(join(save_to_dir, f'{M_DEVEL}.index.{o}'), 'w')) for o in enum_binarizations}
-        f_xs = { o:stack.enter_context(open(join(save_to_dir, f'{M_TEST}.xtype.{o}' ), 'w')) for o in enum_binarizations}
-        f_ls = { o:stack.enter_context(open(join(save_to_dir, f'{M_TEST}.label.{o}' ), 'w')) for o in enum_binarizations}
-        f_is = { o:stack.enter_context(open(join(save_to_dir, f'{M_TEST}.index.{o}' ), 'w')) for o in enum_binarizations}
+        ftxs = { o:stack.enter_context(open(join(save_to_dir, f'{M_TRAIN}.xtype.{o}'), 'w')) for o in E_ORIF5_HEAD}
+        ftls = { o:stack.enter_context(open(join(save_to_dir, f'{M_TRAIN}.label.{o}'), 'w')) for o in E_ORIF5_HEAD}
+        ftis = { o:stack.enter_context(open(join(save_to_dir, f'{M_TRAIN}.index.{o}'), 'w')) for o in E_ORIF5_HEAD}
+        ftss = { o:stack.enter_context(open(join(save_to_dir, f'{M_TRAIN}.swap.{o}' ), 'w')) for o in E_ORIF5_HEAD}
+        fvxs = { o:stack.enter_context(open(join(save_to_dir, f'{M_DEVEL}.xtype.{o}'), 'w')) for o in E_ORIF5_HEAD}
+        fvls = { o:stack.enter_context(open(join(save_to_dir, f'{M_DEVEL}.label.{o}'), 'w')) for o in E_ORIF5_HEAD}
+        fvis = { o:stack.enter_context(open(join(save_to_dir, f'{M_DEVEL}.index.{o}'), 'w')) for o in E_ORIF5_HEAD}
+        f_xs = { o:stack.enter_context(open(join(save_to_dir, f'{M_TEST}.xtype.{o}' ), 'w')) for o in E_ORIF5_HEAD}
+        f_ls = { o:stack.enter_context(open(join(save_to_dir, f'{M_TEST}.label.{o}' ), 'w')) for o in E_ORIF5_HEAD}
+        f_is = { o:stack.enter_context(open(join(save_to_dir, f'{M_TEST}.index.{o}' ), 'w')) for o in E_ORIF5_HEAD}
         
         for _ in count(): # Yes! this edition works fine!
             if q.empty():
@@ -229,7 +243,7 @@ def build(save_to_dir,
                     tag_cnt  += tc
                     phrase_gap_cnt += pgc
                     sent_gap_cnt   += sgc
-                    for o in enum_binarizations:
+                    for o in E_ORIF5_HEAD:
                         label_cnts[o] += lcs[o]
                         xtype_cnts[o] += xcs[o]
                     qbar.desc = f'  {thread_join_cnt} of {num_threads} threads ended with {qbar.total} samples, receiving'
@@ -272,7 +286,7 @@ def build(save_to_dir,
     _, ps = save_vocab(tag_file, tag_cnt,  [NIL])
     _, ss = save_vocab(syn_file, sum(label_cnts.values(), Counter()), [NIL])
     _, xs = save_vocab(xty_file, sum(xtype_cnts.values(), Counter()))
-    for o in enum_binarizations:
+    for o in E_ORIF5_HEAD:
         save_vocab(join(save_to_dir, f'stat.xtype.{o}'), xtype_cnts[o])
         save_vocab(join(save_to_dir, f'stat.label.{o}'), label_cnts[o])
     from data.disco import DiscoReader

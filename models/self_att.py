@@ -121,7 +121,7 @@ class SelfAttention(nn.Module):
                  num_head,
                  num_layer,
                  dropout = None,
-                 norm_dims = 2,
+                 norm_dims = (1, 2),
                  seq_start = 1,
                  activation = nn.ReLU):
         super().__init__()

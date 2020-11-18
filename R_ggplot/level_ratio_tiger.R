@@ -1,13 +1,13 @@
 library(ggplot2)
 library(latex2exp)
 
-data <- read.csv('parse_tiger_midin.csv')
+data <- read.csv('parse_tiger_head.csv')
 data <- data[order(-data$count),]
 
 p <- ggplot(data, aes(size, ratio, size = count, color = count, weight = count, alpha = I(0.5)))
 p <- p + coord_cartesian(xlim = c(2, NA), ylim = c(0.47, 1))
 # p <- p + facet_wrap(~fct, ncol = 1)
-p <- p + labs(x = unname(TeX('Layer Size ($\\rho = 0.5$)')), y = 'Compress Ratio')
+p <- p + labs(x = unname(TeX('Layer Size ($\\rho = head:\\,\\, C_{All} = 0.75_{\\pm 0.14}\\, \\, C_{40+} = 0.77_{\\pm 0.05}$)')), y = 'Compress Ratio')
 p <- p + theme(legend.position = "none",
                axis.title = element_text(size = 55),
                axis.text.y = element_text(size = 45),
@@ -23,8 +23,8 @@ p <- p + scale_color_continuous(low = "blue", high = "tomato")
 p <- p + stat_smooth(method = 'lm', formula = y ~ splines::bs(x, 25), geom = 'line', alpha = 0.5, color = 'black', show.legend=FALSE, size = 2.5, n = 300)
 # p <- p + labs(tag = unname(TeX('$\\leftarrow$ Bottom-up combinatory direction')))
 p <- p + annotate("text", x = 2, y = 0.532, label = "Top", size = 14)
-p <- p + annotate('text', x = 60, y = 1, label = unname(TeX('$\\leftarrow$ Zero-combine Layers')), size = 14)
-p <- p + annotate('text', x = 90, y = 0.55, label = unname(TeX('$\\leftarrow$ Bottom-up Combinatory Direction')), size = 14)
+p <- p + annotate('text', x = 70, y = 0.997, label = unname(TeX('$\\leftarrow$ Zero-combine Layers')), size = 15)
+p <- p + annotate('text', x = 90, y = 0.55, label = unname(TeX('$\\leftarrow$ Bottom-up Combinatory Direction')), size = 15)
 # p <- p + annotate("text", x = 148, y = 0.5, label = unname(TeX("|$\\leftarrow$ Open Bottom Layers from Long Sentences $\\rightarrow$|")), size = 15, color = 'gray')
 # p <- p + annotate("text", x = 240, y = 0.71, label = unname(TeX("$\\leftarrow$ layer@0")), size = 11, color = 'blue')
 # p <- p + annotate("text", x = 180, y = 0.713, label = unname(TeX("$\\leftarrow$ layer@1")), size = 11, color = 'blue')

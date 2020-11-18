@@ -1,4 +1,4 @@
-from utils.types import M_TRAIN, M_DEVEL, M_TEST, E_ORIF5, E_ORIF4
+from utils.types import M_TRAIN, M_DEVEL, M_TEST, E_ORIF5_HEAD, E_ORIF4
 from sys import argv
 from collections import defaultdict
 from os.path import join
@@ -6,13 +6,13 @@ from tqdm import tqdm
 
 _, base_path = argv
 
-def to_csv(corp_name):
-    ratios = {fct: defaultdict(int) for fct in E_ORIF5}
+def to_csv(corp_name, factors):
+    ratios = {fct: defaultdict(int) for fct in factors}
     offset = 0
     lines = defaultdict(list)
 
     for mode in (M_TRAIN, M_DEVEL, M_TEST):
-        for factor in E_ORIF5:
+        for factor in factors:
             with open(join(base_path, 'data', corp_name, f'{mode}.index.{factor}')) as fr:
                 for lid, line in tqdm(enumerate(fr), desc = f'{corp_name}.{factor}'):
                     if line == '\n':
@@ -23,16 +23,16 @@ def to_csv(corp_name):
                         ratios[factor][sizes] += 1
 
                     label_size = str(sum(lengths))
-                    if factor == E_ORIF5[0]:
+                    if factor == factors[0]:
                         lines[offset + lid].extend([str(lengths[0]), label_size])
                     else:
                         lines[offset + lid].append(label_size)
                 assert finish
 
     with open(f'R_ggplot/parse_{corp_name}.csv', 'w') as fw:
-        fw.write('len,' + ','.join(E_ORIF5) + '\n')
+        fw.write('len,' + ','.join(factors) + '\n')
         for lengths in lines.values():
-            if len(lengths) == len(E_ORIF5) + 1:
+            if len(lengths) == len(factors) + 1:
                 fw.write(','.join(lengths) + '\n')
                 
     for fct, lt_cnt in ratios.items():
@@ -43,7 +43,7 @@ def to_csv(corp_name):
     
     with open(f'R_ggplot/orient_{corp_name}.csv', 'w') as fw:
         fw.write('fct,lft,non,rgh\n')
-        for fct in E_ORIF5:
+        for fct in factors:
             nlr = defaultdict(int)
             with open(join(base_path, 'data', corp_name, f'stat.xtype.{fct}')) as fr:
                 for line in fr:
@@ -51,8 +51,8 @@ def to_csv(corp_name):
                     nlr[xtype[0]] += int(cnt)
             fw.write(f"{fct},{nlr['<']},{nlr['-']},{nlr['>']}\n")
 
-to_csv('tiger')
-to_csv('dptb')
+to_csv('tiger', E_ORIF5_HEAD)
+to_csv('dptb', E_ORIF5_HEAD)
 
 # to_csv('ptb')
 # to_csv('ctb')
