@@ -228,6 +228,10 @@ class PennOperator(Operator):
                     content = f'{len(removed)} files'
                 Operator.msg(f' [{start_epoch:.2f}:] {content} removed in folder penn_test_with_devel.')
 
+    def optuna_model(self):
+        pass
+
+
 from utils.vis import BaseVis, VisRunner
 from utils.file_io import join, isfile, listdir, remove, isdir
 from utils.pickle_io import pickle_dump

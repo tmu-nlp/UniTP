@@ -1,6 +1,3 @@
-# from utils.param_ops import iter_zipped_nt_params, zip_nt_params, change_key, dict_print
-# from utils.yaml_io import load_yaml, save_yaml
-# from utils.file_io import create_join, join, isfile, isdir, listdir, rm_rf, copy_with_prefix_and_rename
 from utils.param_ops import HParams
 
 def train(train_params, operator):
@@ -29,4 +26,6 @@ def train(train_params, operator):
                     operator.test_model(epoch = epoch)
                 nth_validation += 1
         nth_validation = validation_each_nth_epoch + 1
+    if train_params.optuna_model:
+        operator.optuna_model(train_params)
     return operator.test_model()

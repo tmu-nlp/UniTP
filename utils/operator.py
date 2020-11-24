@@ -24,11 +24,12 @@ class Operator:
         self._optimizer = None
         self._train_materials = None
         self._validate_materials = None
-        self._test_materials = (_, ds_names, _) = self.get_materials(M_TEST)
+        self._test_materials = (_, ds_names, _) = self._get_materials(M_TEST)
         self._ds_icons = {ds_name: icon for ds_name, icon in zip(ds_names, '⚀⚁⚂⚃⚄⚅')}
-
-    def get_materials(self, mode):
+        self._optuna_mode = None
         self._epoch_start = time()
+
+    def _get_materials(self, mode):
         ds_specs = self._get_datasets(mode)
         ds_specs = ((dn,) + ds for dn, ds in ds_specs.items())
         ds_names, ds_freqs, ds_iters = zip(*ds_specs)
@@ -36,10 +37,10 @@ class Operator:
         return ds_total, ds_names, ds_iters
 
     def train_initials(self):
-        assert self._train_materials is None
-        train_icon, devel_icon = get_train_validation_pair()
-        self._train_materials = self._get_datasets(M_TRAIN), train_icon
-        self._validate_materials = self.get_materials(M_DEVEL), devel_icon
+        if self._train_materials is None:
+            train_icon, devel_icon = get_train_validation_pair()
+            self._train_materials    = self._get_datasets(M_TRAIN), train_icon
+            self._validate_materials = self._get_materials(M_DEVEL), devel_icon
         (epoch, fine_validation, global_step) = self._recorder.initial_or_restore(self._model)
         self._optimizer = self._build_optimizer(epoch)
         self._global_step = global_step
@@ -80,12 +81,23 @@ class Operator:
         (ds_total, ds_names, ds_iters), devel_icon = self._validate_materials
         scores, ds_logg, from_start = self.validation_or_test(M_DEVEL, ds_total, ds_names, ds_iters, devel_icon, epoch)
         self._recorder.log(timestamp(epoch, 'Validation ') + f' - {ds_logg} ({from_start} from start)', end = '.')
+        if self._optuna_mode is not None:
+            super_recorder, trial, trial_step = self._optuna_mode
+            trial.report(scores['key'], trial_step)
+            if trial.should_prune():
+                super_recorder.log(f'  (got pruned at the {trial_step}-th step)')
+                raise optuna.exceptions.TrialPruned()
+            self._optuna_mode = super_recorder, trial, trial_step + 1
         return self._recorder.check_betterment(epoch, falling, self._global_step, self._model, self._optimizer, scores['key'])
 
     def test_model(self, epoch = None):
         ds_total, ds_names, ds_iters = self._test_materials
         final_test = epoch is None
         if final_test:
+            if self._optuna_mode is not None:
+                super_recorder, trial, trial_step = self._optuna_mode
+                super_recorder.log(f'  (finished after {trial_step + 1} steps)')
+                return # dead end: optuna_mode should not nest
             prefix = 'Test ' # final label
             epoch, self._global_step = self._recorder.initial_or_restore(self._model, restore_from_best_validation = True)
         else:
@@ -93,7 +105,8 @@ class Operator:
         scores, ds_logg, from_start = self.validation_or_test(M_TEST, ds_total, ds_names, ds_iters, '🔮', epoch, final_test)
         scores['epoch'] = epoch
         self._recorder.log(timestamp(epoch, prefix) + f' - {ds_logg} ({from_start} from start).')
-        return dict(scores)
+        if final_test:
+            return dict(scores)
 
     def validation_or_test(self, mode, ds_total, ds_names, ds_iters, icon, epoch, final_test = False):
         ds_desc   = []
@@ -122,6 +135,53 @@ class Operator:
         self._model.train() # restore
         scores = self.combine_scores_and_decide_key(epoch, ds_scores)
         return scores, ds_logg, from_start
+
+    def setup_optuna_mode(self, new_recorder, trial):
+        if self._optuna_mode is None:
+            self._optuna_mode = self._recorder, trial, 0
+            self._recorder = new_recorder
+        return self._optuna_mode[0].key_score
+
+    def restore_recorder(self):
+        assert self._optuna_mode
+        self._recorder = self._optuna_mode[0]
+        self._optuna_mode = None
+        self._recorder.summary_trials()
+
+    def optuna_model(self, train_params):
+        '''Set objective function with argument trial.
+        It should include a starting checkpoint from the best model,
+        a training process with multiple trials: each with checkpoint-i
+        and models folers. Only two trial folders is perserved:
+        current and last_trial. Each folder shares the framework with this
+        operator and recorder relationship, so as it will reuse the train_ops.
+        The child operator and recorder will be a little bit different.
+        import optuna
+
+        def obj_fn(trial):
+            def spec_update_fn(specs):
+                x = trial.suggest_int('x', 2, 20)
+                y = int(trial.suggest_float('y', 1, 32, log=True))
+                specs['.....x'] = x
+                specs['.....y'] = y
+                return f'x={x},y={y}'
+
+            child_recorder = self._recorder.trial(spec_update_fn) # a new working folder with checkpoint from models/Mbest
+            base_devel_score = self.setup_optuna_mode(child_recorder, trial)
+            train(train_params, self) # change train_params
+            return child_recorder.key_score
+
+        study = optuna.create_study(direction = 'maximize')
+        study.optimize(obj_fn, n_trials = 100)
+        self.restore_recorder()
+
+        trial = study.best_trial
+        print('Accuracy: {}'.format(trial.value))
+        print("Best hyperparameters: {}".format(trial.params))
+        optuna.visualization.plot_optimization_history(study)
+        optuna.visualization.plot_slice(study)
+        optuna.visualization.plot_contour(study, params=['n_estimators', 'max_depth'])
+        '''
 
     def _schedule(self, epoch, wander_ratio):
         pass

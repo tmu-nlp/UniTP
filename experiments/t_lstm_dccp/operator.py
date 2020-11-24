@@ -187,6 +187,8 @@ class DiscoOperator(Operator):
             head_trees = devel_head_batchess
             folder = ds_name + '_devel'
             save_tensors = is_bin_times(int(float(epoch)) - 1)
+        if self._optuna_mode:
+            save_tensors = False
         vis = DiscoVis(epoch,
                        self.recorder.create_join(folder),
                        self.i2vs,
@@ -235,6 +237,58 @@ class DiscoOperator(Operator):
         else:
             scores['key'] = 0
         return scores
+        
+    def optuna_model(self, train_params):
+        import optuna
+        import numpy as np
+        from utils.types import E_ORIF5_HEAD
+        from utils.train_ops import train
+
+        def obj_fn(trial):
+            def spec_update_fn(specs, trial):
+                data = specs['data']
+                data = data['tiger' if 'tiger' in data else 'dptb']
+                loss_weight = specs['train']['loss_weight']
+                loss_weight['tag']   = t = trial.suggest_float('tag',   0.0, 1.0)
+                loss_weight['label'] = l = trial.suggest_float('label', 0.1, 1.0)
+                loss_weight['joint'] = j = trial.suggest_float('joint', 0.1, 1.0)
+                if self._model.has_fewer_losses:
+                    loss_weight['orient'] = o = trial.suggest_float('orient', 0.1, 1.0)
+                    loss_str = f'L={t:.1f},{l:.1f},{j:.1f};{o:.1f};'
+                else:
+                    loss_weight['_right'] = r = trial.suggest_float('_right', 0.1, 1.0)
+                    loss_weight['_direc'] = d = trial.suggest_float('_direc', 0.1, 1.0)
+                    loss_weight['_undirect_orient'] = u = trial.suggest_float('_undirect_orient', 0.1, 1.0)
+                    loss_str = f'L={t:.1f},{l:.1f},{j:.1f},{r:.1f},{d:.1f},{u:.1f};'
+                if data['shuffle_swap'] is not None:
+                    loss_weight['shuffled'] = s = trial.suggest_float('shuffled', 0.0, 1.0)
+                    loss_str += f'{s:.1f}'
+                binarization = np.array([trial.suggest_loguniform(x, 1e-5, 1e5) for x in E_ORIF5_HEAD])
+                binarization /= np.sum(binarization)
+                data['binarization'] = {k:float(v) for k, v in zip(E_ORIF5_HEAD, binarization)}
+                specs['train']['learning_rate'] = lr = trial.suggest_loguniform('learning_rate', 1e-6, 1e-3)
+                self._train_config._nested.update(specs['train'])
+                bin_str = 'bin=' + ','.join(f'{x:.2f}' for x in binarization)
+                return bin_str + ';' + loss_str + f';lr={lr:.1e}'
+
+            child_recorder = self._recorder.new_trial(spec_update_fn, trial)
+            base_devel_score = self.setup_optuna_mode(child_recorder, trial)
+
+            optuna_params = {} # change train_params
+            optuna_params['fine_validation_at_nth_wander'] = 1
+            optuna_params['stop_at_nth_wander'] = train_params.stop_at_nth_wander
+            optuna_params['fine_validation_each_nth_epoch'] = 5
+
+            optuna_params['max_epoch'] = 100
+            optuna_params['update_every_n_batch'] = train_params.update_every_n_batch
+            optuna_params['test_with_validation'] = False
+            optuna_params['optuna_model'] = False
+            train(optuna_params, self)
+            return child_recorder.key_score
+
+        study = optuna.create_study(direction = 'maximize')
+        study.optimize(obj_fn, n_trials = 100)
+        self.restore_recorder()
 
 
 from utils.vis import BaseVis, VisRunner

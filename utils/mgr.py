@@ -28,9 +28,10 @@ def check_train(train_str):
                  stop_at_nth_wander = 100,
                  fine_validation_each_nth_epoch = 4,
                  update_every_n_batch = 1,
+                 optuna_model = False,
                  max_epoch = 1000)
     assert ' ' not in train_str
-    for group in train_str.split(',' if ',' in train_str else ';'):
+    for group in train_str.split(','):
         if group.startswith('fine='):
             group = [int(x) if x else 0 for x in group[5:].split(':')]
             assert 1 <= len(group) <= 3
@@ -50,7 +51,9 @@ def check_train(train_str):
         elif group == '!':
             train['test_with_validation'] = True
 
+        elif group == 'optuna':
+            train['optuna_model'] = True
+
         elif group:
             raise ValueError('Unknown training param:' + group)
-
     return train

@@ -366,6 +366,7 @@ class Manager:
             recorder = diff_recorder(task_spec) if exp_id is None else diff_recorder(exp_id)
             print(recorder.create_join())
             if op_code == 'd' and input('Remove recorder ? [Y or any key]').lower() != 'Y':
+                recorder.detach()
                 recorder.delete_all()
                 continue
 
@@ -384,6 +385,7 @@ class Manager:
                         recorder.delete_all()
             else:
                 recorder.register_test_scores(module.get_configs(recorder).test_model())
+            recorder.detach()
 
 def get_args():
     parser = argparse.ArgumentParser(
@@ -397,7 +399,7 @@ def get_args():
     parser.add_argument('-P', '--threads',   help = 'a number of threads for pre-processing the data', type = int, default = -1)
     parser.add_argument('-m', '--menu',      help = 'list available sublayer configurations', action = 'store_true', default = False)
     parser.add_argument('-g', '--gpu',       help = 'pass to environment', type = str, default = '0')
-    parser.add_argument('-x', '--train',     help = 'fv=3:30:4,max=100,! [fine validation starts from the 3rd consecutive key score wandering, ends at the 30th wandering, occuring 4 times during one epoch. !test with devel set!]', type = str, default = '')
+    parser.add_argument('-x', '--train',     help = 'fv=3:30:4,max=100,!,optuna [fine validation starts from the 3rd consecutive key score wandering, ends at the 30th wandering, occuring 4 times during one epoch. !test with devel set!]', type = str, default = '')
     parser.add_argument('-s', '--select',    help = 'select (a sub-layer config id)[/data][:folder] name to run', type = str)
     parser.add_argument('-i', '--instance',  help = 'test an trained model by the folder id without its suffix name', type = str)
     args = parser.parse_args()
