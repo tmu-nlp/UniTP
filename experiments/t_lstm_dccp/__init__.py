@@ -20,10 +20,10 @@ def get_configs(recorder = None):
 
     reader = DiscoReader(disco.data_path, disco.vocab_size, disco.unify_sub)
     
-    def get_datasets(mode):
+    def get_datasets(mode, new_train_cnf = None):
         datasets = {}
         if mode == M_TRAIN:
-            datasets[C_ABSTRACT] = reader.batch(M_TRAIN, disco.batch_size, disco.bucket_len, train_cnf,
+            datasets[C_ABSTRACT] = reader.batch(M_TRAIN, disco.batch_size, disco.bucket_len, new_train_cnf or train_cnf,
                                                 shuffle_swap = disco.shuffle_swap,
                                                 max_len = disco.max_len,
                                                 min_gap = disco.min_gap,

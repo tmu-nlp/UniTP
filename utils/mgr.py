@@ -28,7 +28,7 @@ def check_train(train_str):
                  stop_at_nth_wander = 100,
                  fine_validation_each_nth_epoch = 4,
                  update_every_n_batch = 1,
-                 optuna_model = False,
+                 optuna_trials = 0,
                  max_epoch = 1000)
     assert ' ' not in train_str
     for group in train_str.split(','):
@@ -51,8 +51,8 @@ def check_train(train_str):
         elif group == '!':
             train['test_with_validation'] = True
 
-        elif group == 'optuna':
-            train['optuna_model'] = True
+        elif group.startswith('optuna='):
+            train['optuna_trials'] = int(group[7:])
 
         elif group:
             raise ValueError('Unknown training param:' + group)

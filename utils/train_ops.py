@@ -2,7 +2,7 @@ from utils.param_ops import HParams
 
 def train(train_params, operator):
     train_params = HParams(train_params)
-    epoch_cnt, fine_validation = operator.train_initials()
+    epoch_cnt, fine_validation = operator.train_initials(train_params.max_epoch > 0)
     nth_wander = train_params.fine_validation_at_nth_wander if fine_validation else 0
     validation_each_nth_epoch = train_params.fine_validation_each_nth_epoch
     # TODO: set fine_validation_at_nth_wander to
@@ -26,6 +26,6 @@ def train(train_params, operator):
                     operator.test_model(epoch = epoch)
                 nth_validation += 1
         nth_validation = validation_each_nth_epoch + 1
-    if train_params.optuna_model:
+    if train_params.optuna_trials:
         operator.optuna_model(train_params)
     return operator.test_model()

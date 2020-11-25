@@ -36,11 +36,15 @@ class Operator:
         ds_total = sum(ds_freqs)
         return ds_total, ds_names, ds_iters
 
-    def train_initials(self):
-        if self._train_materials is None:
+    def train_initials(self, with_train_set):
+        if self._train_materials is None: # single run
             train_icon, devel_icon = get_train_validation_pair()
-            self._train_materials    = self._get_datasets(M_TRAIN), train_icon
             self._validate_materials = self._get_materials(M_DEVEL), devel_icon
+            self._train_materials    = self._get_datasets(M_TRAIN) if with_train_set else None, train_icon
+        else: # from optuna
+            train_cnf, train_icon = self._train_materials
+            self._train_materials = self._get_datasets(M_TRAIN, train_cnf), train_icon
+
         (epoch, fine_validation, global_step) = self._recorder.initial_or_restore(self._model)
         self._optimizer = self._build_optimizer(epoch)
         self._global_step = global_step
@@ -136,14 +140,19 @@ class Operator:
         scores = self.combine_scores_and_decide_key(epoch, ds_scores)
         return scores, ds_logg, from_start
 
-    def setup_optuna_mode(self, new_recorder, trial):
+    def setup_optuna_mode(self, spec_update_fn, trial):
         if self._optuna_mode is None:
-            self._optuna_mode = self._recorder, trial, 0
-            self._recorder = new_recorder
-        return self._optuna_mode[0].key_score
+            super_recorder = self._recorder
+        else:
+            self._recorder.detach() # previous trail
+            super_recorder = self._optuna_mode[0]
+        self._optuna_mode = super_recorder, trial, 0
+        self._recorder = super_recorder.new_trial_recorder(spec_update_fn, trial)
+        return super_recorder.key_score
 
     def restore_recorder(self):
         assert self._optuna_mode
+        self._recorder.detach() # previous trail
         self._recorder = self._optuna_mode[0]
         self._optuna_mode = None
         self._recorder.summary_trials()

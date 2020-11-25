@@ -14,6 +14,7 @@ from models.loss import binary_cross_entropy, hinge_loss
 from experiments.helper import warm_adam
 from data.cross.evalb_lcfrs import DiscoEvalb, ExportWriter, read_param
 from utils.shell_io import has_discodop, discodop_eval, byte_style
+from utils.file_io import join, basename
 
 train_type = dict(loss_weight = dict(tag    = BaseType(0.3, validator = frac_open_0),
                                      label  = BaseType(0.1, validator = frac_open_0),
@@ -240,6 +241,7 @@ class DiscoOperator(Operator):
         
     def optuna_model(self, train_params):
         import optuna
+        from optuna.trial import TrialState
         import numpy as np
         from utils.types import E_ORIF5_HEAD
         from utils.train_ops import train
@@ -265,14 +267,15 @@ class DiscoOperator(Operator):
                     loss_str += f'{s:.1f}'
                 binarization = np.array([trial.suggest_loguniform(x, 1e-5, 1e5) for x in E_ORIF5_HEAD])
                 binarization /= np.sum(binarization)
-                data['binarization'] = {k:float(v) for k, v in zip(E_ORIF5_HEAD, binarization)}
+                data['binarization'] = bz = {k:float(v) for k, v in zip(E_ORIF5_HEAD, binarization)}
                 specs['train']['learning_rate'] = lr = trial.suggest_loguniform('learning_rate', 1e-6, 1e-3)
                 self._train_config._nested.update(specs['train'])
+                self._train_materials = bz, self._train_materials[1] # for train/train_initials(max_epoch>0)
                 bin_str = 'bin=' + ','.join(f'{x:.2f}' for x in binarization)
                 return bin_str + ';' + loss_str + f';lr={lr:.1e}'
 
-            child_recorder = self._recorder.new_trial(spec_update_fn, trial)
-            base_devel_score = self.setup_optuna_mode(child_recorder, trial)
+            self._mode_trees = [], [] # force init
+            base_devel_score = self.setup_optuna_mode(spec_update_fn, trial)
 
             optuna_params = {} # change train_params
             optuna_params['fine_validation_at_nth_wander'] = 1
@@ -282,17 +285,30 @@ class DiscoOperator(Operator):
             optuna_params['max_epoch'] = 100
             optuna_params['update_every_n_batch'] = train_params.update_every_n_batch
             optuna_params['test_with_validation'] = False
-            optuna_params['optuna_model'] = False
+            optuna_params['optuna_trials'] = 0
             train(optuna_params, self)
-            return child_recorder.key_score
+            return self._recorder.key_score # child score
 
-        study = optuna.create_study(direction = 'maximize')
-        study.optimize(obj_fn, n_trials = 100)
-        self.restore_recorder()
+        fpath = join(self._recorder.create_join(), 'trials.db')
+        study = optuna.create_study(direction  = 'maximize',
+                                    study_name = 'dccp-hyper',
+                                    storage    = 'sqlite:///' + fpath,
+                                    load_if_exists = True)
+        n_trials = train_params.optuna_trials
+        for tid in reversed(range(len(study.trials))):
+            t = study.trials[tid]
+            if t.state in (TrialState.PRUNED, TrialState.COMPLETE):
+                n_trials -= 1
+            else:
+                study.trials.pop(tid)
+        if n_trials > 0:
+            self._recorder.log(f'{n_trials} trials left to explore ...')
+            study.optimize(obj_fn, n_trials = n_trials) # core
+            self.restore_recorder()
 
 
 from utils.vis import BaseVis, VisRunner
-from utils.file_io import join, isfile, listdir, remove, isdir
+from utils.file_io import isfile, listdir, remove, isdir
 from utils.pickle_io import pickle_dump, pickle_load
 from data.cross import disco_tree, bracketing, Counter, draw_str_lines
 def batch_trees(bid_offset, heads_gen, segments, i2vs, fall_back_root_label = None,

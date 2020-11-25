@@ -81,13 +81,13 @@ class Recorder:
         self._keep_top_k = keep_top_k
         self._evalb = evalb
 
-    def new_trial(self, specs_update_fn, trial):
+    def new_trial_recorder(self, specs_update_fn, trial):
         _, instance_dir = self._instance_dir
         specs          = load_yaml(*self._sv_file_lock, wait_lock = False)
         results        = specs.pop('results')
         trial_name     = specs_update_fn(specs, trial)
         best_model     = max(results, key = lambda x: results[x])
-        child_recorder = Recorder(create_join(instance_dir, 'trials'), self._module, specs, trial_name, evalb = self._evalb)
+        child_recorder = Recorder(create_join(instance_dir, 'trials'), self._module, specs, trial_name, 1, self._evalb)
         _, child_dir   = child_recorder._instance_dir
         print(f'New trial {child_dir} from best model {best_model}', **self._print_args)
         copy_with_prefix_and_rename(join(instance_dir, 'models', best_model), child_dir, 'checkpoint')
