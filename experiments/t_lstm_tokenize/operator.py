@@ -71,6 +71,8 @@ class TokenizerOperator(Operator):
                 accu = validity_match.sum().cpu().numpy()
                 racy = existence.sum().cpu().numpy()
                 toke = token_ids.cpu().numpy()
+                if self._validity_hinge_loss:
+                    hinge_score(validity_logit, inplace = True)
                 vali = validity_logit.cpu().numpy()
                 offset = offset.cpu().numpy()
                 length = length.cpu().numpy()
@@ -155,9 +157,14 @@ class TokenizerOperator(Operator):
                 seg_length = seg_length.cpu().numpy()
                 vis = self._vis[ds_name][0]
                 if vis.save_tensors:
+                    if self._model._input_layer.has_static_pca:
+                        mpc_token = self._model._input_layer.pca(static).cpu().numpy()
+                        mpc_label = self._model._input_layer.pca(layers_of_input).cpu().numpy()
+                    else:
+                        pca = PCA(layers_of_input.reshape(-1, layers_of_input.shape[2]))
+                        mpc_token = pca(static).cpu().numpy()
+                        mpc_label = pca(layers_of_input).cpu().numpy()
                     right_score = right_score.cpu().numpy()
-                    mpc_token = self._model_pca(static).cpu().numpy()
-                    mpc_label = self._model_pca(layers_of_input).cpu().numpy()
                     visual = token, offset, length, valid_score, right_score, right, mpc_token, mpc_label, segment, seg_length
                 else:
                     visual = token, offset, length, valid_score, None, right, None, None, segment, seg_length
@@ -196,7 +203,8 @@ class TokenizerOperator(Operator):
                            self.i2vs,
                            self.recorder.log,
                            save_tensors)
-            self._model_pca = self._model.get_static_pca()
+            if self._model._input_layer.has_static_pca:
+                self._model._input_layer.flush_pc_if_emb_is_tuned()
                         
         vis = VisRunner(vis, async_ = True) # TODO: release
         self._vis[ds_name] = vis, use_test_set, final_test
@@ -253,9 +261,11 @@ class ChunkVis(BaseVis):
         self._subs = Counter()
         self._tokens = {}
         self._cnts = 0
+        self._sfile = join(work_dir, f'scores.{epoch}.csv')
 
     def _before(self):
-        pass
+        with open(self._sfile, 'w') as fw:
+            fw.write('score\n')
 
     def _process(self, batch_id, accu, racy, size, offsets, lengths, token_ids, validity_logits):
         self._accu += accu
@@ -263,36 +273,39 @@ class ChunkVis(BaseVis):
 
         if self._work_dir is None:
             return
-        for offset, length, tokens, logits in zip(offsets, lengths, token_ids, validity_logits):
-            tokens = ''.join(self._i2vs.token[t] for t in tokens[offset:offset+length])
-            chunks = []
-            if length > 2:
-                end_threshold = 0.15
-                start  = 0
-                logits = logits[size:]
-                for i in range(0, length - 1):
-                    split = False
-                    if i == 0: # start
-                        mid, right = logits[offset:offset + 2]
-                        split = mid + end_threshold < right
-                    elif i == length - 2: # end
-                        left, mid = logits[offset + i - 1:offset + i + 1]
-                        split = left > mid + end_threshold
-                    else: # mid
-                        left, mid, right = logits[offset + i - 1:offset + i + 2]
-                        split = left > mid < right
-                    if split:
-                        chunk = tokens[start:i + 1]
-                        self._subs[chunk] += 1
-                        chunks.append(chunk)
-                        start = i + 1
-                chunks.append(tokens[start:])
-                self._tokens[tokens] = '|'.join(chunks)
-                self._subs[tokens[start:]] += 1
-            else:
-                self._subs[tokens] += 1
-                self._tokens[tokens] = tokens
-            self._cnts += 1
+        with open(self._sfile, 'a+') as fw:
+            for offset, length, tokens, logits in zip(offsets, lengths, token_ids, validity_logits):
+                tokens = ''.join(self._i2vs.token[t] for t in tokens[offset:offset+length])
+                chunks = []
+                if length > 2:
+                    end_threshold = 0.15
+                    start  = 0
+                    logits = logits[size:] # second layer
+                    for i in range(0, length - 1):
+                        split = False
+                        if i == 0: # start
+                            mid, right = logits[offset:offset + 2]
+                            split = mid + end_threshold < right
+                        elif i == length - 2: # end
+                            left, mid = logits[offset + i - 1:offset + i + 1]
+                            split = left > mid + end_threshold
+                        else: # mid
+                            left, mid, right = logits[offset + i - 1:offset + i + 2]
+                            split = left > mid < right
+                        if split:
+                            chunk = tokens[start:i + 1]
+                            self._subs[chunk] += 1
+                            chunks.append(chunk)
+                            start = i + 1
+                        fw.write(f'{mid}\n')
+                    chunks.append(tokens[start:])
+                    self._tokens[tokens] = '|'.join(chunks)
+                    self._subs[tokens[start:]] += 1
+                else:
+                    self._subs[tokens] += 1
+                    self._tokens[tokens] = tokens
+                    fw.write(f'{logits[size + offset]}\n')
+                self._cnts += 1
 
     def _after(self):
         accuracy = float(f'{self._accu / self._racy * 100:.2f}')

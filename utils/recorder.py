@@ -26,10 +26,15 @@ def _sv_file_lock(instance_dir):
 class Recorder:
     '''A Recorder provides environment for an Operator, created in a Manager, operated by the Operator.'''
     
-    def __init__(self, task_dir, task_module, config_dict_or_instance, instance_name = None, keep_top_k = 4, evalb = None):
+    def __init__(self, task_dir, task_module, config_dict_or_instance, instance_name = None, keep_top_k = 4, evalb = None, read_only = False):
         # with DelayedKeyboardInterrupt():
+        new_instance = isinstance(config_dict_or_instance, dict)
+        if read_only:
+            assert not new_instance, 'parallelism of optuna trials should be based on a trained instance'
+            self._sv_unlock = None # !!! an inactive recorder !!!
+
         rt_file, rt_lock = _rt_file_lock(task_dir)
-        if isinstance(config_dict_or_instance, dict):
+        if new_instance:
             rt, unlock = load_yaml(rt_file, rt_lock, True)
             if len(rt):
                 name_len = max(len(i) for i in rt.keys())
@@ -67,19 +72,18 @@ class Recorder:
             sv_file, sv_lock = _sv_file_lock(instance_dir)
             assert isfile(sv_file), f"'{sv_file}' is not found."
 
-        print_args = dict(flush = True, file = open(join(instance_dir, 'experiment.log'), 'a+'))
-        print(datetime.now(), **print_args)
-        self._print_args = print_args
         self._instance_dir = instance, instance_dir
         self._module     = task_module
         self._ckpt_fname = join(instance_dir, 'checkpoint')
         self._model_dir  = create_join(instance_dir, 'models')
-        _, self._sv_unlock = load_yaml(sv_file, sv_lock, True)
+        if not read_only:
+            _, self._sv_unlock = load_yaml(sv_file, sv_lock, True)
         self._rt_file_lock = rt_file, rt_lock
         self._sv_file_lock = sv_file, sv_lock
         self._key = None
         self._keep_top_k = keep_top_k
         self._evalb = evalb
+        self.log(datetime.now())
 
     def new_trial_recorder(self, specs_update_fn, trial):
         _, instance_dir = self._instance_dir
@@ -89,16 +93,22 @@ class Recorder:
         best_model     = max(results, key = lambda x: results[x])
         child_recorder = Recorder(create_join(instance_dir, 'trials'), self._module, specs, trial_name, 1, self._evalb)
         _, child_dir   = child_recorder._instance_dir
-        print(f'New trial {child_dir} from best model {best_model}', **self._print_args)
+        self.log(f'New trial {child_dir} from best model {best_model}')
         copy_with_prefix_and_rename(join(instance_dir, 'models', best_model), child_dir, 'checkpoint')
         return child_recorder
 
-    def summary_trials(self):
+    def summary_trials(self): # should only be a super_recorder
+        if self._sv_unlock is None: # inactive recorder should only leave to the active one
+            return False
         _, instance_dir = self._instance_dir
         children = load_yaml(*_rt_file_lock(instance_dir))
         best_child = max(children, key = lambda cid: children[cid]['key'])
         for fname in listdir(join(instance_dir, 'trials')):
-            if fname.split('.')[0] == best_child:
+            if '.' in fname:
+                thatsit = fname.split('.')[0] == best_child
+            else:
+                thatsit = fname == best_child
+            if thatsit:
                 child_specs = load_yaml(*_sv_file_lock(join(instance_dir, 'trials', fname)))
                 child_results = child_specs['results']
                 best_model = max(child_results, key = lambda x: child_results[x])
@@ -113,18 +123,16 @@ class Recorder:
                 remove(join(self._model_dir, weakest_model))
                 results.pop(weakest_model)
 
-                print(' Replace worst model', weakest_model, 'with a', 'new best' if betterment else 'better', 'model', model_fname, **self._print_args)
+                self.log(' Replace the worst model', weakest_model, 'with the best model from trial', best_child, best_model)
                 save_yaml(specs, *self._sv_file_lock, wait_lock = False)
-                return
+                return True
+        return False
 
     def detach(self):
-        if isdir(self._instance_dir[1]):
-            self._print_args['file'].close() # critical zone
+        if self._sv_unlock is not None:
             self._sv_unlock()
-        # if input('*** Remove Experiment ? [n/N or any key] *** ').lower() != 'n':
 
     def delete_all(self):
-        self._print_args['file'].close() # critical zone
         instance, instance_dir = self._instance_dir
         rt = load_yaml(*self._rt_file_lock)
         rt.pop(instance)
@@ -132,17 +140,20 @@ class Recorder:
         rm_rf(instance_dir, stderr)
 
     def delete_most(self):
-        logger = self._print_args['file']
         instance, instance_dir = self._instance_dir
         remove(join(instance_dir, 'checkpoint'))
-        for fname in listdir(instance_dir):
-            fpath = join(instance_dir, fname)
-            if isdir(fpath):
-                rm_rf(fpath, logger)
-        logger.close()
+        with open(join(instance_dir, 'experiment.log'), 'a+') as fw:
+            for fname in listdir(instance_dir):
+                fpath = join(instance_dir, fname)
+                if isdir(fpath):
+                    rm_rf(fpath, fw)
 
     def log(self, *args, **kwargs):
-        print(*args, **self._print_args, **kwargs)
+        _, instance_dir = self._instance_dir
+        with open(join(instance_dir, 'experiment.log'), 'a+') as fw:
+            kwargs['flush'] = True
+            kwargs['file']  = fw
+            print(*args, **kwargs)
 
     @staticmethod
     def msg(*args, **kwargs):
@@ -186,14 +197,14 @@ class Recorder:
             epoch = global_step = 0
             fine_validation = False
             md = dict(model.named_parameters())
-            print(dict_print(zip_nt_params(md), v_to_str = lambda tensor: '*'.join(str(s) for s in tensor.shape)), **self._print_args)
+            self.log(dict_print(zip_nt_params(md), v_to_str = lambda tensor: '*'.join(str(s) for s in tensor.shape)))
             total = 0
             for t in md.values():
                 x = 1
                 for s in t.shape:
                     x *= s
                 total += x
-            print('Total:', total, **self._print_args)
+            self.log('Total:', total)
         else:
             checkpoint = torch.load(model_fname)
             try:
@@ -257,7 +268,7 @@ class Recorder:
             epoch, fine_validation, global_step = checkpoint['status']
             self._key = checkpoint['key']
             
-            print(f"Model restored from", model_fname, **self._print_args)
+            self.log(f"Model restored from", model_fname)
             Recorder.msg(f'Model Restored at {epoch:.2f}, key score {self._key:.2f}')
             if restore_from_best_validation:
                 return epoch, global_step
@@ -284,12 +295,12 @@ class Recorder:
                 weakest_model = min(results, key = lambda x: results[x])
                 remove(join(self._model_dir, weakest_model))
                 results.pop(weakest_model)
-                print(' Replace worst model', weakest_model, 'with a', 'new best' if betterment else 'better', 'model', model_fname, **self._print_args)
+                self.log(' Replace worst model', weakest_model, 'with a', 'new best' if betterment else 'better', 'model', model_fname)
             else:
-                print(' A new', 'best' if betterment else 'better', 'model', model_fname, **self._print_args)
+                self.log(' A new', 'best' if betterment else 'better', 'model', model_fname)
             save_yaml(specs, *self._sv_file_lock, wait_lock = False)
         else:
-            print(**self._print_args)
+            self.log()
         return betterment
 
     def register_test_scores(self, scores):

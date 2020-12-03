@@ -175,8 +175,7 @@ class SequenceBaseReader(_BaseReader):
     def __init__(self,
                  vocab_dir,
                  i2vs):
-        i2vs, v2is = encapsulate_vocabs(i2vs, {})
-        super().__init__(vocab_dir, i2vs, v2is, {})
+        super().__init__(vocab_dir, i2vs, {}, {})
 
 import torch
 from torch.utils.data import Dataset, DataLoader

@@ -181,9 +181,9 @@ class ContinuousTensorVis(TensorVis):
             size, bin_width, evalb = size_bin_width_evalb
             if label is None: # unlabeled
                 pickle_dump(self.join(f'data.{batch_id}_{epoch}.pkl'),
-                            self.IOData(offset, length, token, None, None, right, trees,
-                                segment, seg_length, mpc_word, mpc_phrase,
-                                batch_warnings, None, tag_score, label_score, split_score, None))
+                            (offset, length, token, None, None, right, trees,
+                             segment, seg_length, mpc_word, mpc_phrase,
+                             batch_warnings, None, tag_score, label_score, split_score, None))
                 return batch_warnings
 
             else: # supervised / labeled

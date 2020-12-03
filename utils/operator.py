@@ -89,6 +89,8 @@ class Operator:
             super_recorder, trial, trial_step = self._optuna_mode
             trial.report(scores['key'], trial_step)
             if trial.should_prune():
+                import optuna
+                self._recorder.register_test_scores(dict(key = self._recorder.key_score, step = trial_step))
                 super_recorder.log(f'  (got pruned at the {trial_step}-th step)')
                 raise optuna.exceptions.TrialPruned()
             self._optuna_mode = super_recorder, trial, trial_step + 1
@@ -101,6 +103,7 @@ class Operator:
             if self._optuna_mode is not None:
                 super_recorder, trial, trial_step = self._optuna_mode
                 super_recorder.log(f'  (finished after {trial_step + 1} steps)')
+                self._recorder.register_test_scores(dict(key = self._recorder.key_score, step = trial_step))
                 return # dead end: optuna_mode should not nest
             prefix = 'Test ' # final label
             epoch, self._global_step = self._recorder.initial_or_restore(self._model, restore_from_best_validation = True)

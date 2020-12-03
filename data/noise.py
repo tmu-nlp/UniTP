@@ -15,9 +15,7 @@ class CharDataset(LengthOrderedDataset):
                  max_len  = None):
 
         columns = {}
-        heads = set()
         for field, (_, v2i) in field_v2is.items():
-            heads.add(field)
             column  = []
             lengths = []
             is_digit = []
@@ -28,9 +26,7 @@ class CharDataset(LengthOrderedDataset):
             columns[field] = column
         assert all(len(lengths) == len(col) for col in columns.values())
 
-        heads.add('first_validity')
-        heads.add('second_validity')
-        heads.add('noise_type')
+        heads = 'token', 'first_validity', 'second_validity', 'noise_type'
         super().__init__(heads, lengths, factors, min_len, max_len, None)
 
         self._columns = columns

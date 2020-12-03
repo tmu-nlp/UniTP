@@ -45,7 +45,7 @@ class RnnTokenizer(nn.Module):
         super().__init__()
 
         input_layer['pre_trained'] = False
-        self._input_layer = InputLeaves(model_dim, num_tokens, None, **input_layer)
+        self._input_layer = InputLeaves(model_dim, num_tokens, None, not paddings, **input_layer)
         contextual_layer = Contextual(model_dim, model_dim, 'hidden_never_used', **contextual_layer)
         self._contextual_layer = None if contextual_layer.is_useless else contextual_layer
         self._discriminator = VectorDiscriminator(model_dim, **discrim_layer)
@@ -55,7 +55,7 @@ class RnnTokenizer(nn.Module):
 
     def forward(self, char_idx, offset, length, noise_mode, train_clean = False, **kw_args):
         batch_size, batch_len = char_idx.shape
-        static, bottom_existence = self._input_layer(char_idx)
+        static, bottom_existence = self._input_layer(char_idx, tune_pre_trained = True)
 
         if self._contextual_layer is None:
             bottom_input = static
@@ -63,7 +63,7 @@ class RnnTokenizer(nn.Module):
             dynamic, _ = self._contextual_layer(static)
             bottom_input = static + dynamic
 
-        bottom_existence.unsqueeze_(dim = 2)
+        # bottom_existence.unsqueeze_(dim = 2)
         base_return = batch_size, batch_len, static
 
         if noise_mode:

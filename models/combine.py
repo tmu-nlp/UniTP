@@ -86,7 +86,7 @@ class Add(nn.Module):
         super().__init__()
 
     def forward(self, rightwards_or_lhs, embeddings_or_rhs, existences_or_phy_jnt):
-        if rightwards_or_lhs.shape == embeddings_or_rhs.shape:
+        if rightwards_or_lhs is not None and rightwards_or_lhs.shape == embeddings_or_rhs.shape:
             return self.disco_forward(rightwards_or_lhs, embeddings_or_rhs, existences_or_phy_jnt)
         else:
             return self.conti_forward(rightwards_or_lhs, embeddings_or_rhs, existences_or_phy_jnt)
