@@ -1,7 +1,6 @@
 from utils.types import fill_placeholder, M_TRAIN, M_DEVEL, M_TEST, NIL
 from data.io import load_i2vs
 from data.io import isfile
-from torch import load, save
 
 SUB = '_SUB'
 from data.backend import WordBaseReader, post_batch

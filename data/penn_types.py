@@ -14,16 +14,23 @@ call_fasttext = make_call_fasttext(ft_bin)
 
 from utils.types import none_type, false_type, true_type, binarization, NIL
 from utils.types import train_batch_size, train_max_len, train_bucket_len, vocab_size, trapezoid_height
-parsing_config = dict(vocab_size       = vocab_size,
-                      binarization     = binarization,
-                      batch_size       = train_batch_size,
-                      max_len          = train_max_len,
-                      bucket_len       = train_bucket_len,
-                      with_ftags       = false_type,
-                      unify_sub        = true_type,
-                      sort_by_length   = false_type,
-                      nil_as_pads      = true_type,
-                      trapezoid_height = trapezoid_height)
+nccp_data_config = dict(vocab_size       = vocab_size,
+                        binarization     = binarization,
+                        batch_size       = train_batch_size,
+                        max_len          = train_max_len,
+                        bucket_len       = train_bucket_len,
+                        with_ftags       = false_type,
+                        unify_sub        = true_type,
+                        sort_by_length   = false_type,
+                        nil_as_pads      = true_type,
+                        trapezoid_height = trapezoid_height)
+
+accp_data_config = dict(vocab_size       = vocab_size,
+                        batch_size       = train_batch_size,
+                        max_len          = train_max_len,
+                        bucket_len       = train_bucket_len,
+                        unify_sub        = true_type,
+                        sort_by_length   = false_type)
 
 from utils.str_ops import histo_count, str_percentage, strange_to
 from utils.pickle_io import pickle_load, pickle_dump

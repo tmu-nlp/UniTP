@@ -6,8 +6,6 @@ from utils.param_ops import HParams
 from experiments.t_lstm_dccp.model import DiscoRnnTree, model_type
 from experiments.t_lstm_dccp.operator import DiscoOperator, train_type
 
-require_source_path = False
-
 get_any_disco = lambda dptb = None, tiger = None: dptb or tiger
 def get_configs(recorder = None):
     if recorder is None:

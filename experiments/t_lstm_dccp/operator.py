@@ -1,6 +1,5 @@
 import torch
 from torch import nn
-from torch.utils.tensorboard import SummaryWriter
 from utils.operator import Operator
 from data.delta import get_rgt, get_dir, get_jnt
 from utils.param_ops import get_sole_key
@@ -54,9 +53,9 @@ class DiscoOperator(Operator):
 
     def _build_optimizer(self, start_epoch):
         # self._loss_weights_of_tag_label_orient = 0.3, 0.1, 0.6 betas = (0.9, 0.98), weight_decay = 0.01, eps = 1e-6
-        self._writer = SummaryWriter(self.recorder.create_join('train'))
         optim, schedule_lr = warm_adam(self._model, self._train_config.learning_rate)
         self._schedule_lr = schedule_lr
+        self.recorder.init_tensorboard()
         optim.zero_grad()
         return optim
 
@@ -65,8 +64,7 @@ class DiscoOperator(Operator):
         self._tune_pre_trained = tune = tune is not None and tune < epoch
         lr_factor = self._train_config.lr_factor_for_tuning if tune else 1
         learning_rate = self._schedule_lr(epoch, wander_ratio, lr_factor)
-        self._writer.add_scalar('Batch/Learning_Rate', learning_rate, self.global_step)
-        self._writer.add_scalar('Batch/Epoch', epoch, self.global_step)
+        self.recorder.tensorboard(self.global_step, 'Batch/%s', Learning_Rate = learning_rate, Epoch = epoch)
 
     def _step(self, mode, ds_name, batch, batch_id = None):
 
@@ -94,14 +92,15 @@ class DiscoOperator(Operator):
             label_match = (labels == batch['label']) & gold_exists
             right_match = (rights == gold_rights) & gold_direcs
             
-            gs = self.global_step
-            self._writer.add_scalar('Accuracy/Tag',   fraction(tag_match,    tag_weight), gs)
-            self._writer.add_scalar('Accuracy/Label', fraction(label_match, gold_exists), gs)
-            self._writer.add_scalar('Accuracy/Right', fraction(right_match, gold_direcs), gs)
-            self._writer.add_scalar('Accuracy/Direc', fraction(direcs == gold_direcs),  gs)
-            self._writer.add_scalar('Accuracy/Joint', fraction(joints == gold_joints),  gs)
+            self.recorder.tensorboard(self.global_step, 'Accuracy/%s',
+                                      Tag = fraction(tag_match,    tag_weight),
+                                      Label = fraction(label_match, gold_exists),
+                                      Right = fraction(right_match, gold_direcs),
+                                      Direc = fraction(direcs == gold_direcs),
+                                      Joint = fraction(joints == gold_joints))
             batch['existence'] = gold_exists
             shuffled = self._train_config.loss_weight.shuffled
+            tb_loss_kwargs = {}
             losses = self._model.get_losses(batch, tag_logits, top3_label_logits, label_logits, right_direc_logits, joint_logits, shuffled_right_direc, shuffled_joint, self._train_config.loss_weight._undirect_orient)
             if self._model.has_fewer_losses:
                 tag_loss, label_loss, orient_loss, joint_loss, shuffled_orient_loss, shuffled_joint_loss = losses
@@ -109,12 +108,12 @@ class DiscoOperator(Operator):
                 total_loss = self._train_config.loss_weight.label * label_loss + total_loss
                 total_loss = self._train_config.loss_weight.joint * joint_loss + total_loss
                 total_loss = self._train_config.loss_weight.orient * orient_loss + total_loss
-                self._writer.add_scalar('Loss/Orient',  orient_loss, gs)
                 if shuffled_joint_loss is not None:
                     total_loss = self._train_config.loss_weight.joint * shuffled_joint_loss * shuffled + total_loss
                     total_loss = self._train_config.loss_weight.orient * shuffled_orient_loss * shuffled + total_loss
-                    self._writer.add_scalar('Loss/ShuffledOrient', shuffled_orient_loss, gs)
-                    self._writer.add_scalar('Loss/ShuffledJoint',   shuffled_joint_loss, gs)
+                    tb_loss_kwargs['ShuffledOrient'] = shuffled_orient_loss
+                    tb_loss_kwargs['ShuffledJoint']  = shuffled_joint_loss
+                tb_loss_kwargs['Orient'] = orient_loss
             else:
                 tag_loss, label_loss, right_loss, joint_loss, direc_loss, shuffled_right_loss, shuffled_joint_loss, shuffled_direc_loss = losses
                 total_loss = self._train_config.loss_weight.tag * tag_loss
@@ -122,24 +121,24 @@ class DiscoOperator(Operator):
                 total_loss = self._train_config.loss_weight.joint * joint_loss + total_loss
                 total_loss = self._train_config.loss_weight._right * right_loss + total_loss
                 total_loss = self._train_config.loss_weight._direc * direc_loss + total_loss
-                self._writer.add_scalar('Loss/Right',  right_loss, gs)
-                self._writer.add_scalar('Loss/Direc',  direc_loss, gs)
                 if shuffled_joint_loss is not None:
                     total_loss = self._train_config.loss_weight.joint * shuffled_joint_loss * shuffled + total_loss
                     total_loss = self._train_config.loss_weight._right * shuffled_right_loss * shuffled + total_loss
                     total_loss = self._train_config.loss_weight._direc * shuffled_direc_loss * shuffled + total_loss
-                    self._writer.add_scalar('Loss/ShuffledRight', shuffled_right_loss, gs)
-                    self._writer.add_scalar('Loss/ShuffledDirec', shuffled_direc_loss, gs)
-                    self._writer.add_scalar('Loss/ShuffledJoint', shuffled_joint_loss, gs)
+                    tb_loss_kwargs['ShuffledRight'] = shuffled_right_loss
+                    tb_loss_kwargs['ShuffledDirec'] = shuffled_direc_loss
+                    tb_loss_kwargs['ShuffledJoint'] = shuffled_joint_loss
+                tb_loss_kwargs['Right'] = right_loss
+                tb_loss_kwargs['Direc'] = direc_loss
             total_loss.backward()
             # check = existences == (batch['xtype'] > 0)
-            self._writer.add_scalar('Loss/Tag',    tag_loss,   gs)
-            self._writer.add_scalar('Loss/Label',  label_loss, gs)
-            self._writer.add_scalar('Loss/Joint',  joint_loss, gs)
-            self._writer.add_scalar('Loss/Total',  total_loss, gs)
-            self._writer.add_scalar('Batch/SamplePerSec', batch_len / batch_time,  gs)
-            self._writer.add_scalar('Batch/Length', batch_len,   gs)
-            self._writer.add_scalar('Batch/Height', batch['segments'].shape[0], gs)
+            self.recorder.tensorboard(self.global_step, 'Loss/%s',
+                                      Tag = tag_loss, Label = label_loss, Joint = joint_loss, Total = total_loss,
+                                       **tb_loss_kwargs)
+            self.recorder.tensorboard(self.global_step, 'Batch/%s',
+                                      SamplePerSec = batch_len / batch_time,
+                                      Length = batch_len,
+                                      Height = batch['segments'].shape[0])
         else:
             vis, _, _, pending_heads = self._vis_mode
             if vis.save_tensors:
@@ -223,10 +222,8 @@ class DiscoOperator(Operator):
         logg += f' @{speed}sps. (sym:nn {rate:.2f})'
         scores['speed'] = speed
         if not final_test:
-            mode = 'TestSet' if use_test_set else 'DevelSet'
-            self._writer.add_scalar(f'{mode}/F1',      scores['TF'], self.global_step)
-            self._writer.add_scalar(f'{mode}/Disc.F1', scores['DF'], self.global_step)
-            self._writer.add_scalar(f'{mode}/SamplePerSec', speed, self.global_step)
+            self.recorder.tensorboard(self.global_step, 'TestSet/%s' if use_test_set else 'DevelSet/%s',
+                                      F1 = scores['TF'], Disc_F1 = scores['DF'], SamplePerSec = speed)
         self._vis_mode = None
         return scores, desc, logg
 

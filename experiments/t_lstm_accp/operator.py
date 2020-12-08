@@ -1,7 +1,6 @@
 import torch
 from torch import nn
 from utils.operator import Operator
-from data.delta import get_rgt, get_dir, s_index
 from utils.param_ops import get_sole_key
 from time import time
 from utils.math_ops import is_bin_times
@@ -11,13 +10,44 @@ from models.loss import binary_cross_entropy, hinge_loss
 from experiments.helper import warm_adam
 from utils.shell_io import byte_style
 
-train_type = dict(loss_weight = dict(tag    = BaseType(0.2, validator = frac_open_0),
-                                     label  = BaseType(0.3, validator = frac_open_0),
-                                     orient = BaseType(0.5, validator = frac_open_0)),
+train_type = dict(loss_weight = dict(tag   = BaseType(0.2, validator = frac_open_0),
+                                     label = BaseType(0.3, validator = frac_open_0),
+                                     fence = BaseType(0.5, validator = frac_open_0)),
                   learning_rate = BaseType(0.001, validator = frac_open_0),
                   tune_pre_trained_from_nth_epoch = tune_epoch_type,
                   lr_factor_for_tuning = frac_06,
-                  orient_hinge_loss = true_type)
+                  fence_hinge_loss = true_type)
+
+
+def unpack_label_like(seq, segment):
+    layers = []
+    start = 0
+    for size in segment:
+        end = start + size
+        layers.append(seq[:, start:end])
+        start = end
+    return layers
+
+def unpack_fence(seq, segment, is_indices):
+    layers = []
+    start = 0
+    for size in segment[is_indices:]:
+        end = start + size + 1
+        layers.append(seq[:, start:end])
+        start = end
+    return layers
+
+def extend_fence_idx(unpacked_fence_idx):
+    layers = []
+    first = unpacked_fence_idx[0]
+    bs = first.shape[0]
+    batch_dim = torch.arange(bs, device = first.device)[:, None]
+    for layer in unpacked_fence_idx:
+        full_layer = torch.zeros(bs, layer.max() + 1, dtype = torch.bool, device = first.device)
+        full_layer[batch_dim, layer] = True
+        layers.append(full_layer)
+    return torch.cat(layers, dim = 1)
+
 
 class PennOperator(Operator):
     def __init__(self, model, get_datasets, recorder, i2vs, evalb, train_config):
@@ -29,7 +59,7 @@ class PennOperator(Operator):
         self._tune_pre_trained = False
 
     def _build_optimizer(self, start_epoch):
-        # self._loss_weights_of_tag_label_orient = 0.3, 0.1, 0.6 betas = (0.9, 0.98), weight_decay = 0.01, eps = 1e-6
+        # self._loss_weights_of_tag_label_fence = 0.3, 0.1, 0.6 betas = (0.9, 0.98), weight_decay = 0.01, eps = 1e-6
         optim, schedule_lr = warm_adam(self._model, self._train_config.learning_rate)
         self._schedule_lr = schedule_lr
         if start_epoch > 0:
@@ -48,101 +78,68 @@ class PennOperator(Operator):
 
     def _step(self, mode, ds_name, batch, batch_id = None):
 
-        # assert ds_name == C_ABSTRACT
-        gold_orients = get_rgt(batch['xtype'])
+        supervised_signals = {}
         if mode == M_TRAIN:
-            batch['supervised_orient'] = gold_orients
-            #(batch['offset'], batch['length'])
+            supervised_signals['supervised_fence'] = gold_fences = unpack_fence(batch['fence'], batch['segment'], True)
 
         batch_time = time()
         (batch_size, batch_len, static, top3_label_logits,
-         layers_of_base, _, existences, orient_logits, tag_logits, label_logits,
-         trapezoid_info) = self._model(batch['token'], self._tune_pre_trained, **batch)
+         existences, embeddings, weights, fence_logits, fence_idx, tag_logits, label_logits,
+         segment, seg_length) = self._model(batch['token'], self._tune_pre_trained, **supervised_signals)
         batch_time = time() - batch_time
 
-        orient_logits.squeeze_(dim = 2)
-        existences   .squeeze_(dim = 2)
-        if self._train_config.orient_hinge_loss:
-            orients = orient_logits > 0
-        else:
-            orient_logits = self._sigmoid(orient_logits)
-            orients = orient_logits > 0.5
+        fences = fence_logits > 0
+        if not self._train_config.fence_hinge_loss:
+            fence_logits = self._sigmoid(fence_logits)
 
         if mode == M_TRAIN:
             tags    = self._model.get_decision(tag_logits  )
             labels  = self._model.get_decision(label_logits)
-            bottom_existence = existences[:, -batch_len:]
-            orient_weight = get_dir(batch['xtype'])
-            tag_mis       = (tags    != batch['tag'])
-            label_mis     = (labels  != batch['label'])
-            orient_match  = (orients == gold_orients) & orient_weight
-            tag_weight    = (   tag_mis | bottom_existence)
-            label_weight  = ( label_mis | existences)
-
-            if trapezoid_info is None:
-                height_mask = s_index(batch_len - batch['length'])[:, None, None]
+            bottom_existence = existences[:, :batch_len]
+            tag_mis      = (tags    != batch['tag'])
+            label_mis    = (labels  != batch['label'])
+            tag_weight   = (  tag_mis | bottom_existence)
+            label_weight = (label_mis | existences)
+            extended_gold_fences = extend_fence_idx(gold_fences)
+            
+            tag_loss, label_loss = self._model.get_losses(batch, tag_logits, label_logits)
+            if self._train_config.fence_hinge_loss:
+                fence_loss = hinge_loss(fence_logits, extended_gold_fences, None)
             else:
-                height_mask = batch['mask_length'] # ?? negative effect ???
-
-            tag_loss, label_loss = self._model.get_losses(batch, tag_logits, top3_label_logits, label_logits, height_mask)
-
-            if self._train_config.orient_hinge_loss:
-                orient_loss = hinge_loss(orient_logits, gold_orients, orient_weight)
-            else:
-                orient_loss = binary_cross_entropy(orient_logits, gold_orients, orient_weight)
+                fence_loss = binary_cross_entropy(fence_logits, extended_gold_fences, None)
 
             total_loss = self._train_config.loss_weight.tag * tag_loss
             total_loss = self._train_config.loss_weight.label * label_loss + total_loss
-            total_loss = self._train_config.loss_weight.orient * orient_loss + total_loss
+            total_loss = self._train_config.loss_weight.fence * fence_loss + total_loss
             total_loss.backward()
             # check = existences == (batch['xtype'] > 0)
             self.recorder.tensorboard(self.global_step, 'Accuracy/%s',
-                                      Tag    = 1 - fraction(tag_mis,     tag_weight),
-                                      Label  = 1 - fraction(label_mis, label_weight),
-                                      Orient = fraction(orient_match, orient_weight))
+                                      Tag   = 1 - fraction(tag_mis,     tag_weight),
+                                      Label = 1 - fraction(label_mis, label_weight),
+                                      Fence = fraction(fences == extended_gold_fences))
             self.recorder.tensorboard(self.global_step, 'Loss/%s',
-                                      Tag    = tag_loss,
-                                      Label  = label_loss,
-                                      Orient = orient_loss,
-                                      Total  = total_loss)
+                                      Tag   = tag_loss,
+                                      Label = label_loss,
+                                      Fence = fence_loss,
+                                      Total = total_loss)
             batch_kwargs = dict(Length = batch_len, SamplePerSec = batch_len / batch_time)
             if 'segment' in batch:
                 batch_kwargs['Height'] = len(batch['segment'])
             self.recorder.tensorboard(self.global_step, 'Batch/%s', **batch_kwargs)
         else:
             vis, _, _ = self._vis_mode
-            if vis.save_tensors:
-                if self._model._input_layer.has_static_pca:
-                    mpc_token = self._model._input_layer.pca(static)
-                    mpc_label = self._model._input_layer.pca(layers_of_base)
-                else:
-                    pca = PCA(layers_of_base.reshape(-1, layers_of_base.shape[2]))
-                    mpc_token = pca(static)
-                    mpc_label = pca(layers_of_base)
 
-                tag_scores,   tags   = self._model.get_decision_with_value(tag_logits)
-                label_scores, labels = self._model.get_decision_with_value(label_logits)
-                if self._train_config.orient_hinge_loss: # otherwise with sigmoid
-                    hinge_score(orient_logits, inplace = True)
-                b_mpcs = (None if mpc_token is None else mpc_token.type(torch.float16), mpc_label.type(torch.float16))
-                b_scores = (tag_scores.type(torch.float16), label_scores.type(torch.float16), orient_logits.type(torch.float16))
-            else:
-                mpc_token = mpc_label = None
-                tags   = self._model.get_decision(tag_logits  )
-                labels = self._model.get_decision(label_logits)
-                b_mpcs = (mpc_token, mpc_label)
-                b_scores = (None, None, None)
             b_size = (batch_len,)
-            b_head = tuple(batch[x].type(torch.uint8) if x in ('tag', 'label') else batch[x] for x in 'offset length token tag label'.split())
-            b_head = b_head + (gold_orients,)
-            b_logits = (tags.type(torch.uint8), labels.type(torch.uint8), orients)
-            b_data = b_logits + b_mpcs + b_scores
+            b_head = tuple((batch[x].type(torch.uint8) if x in ('tag', 'label', 'fence') else batch[x]).cpu().numpy() for x in 'token tag label fence'.split())
+            b_head = b_head + (batch['segment'].numpy(), batch['seg_length'].numpy())
+            # batch_len, length, token, tag, label, fence, segment, seg_length
+
+            tags   = self._model.get_decision(tag_logits  ).type(torch.uint8).cpu().numpy()
+            labels = self._model.get_decision(label_logits).type(torch.uint8).cpu().numpy()
+            b_data = (tags, labels, fence_idx.type(torch.uint8).cpu().numpy(), segment, seg_length)
+            # tag, label, fence, segment, seg_length
             tensors = b_size + b_head + b_data
-            tensors = tuple(x.cpu().numpy() if isinstance(x, torch.Tensor) else x for x in tensors)
-            if trapezoid_info is not None:
-                d_seg, d_seg_len = trapezoid_info
-                trapezoid_info = batch['segment'], batch['seg_length'], d_seg, d_seg_len.cpu().numpy()
-            vis.process(batch_id, tensors, trapezoid_info)
+            vis.process(batch_id, tensors)
         return batch_size, batch_len
 
     def _before_validation(self, ds_name, epoch, use_test_set = False, final_test = False):
@@ -162,15 +159,15 @@ class PennOperator(Operator):
             save_tensors = is_bin_times(int(float(epoch)) - 1)
             scores_of_bins = False
 
-        if self._model._input_layer.has_static_pca:
-            self._model._input_layer.flush_pc_if_emb_is_tuned()
+        # if self._model._input_layer.has_static_pca:
+        #     self._model._input_layer.flush_pc_if_emb_is_tuned()
 
-        vis = PennVis(epoch,
+        vis = MAryVis(epoch,
                       self.recorder.create_join(folder),
                       self._evalb,
                       self.i2vs,
                       self.recorder.log,
-                      save_tensors,
+                      False, # save_tensors
                       length_bins,
                       scores_of_bins)
         vis = VisRunner(vis, async_ = True) # wrapper
@@ -232,11 +229,34 @@ class PennOperator(Operator):
 
 from utils.vis import BaseVis, VisRunner
 from utils.file_io import join, isfile, listdir, remove, isdir
-from utils.pickle_io import pickle_dump
 from utils.param_ops import HParams
 from utils.shell_io import parseval, rpt_summary
-from visualization import ContinuousTensorVis
-class PennVis(BaseVis):
+from data.m_ary import get_tree_from_signals
+from itertools import count
+
+def batch_trees(b_word, b_tag, b_label, b_fence, b_segment, b_seg_length, i2vs, fb_label):
+    for word, tag, label, fence, seg_length in zip(b_word, b_tag, b_label, b_fence, b_seg_length):
+        layers_of_label = []
+        layers_of_fence = []
+        label_start = 0
+        fence_start = 0
+        for l_cnt, l_size, l_len in zip(count(), b_segment, seg_length):
+            label_layer = tuple(i2vs.label[i] for i in label[label_start: label_start + l_len])
+            layers_of_label.append(label_layer)
+            label_start += l_size
+            if l_cnt:
+                layers_of_fence.append(fence[fence_start: fence_start + l_len + 1])
+                fence_start += l_size + 1
+            else:
+                ln = l_len
+            if l_len == 1:
+                break
+        wd = [i2vs.token[i] for i in word[:ln]]
+        tg = [i2vs.tag  [i] for i in  tag[:ln]]
+        yield get_tree_from_signals(wd, tg, layers_of_label, layers_of_fence, fb_label)
+
+
+class MAryVis(BaseVis):
     def __init__(self, epoch, work_dir, evalb, i2vs, logger,
                  save_tensors   = True,
                  length_bins    = None,
@@ -244,19 +264,18 @@ class PennVis(BaseVis):
                  flush_heads    = False):
         super().__init__(epoch)
         self._evalb = evalb
-        fname = join(work_dir, 'vocabs.pkl')
-        if flush_heads and isfile(fname):
-            remove(fname)
-        self._ctvis = ContinuousTensorVis(work_dir, i2vs)
-        self._logger = logger
         htree = join(work_dir, 'head.tree')
         dtree = join(work_dir, f'data.{epoch}.tree')
+        self._is_anew = not isfile(htree)
+        self._logger = logger
         self._fnames = htree, dtree
+        self._i2vs = i2vs
         self._head_tree = None
         self._data_tree = None
         self._scores_of_bins = scores_of_bins
         self.register_property('save_tensors', save_tensors)
         self.register_property('length_bins',  length_bins)
+        self._error_cnt = 0
 
     def __del__(self):
         if self._head_tree: self._head_tree.close()
@@ -264,45 +283,23 @@ class PennVis(BaseVis):
 
     def _before(self):
         htree, dtree = self._fnames
-        if self._ctvis.is_anew: # TODO
+        if self._is_anew:
             self._head_tree = open(htree, 'w')
             self.register_property('length_bins', set())
         self._data_tree = open(dtree, 'w')
 
-    def _process(self, batch_id, batch, trapezoid_info):
-        # process batch to instances, compress
-        # if head is in batch, save it
-        # else check head.emm.pkl
-        # make data.emmb.tree & concatenate to data.emm.tree
-        # make data.emm.rpt
-        (size, h_offset, h_length, h_token, h_tag, h_label, h_right,
-         d_tag, d_label, d_right, mpc_token, mpc_label,
-         tag_score, label_score, split_score) = batch
-        d_trapezoid_info = None
-        if trapezoid_info:
-            segment, seg_length, d_segment, d_seg_length = trapezoid_info
-            trapezoid_info = segment, seg_length
-            d_trapezoid_info = d_segment, d_seg_length
+    def _process(self, batch_id, batch):
+        (batch_len, h_token, h_tag, h_label, h_fence, h_segment, h_seg_length,
+         d_tag, d_label, d_fence, d_segment, d_seg_length) = batch
 
         if self._head_tree:
-            bins = self._ctvis.set_head(self._head_tree, h_offset, h_length, h_token, h_tag, h_label, h_right, trapezoid_info, batch_id, size, 10)
-            self.length_bins |= bins
+            for tree in batch_trees(h_token, h_tag, h_label, h_fence, h_segment, h_seg_length, self._i2vs, None):
+                self._head_tree.write(' '.join(str(tree).split()) + '\n')
 
-        if self.save_tensors:
-            if self.length_bins is not None and self._scores_of_bins:
-                bin_width = 10
-            else:
-                bin_width = None
-            extended = size, bin_width, self._evalb
-        else:
-            extended = None
-
-        self._ctvis.set_data(self._data_tree, self._logger, batch_id, self.epoch,
-                             h_offset, h_length, h_token, d_tag, d_label, d_right,
-                             mpc_token, mpc_label,
-                             tag_score, label_score, split_score,
-                             d_trapezoid_info,
-                             extended)
+        for tree, safe in batch_trees(h_token, d_tag, d_label, d_fence, d_segment, d_seg_length, self._i2vs, 'S'):
+            if not safe:
+                self._error_cnt += 1
+            self._data_tree.write(' '.join(str(tree).split()) + '\n')
 
     def _after(self):
         # call evalb to data.emm.rpt return the results, and time counted
@@ -316,41 +313,23 @@ class PennVis(BaseVis):
         errors = proc.stderr.decode().split('\n')
         assert errors.pop() == ''
         num_errors = len(errors)
+        self._logger(f'  {self._error_cnt} conversion errors')
         if num_errors:
             self._logger(f'  {num_errors} errors from evalb')
             if num_errors < 10:
                 for e, error in enumerate(errors):
                     self._logger(f'    {e}. ' + error)
                 fname = f'data.{self.epoch}.rpt'
-                with open(self._ctvis.join(fname), 'w') as fw:
+                with open(self._is_anew.join(fname), 'w') as fw:
                     fw.write(report)
                 self._logger(f'  Go check {fname} for details.')
 
         self._head_tree = self._data_tree = None
-
-        if self.length_bins is not None and self._scores_of_bins:
-            with open(self._ctvis.join(f'{self.epoch}.scores'), 'w') as fw:
-                fw.write('wbin,num,lp,lr,f1,ta\n')
-                for wbin in self.length_bins:
-                    fhead = self._ctvis.join(f'head.bin_{wbin}.tree')
-                    fdata = self._ctvis.join(f'data.bin_{wbin}.tree')
-                    proc = parseval(self._evalb, fhead, fdata)
-                    smy = rpt_summary(proc.stdout.decode(), False, True)
-                    fw.write(f"{wbin},{smy['N']},{smy['LP']},{smy['LR']},{smy['F1']},{smy['TA']}\n")
-                    remove(fhead)
-                    remove(fdata)
-
         desc = f'Evalb({scores["LP"]:.2f}/{scores["LR"]:.2f}/'
         key_score = f'{scores["F1"]:.2f}'
         desc_for_screen = desc + byte_style(key_score, underlined = True) + ')'
         desc_for_logger = f'N: {scores["N"]} {desc}{key_score})'
         return scores, desc_for_screen, desc_for_logger
-
-# an example of Unmatched Length from evalb
-# head
-# (S (S (VP (VBG CLUBBING) (NP (DT A) (NN FAN)))) (VP (VBD was) (RB n't) (NP (NP (DT the) (NNP Baltimore) (NNP Orioles) (POS ')) (NN fault))) (. .))
-# (S (NP (NP (JJ CLUBBING) (NNP A)) ('' FAN)) (VP (VBD was) (PP (RB n't) (NP     (DT the) (NNP Baltimore) (NNS Orioles) (POS ') (NN fault)))) (. .))
-# data
 
 def remove_vis_data_from(fpath, start_epoch):
     removed = []

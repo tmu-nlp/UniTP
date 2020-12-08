@@ -532,7 +532,7 @@ if desktop:
             else:
                 summary_fscores = {}
 
-            max_id_len = len(str(max(summary_fscores.keys())))
+            max_id_len = len(str(max(summary_fscores.keys()))) if summary_fscores else 4
             for h in heads:
                 bid = get_batch_id(h)
 
@@ -1085,8 +1085,7 @@ if desktop:
                         lo = 1, seg_length[i - 1]
                         
                 x, _ = stat._without_paddings(lo)
-                if x.shape[0] == 0:
-                    import pdb; pdb.set_trace()
+                assert x.shape[0] != 0, 'should not be'
                 _max = np.max(x, 0)
                 x = x[x[:, 0] > 0]
                 _min = np.min(x, 0)
@@ -1486,20 +1485,23 @@ if desktop:
             title = f'Batch: {bid} Epoch: {epoch} '
 
             data, stat = self._data[tid]
-            len_score = len(data.scores)
             stat.make(self._conf.show_paddings, self._conf.pc_x, self._conf.pc_y)
-            is_continuous = 'offset' in data._fields
-            if is_continuous:
+            if data.scores is None:
                 board_item_coord, level_unit = self.__draw_board(data, stat, fg_color, to_color)
-
-                if len_score == 12: # conti. parsing
-                    title += ' |  ' + '  '.join(i+f'({data.scores[j]})' for i, j in zip(('len.', 'P.', 'R.', 'tag.'), (1, 3, 4, 11)))
-                elif len_score == 6: # sentiment
-                    title += ' |  ' + '  '.join(i+f'({j:.1f})' for i, j in zip(('5r.', '3r.', '2r.', '5f.', '3f.', '2f.'), data.scores))
             else:
-                tm, tp, tg, dm, dp, dg, mt, gt = data.scores
-                title += f' |  ({tp}>{tm}<{tg}) ({dp}>{dm}<{dg}) ({mt}<{gt})'
-                board_item_coord, level_unit = self.__draw_board_x(data, stat, fg_color, x_fg, to_color)
+                len_score = len(data.scores)
+                is_continuous = 'offset' in data._fields
+                if is_continuous:
+                    board_item_coord, level_unit = self.__draw_board(data, stat, fg_color, to_color)
+
+                    if len_score == 12: # conti. parsing
+                        title += ' |  ' + '  '.join(i+f'({data.scores[j]})' for i, j in zip(('len.', 'P.', 'R.', 'tag.'), (1, 3, 4, 11)))
+                    elif len_score == 6: # sentiment
+                        title += ' |  ' + '  '.join(i+f'({j:.1f})' for i, j in zip(('5r.', '3r.', '2r.', '5f.', '3f.', '2f.'), data.scores))
+                else:
+                    tm, tp, tg, dm, dp, dg, mt, gt = data.scores
+                    title += f' |  ({tp}>{tm}<{tg}) ({dp}>{dm}<{dg}) ({mt}<{gt})'
+                    board_item_coord, level_unit = self.__draw_board_x(data, stat, fg_color, x_fg, to_color)
 
             if self._spotlight_subjects:
                 self._spotlight_subjects = (board_item_coord, self._conf.word_width, level_unit) + self._spotlight_subjects[-3:]
@@ -1703,7 +1705,7 @@ if desktop:
                     self._spotlight_objects = items, positions, tuple()
 
         def show_tree(self, show_all_trees, *frame_canvas):
-            if not isinstance(self._head.tree, str):
+            if not isinstance(self._data[0][0].tree, str):
                 vocabs = self._vocab_bundle.vocabs
                 def get_lines(fields, stamp):
                     length = fields.seg_length[0]
@@ -1727,20 +1729,24 @@ if desktop:
                 # widget.config(state = DISABLED)
                 widget.pack(fill = BOTH, expand = YES)
                 return
-            label = Tree.fromstring(self._head.tree)
-            label.set_label(label.label() + ' (corpus)')
 
             if frame_canvas:
                 frame, canvas = frame_canvas
             else:
                 frame  = CanvasFrame()
                 canvas = frame.canvas()
-            label = TreeWidget(canvas, label, draggable = 1) # bbox is not sure
-            label.bind_click_trees(label.toggle_collapsed)
-            frame.add_widget(label)
+
+            if self._head.tree:
+                label = Tree.fromstring(self._head.tree)
+                label.set_label(label.label() + ' (corpus)')
+                label = TreeWidget(canvas, label, draggable = 1) # bbox is not sure
+                label.bind_click_trees(label.toggle_collapsed)
+                frame.add_widget(label)
+                below = label.bbox()[3] + pad
+            else:
+                below = 0
             pad = 20
             inc = 0
-            below = label.bbox()[3] + pad
             right_bound = canvas.winfo_screenwidth() # pixel w.r.t hidpi (2x on this mac)
 
             def at_time(pred, left_top, force_place = False):
@@ -1987,7 +1993,9 @@ if desktop:
                 if label_layer is None:
                     if layer_tracker is None:
                         last_right = data.right[l - 1]
-                        last_exist = data.label[l - 1][:, 0] > -1 if data.tag is None else data.label[l - 1] > 0 # TODO: unlabeled dtype is float
+                        last_exist = data.label[l - 1]
+                        if np.issubdtype(last_exist.dtype, np.integer): # TODO: unlabeled dtype is float, all Trues
+                            last_exist = last_exist[:, 0] > -1 if data.tag is None else last_exist[l - 1] > 0
                         layer_tracker = []
                         for p, (lhr, rhr, lhe, rhe) in enumerate(zip(last_right, last_right[1:], last_exist, last_exist[1:])):
                             rw_relay = lhe and lhr
@@ -2010,7 +2018,7 @@ if desktop:
                     else:
                         label_color = mpc_color
 
-                    if data.tag is None: # sentiment labels
+                    if data.tag is None and head.label is not None: # sentiment labels
                         ts = head.label[l][p]
                         elems = []
                         error = None

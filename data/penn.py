@@ -65,6 +65,51 @@ class PennReader(WordBaseReader):
             len_sort_ds = TrapezoidDataset.from_penn(tree_reader, get_fnames, data_splits[mode], trapezoid_height, **common_args)
         return post_batch(mode, len_sort_ds, sort_by_length, bucket_length, batch_size)
 
+
+from data.io import isfile
+
+class MAryReader(WordBaseReader):
+    def __init__(self,
+                 vocab_dir,
+                 unify_sub,
+                 tree_reader,
+                 get_fnames,
+                 data_splits,
+                 vocab_size  = None,
+                 extra_text_helper = None):
+        samples = {}
+        for mode, data_split in zip((M_TRAIN, M_DEVEL, M_TEST), data_splits):
+            m_samples = []
+            for fn in get_fnames(data_split):
+                for tree in tree_reader.parsed_sents(fn):
+                    m_samples.append((mode, tree))
+            samples[mode] = m_samples
+        self._load_options = samples, extra_text_helper
+        i2vs = load_i2vs(vocab_dir, 'word tag label'.split())
+        oovs = {}
+        labels = i2vs['label']
+        if unify_sub:
+            labels = [t for t in labels if t[0] not in '#_']
+            oovs['label'] = len(labels)
+            labels.append(SUB)
+            i2vs['label'] = labels
+        else: # MAry does not have binarization
+            i2vs['label'] = [t for t in labels if t[0] != '_']
+            
+        super(MAryReader, self).__init__(vocab_dir, vocab_size, True, i2vs, oovs)
+
+    def batch(self,
+              mode,
+              batch_size,
+              bucket_length,
+              min_len        = 2,
+              max_len        = None,
+              sort_by_length = True):
+        from data.m_ary.dataset import MAryDataset
+        samples, extra_text_helper = self._load_options
+        len_sort_ds = MAryDataset(mode, samples[mode], self.v2is, self.device, extra_text_helper)
+        return post_batch(mode, len_sort_ds, sort_by_length, bucket_length, batch_size)
+
 from utils.types import false_type, true_type
 from utils.types import train_batch_size, train_max_len, train_bucket_len
 tokenization_config = dict(lower_case       = false_type,

@@ -1,7 +1,7 @@
 from data.stan import StanReader
 from data.stan_types import C_SSTB, data_type
 from data.penn import PennReader
-from data.penn_types import C_PTB, parsing_config, select_and_split_corpus
+from data.penn_types import C_PTB, nccp_data_config, select_and_split_corpus
 from experiments.t_lstm_sentiment.operator import StanOperator, train_type
 from experiments.t_lstm_sentiment.model import StanRnnTree, model_type
 from utils.types import M_TRAIN, M_DEVEL, M_TEST
@@ -10,7 +10,7 @@ from utils.shell_io import byte_style
 
 def get_configs(recorder = None):
     if recorder is None:
-        return {C_SSTB: data_type, C_PTB: parsing_config}, model_type, train_type
+        return {C_SSTB: data_type, C_PTB: nccp_data_config}, model_type, train_type
         
     data_config, model_config, train_config, _ = recorder.task_specs()
 

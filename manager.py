@@ -257,7 +257,7 @@ class Manager:
             data_config = task_config['data']
             errors = []
 
-            if 'nccp' in module_name:
+            if 'nccp' in module_name or 'accp' in module_name:
                 errors.extend(evalb_errors)
                 datasets = ('ptb', 'ctb', 'ktb')
                 if not any(x in ready_dpaths for x in datasets):
@@ -327,7 +327,7 @@ class Manager:
 
         def diff_recorder(config_dict_or_instance):
             task_dir = create_join(self._work_dir, task)
-            if task.endswith('_nccp') or task.endswith('_sentiment'):
+            if task.endswith('_nccp') or task.endswith('_accp') or task.endswith('_sentiment'):
                 evalb = status['tool']['evalb']
                 evalb = abspath(evalb['path']), '-p', abspath(evalb['prm'])
             elif task.endswith('_dccp'):
@@ -350,18 +350,18 @@ class Manager:
                 change_key(data_config, C_PENN_ABS, corp_name)
             elif corp_name in E_DISCO:
                 change_key(data_config, C_DISCO_ABS, corp_name)
-            for d, c in data_config.items():
-                if d not in ready_paths:
-                    print(f"/{d} is an abstract data, you might mean: {' or '.join(ready_paths.keys())}", file = sys.stderr)
+            for dn, dc in data_config.items():
+                if dn not in ready_paths:
+                    print(f"/{dn} is an abstract data, you might mean: {' or '.join(ready_paths.keys())}", file = sys.stderr)
                     exit()
-                if c is None:
-                    data_config[d] = dict(data_path = ready_paths[d])
+                if dc is None:
+                    data_config[dc] = dict(data_path = ready_paths[dc])
                 else:
-                    c['data_path'] = ready_paths[d]
-                    if c.get('trapezoid_height', None) is not None: # a trigger for source corpus
-                        corp_status = status['data'][d]
-                        c['source_path'] = corp_status['source_path']
-                        c['data_splits'] = corp_status['build_params']
+                    dc['data_path'] = ready_paths[dn]
+                    if dc.get('trapezoid_height', None) is not None or task.endswith('_accp'): # a trigger for source corpus
+                        corp_status = status['data'][dn]
+                        dc['source_path'] = corp_status['source_path']
+                        dc['data_splits'] = corp_status['build_params']
 
         for exp_id in exp_ids:
             recorder = diff_recorder(task_spec) if exp_id is None else diff_recorder(exp_id)

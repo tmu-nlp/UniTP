@@ -81,6 +81,7 @@ class Recorder:
         self._rt_file_lock = rt_file, rt_lock
         self._sv_file_lock = sv_file, sv_lock
         self._key = None
+        self._writer = None
         self._keep_top_k = keep_top_k
         self._evalb = evalb
         self.log(datetime.now())
@@ -154,6 +155,22 @@ class Recorder:
             kwargs['flush'] = True
             kwargs['file']  = fw
             print(*args, **kwargs)
+
+    def init_tensorboard(self):
+        try:
+            from torch.utils.tensorboard import SummaryWriter
+        except ImportError:
+            from utils.shell_io import byte_style
+            Recorder.msg(byte_style('(tensorboard is not installed; not tracking training statistics)', '3'))
+            SummaryWriter = None
+        if SummaryWriter is not None:
+            self._writer = SummaryWriter(self.create_join('train'))
+
+    def tensorboard(self, step, template, **kwargs):
+        if self._writer is None:
+            return
+        for key, value in kwargs.items():
+            self._writer.add_scalar(template % key, value, step)
 
     @staticmethod
     def msg(*args, **kwargs):

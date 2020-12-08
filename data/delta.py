@@ -137,24 +137,28 @@ def preproc_cnf(mtree,
         if remove: # POS
             if len(mtree[syn_path]) > 1: # more than one child
                 # NP (SBAR) (-NONE- *-1)
-                syn_path = pos_path
+                del mtree[pos_path]
             else: # NP -NONE- *-1
                 while syn_path and len(mtree[syn_path[:-1]]) == 1:
                     syn_path = syn_path[:-1]
-            try:
-                del mtree[syn_path] # the tree gets smaller with ind
-            except:
-                print(str(mtree))
-            # if syn_path[-1] == 1 or 
+                del mtree[syn_path]
         elif pos_in_syn and len(mtree[syn_path]) > 1:
             pos_unary = mtree[pos_path]
-            if pos_unary.height() == 2:
+            child_pos = pos_path[-1]
+            if child_pos == 0 or len(mtree[syn_path][child_pos:]) > 1:
+                any_non_traces = True
+            else:
+                any_non_traces = False
+                for cousin in mtree[syn_path][0:child_pos]: # previous cousins
+                    any_non_traces |= any(t != '-NONE-' for _, t in cousin.pos())
+            if pos_unary.height() == 2 and any_non_traces:
                 mtree[pos_path] = Tree(pos_in_syn + pos_unary.label(), [pos_unary])
     if not replace_junc:
         return
     for b in mtree.subtrees():
         l, update = b.label(), False
         assert len(l), f'Invalid tree with empty label: \n{str(mtree)}'
+
         if b.height() < 3: # pos tag
             if l[-1] == '-': # -LRB- -RRB-
                 l = l[1:-1]
@@ -182,6 +186,9 @@ def preproc_cnf(mtree,
                 update = True
             if '-' in l:
                 l = l.replace('-', replace_junc) # NP-SUB
+                update = True
+            if l in ('ADVP|PRT', 'PRT|ADVP'):
+                l = 'ADVP+PRT'
                 update = True
         if word_trace:
             if l == 'PP{MIYAKE_ISLAND_OUTSIDE}':

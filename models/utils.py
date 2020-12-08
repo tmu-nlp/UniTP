@@ -253,3 +253,63 @@ def shuffle_some_from(new_size, base, existence):
     continuous &= batch_ids[1:] == batch_ids[:-1]
 
     return some, continuous
+
+def blocky_softmax(logits, splits, domains = None, map_inf_to = None):
+    _, batch_len, _ = logits.shape
+    exp_logits    = logits.exp() # [b, s, *]
+    exp_domains   = None if domains is None else domains.exp()
+    batch_seq_idx = torch.arange(batch_len, device = logits.device)[None, :]
+    base          = torch.zeros_like(logits)
+    _, n_blocks   = splits.shape
+    for nid in range(1, n_blocks):
+        start = splits[:, nid - 1, None]
+        end   = splits[:, nid,     None]
+        area = batch_seq_idx >= start
+        area &= batch_seq_idx < end
+        area.unsqueeze_(dim = 2)
+        if domains is not None:
+            exp_domain = exp_domains[:, nid - 1, None] # exp(x + y) == exp(x) * exp(y)
+            exp_logits = exp_logits * torch.where(area, exp_domain, torch.ones_like(exp_domain))
+        blocky_z = (exp_logits * area).sum(dim = 1, keepdims = True)
+        blocky_z = area * blocky_z
+        base = base + blocky_z
+    if map_inf_to is not None:
+        good_base = base > 0
+        ones = torch.ones_like(base)
+        base = torch.where(good_base, base, ones)
+        exp_logits = torch.where(good_base, exp_logits, ones * map_inf_to)
+    return exp_logits / base
+
+def blocky_sum(embeddings, splits):
+    _, batch_len, _ = embeddings.shape # [b, s, *]
+    batch_seq_idx = torch.arange(batch_len, device = embeddings.device)[None, :]
+    _, n_blocks   = splits.shape
+    blocks        = []
+    for nid in range(1, n_blocks):
+        start = splits[:, nid - 1, None]
+        end   = splits[:, nid,     None]
+        area = batch_seq_idx >= start
+        area &= batch_seq_idx < end
+        area.unsqueeze_(dim = 2)
+        blocks.append((embeddings * area).sum(dim = 1).unsqueeze(dim = 1))
+    return torch.cat(blocks, dim = 1)
+
+def birnn_fwbw(embeddings, padding = True):
+    bs, sl, ed = embeddings.shape
+    half_dim = ed >> 1
+    embeddings = embeddings.view(bs, sl, 2, half_dim)
+    fw = embeddings[:, :, 0]
+    bw = embeddings[:, :, 1]
+    if padding:
+        pad = torch.zeros(bs, 1, half_dim, dtype = fw.dtype, device = fw.device)
+        fw = torch.cat([pad, fw], dim = 1)
+        bw = torch.cat([bw, pad], dim = 1)
+    return fw, bw
+
+def fencepost(fw, bw, splits):
+    batch = torch.arange(fw.shape[0], device = fw.device)[:, None]
+    fw = fw[batch, splits]
+    fw_diff = fw[:, 1:] - fw[:, :-1]
+    bw = bw[batch, splits]
+    bw_diff = bw[:, :-1] - bw[:, 1:]
+    return torch.cat([fw_diff, bw_diff], dim = 2)

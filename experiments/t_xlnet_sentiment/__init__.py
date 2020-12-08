@@ -4,7 +4,7 @@ from models.plm import XLNetDatasetHelper
 
 def get_configs(recorder = None):
     if recorder is None:
-        return {C_SSTB: data_type, C_PTB: parsing_config}, model_type, train_type
+        return {C_SSTB: data_type, C_PTB: nccp_data_config}, model_type, train_type
         
     data_config, model_config, train_config, _ = recorder.task_specs()
 

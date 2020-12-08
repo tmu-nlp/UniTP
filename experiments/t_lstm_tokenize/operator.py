@@ -1,6 +1,5 @@
 import torch
 from torch import nn
-from torch.utils.tensorboard import SummaryWriter
 from utils.operator import Operator
 from utils.types import M_TRAIN, BaseType, frac_open_0
 from utils.math_ops import harmony, is_bin_times
@@ -24,15 +23,14 @@ class TokenizerOperator(Operator):
 
     def _build_optimizer(self, start_epoch):
         self._loss_weights = 0.49, 0.01, 0.5
-        self._writer = SummaryWriter(self.recorder.create_join('train'))
         optim, schedule_lr = warm_adam(self._model, self._train_config.learning_rate)
         self._schedule_lr = schedule_lr
+        self.recorder.init_tensorboard()
         return optim
 
     def _schedule(self, epoch, wander_ratio):
         learning_rate = self._schedule_lr(epoch, wander_ratio)
-        self._writer.add_scalar('Batch/Learning_Rate', learning_rate, self.global_step)
-        self._writer.add_scalar('Batch/Epoch', epoch, self.global_step)
+        self.recorder.tensorboard(self.global_step, 'Batch/%s', Learning_Rate = learning_rate, Epoch = epoch)
 
     def _step(self, mode, ds_name, batch, flush = True, batch_id = None):
         # assert ds_name == C_ABSTRACT
@@ -64,9 +62,9 @@ class TokenizerOperator(Operator):
 
                 total_loss = validity_loss
                 total_loss.backward()
-                gs = self.global_step
-                self._writer.add_scalar(f'Accuracy/{ds_name.title()}/Validity', fraction(validity_match, existence),  gs)
-                self._writer.add_scalar(f'Loss/{ds_name.title()}/Validity', validity_loss, gs)
+                self.recorder.tensorboard(self.global_step, f'%s/{ds_name.title()}/Validity',
+                                          Accuracy = fraction(validity_match, existence),
+                                          Loss = validity_loss)
             else:
                 accu = validity_match.sum().cpu().numpy()
                 racy = existence.sum().cpu().numpy()
@@ -125,11 +123,13 @@ class TokenizerOperator(Operator):
                 alpha, beta, gamma = self._loss_weights
                 total_loss = alpha * valid_loss + beta * right_loss + gamma * bpe_loss
                 total_loss.backward()
-                gs = self.global_step
-                self._writer.add_scalar(f'Accuracy/{ds_name.title()}/Validity',    fraction(valid_match,            None), gs)
-                self._writer.add_scalar(f'Accuracy/{ds_name.title()}/Orientation', fraction(right_match, right_existence), gs)
-                self._writer.add_scalar(f'Loss/{ds_name.title()}/Validity',                                    valid_loss, gs)
-                self._writer.add_scalar(f'Loss/{ds_name.title()}/Orientation',                                 right_loss, gs)
+                self.recorder.tensorboard(self.global_step, f'Accuracy/{ds_name.title()}/%s',
+                                          Validity    = fraction(valid_match, None),
+                                          Orientation = fraction(right_match, right_existence))
+                self.recorder.tensorboard(self.global_step, f'Loss/{ds_name.title()}/%s',
+                                          Validity = valid_loss,
+                                          Orientation = right_loss,
+                                          Total = total_loss)
             else:
                 valid_score = valid_logit
                 right_score = right_logit
@@ -171,9 +171,8 @@ class TokenizerOperator(Operator):
                 vis.process(batch_id, batch_len, logsum + visual)
 
         if mode == M_TRAIN:
-            self._writer.add_scalar(f'Loss/{ds_name.title()}/Total',       total_loss, gs)
-            self._writer.add_scalar(f'Batch/{ds_name.title()}/Length',      batch_len, gs)
-            self._writer.add_scalar(f'Batch/{ds_name.title()}/SamplePerSec', batch_len / batch_time,  gs)
+            self.recorder.tensorboard(self.global_step, f'Batch/{ds_name.title()}/%s',
+                                      Length = batch_len, SamplePerSec = batch_len / batch_time)
 
         return batch_size, batch_len
 
@@ -221,15 +220,15 @@ class TokenizerOperator(Operator):
                 desc += f' | {ratio * 100:.2f}%'
             if not final_test:
                 mode = 'TestSet' if use_test_set else 'DevelSet'
-                self._writer.add_scalar(f'{mode}/{ds_name.title()}/Acc', accuracy, self.global_step)
+                self.recorder.tensorboard(self.global_step, f'{mode}/{ds_name.title()}/%s', Acc = accuracy)
         else:
             valid, right = vis.after()
             scores = {'speed': speed, 'log-Val': valid, 'log-Ori': right}
             gs = self.global_step
             if not final_test:
                 mode = 'TestSet' if use_test_set else 'DevelSet'
-                self._writer.add_scalar(f'{mode}/{ds_name.title()}/log_Val', valid, gs)
-                self._writer.add_scalar(f'{mode}/{ds_name.title()}/log_Ori', right, gs)
+                self.recorder.tensorboard(self.global_step, f'{mode}/{ds_name.title()}/%s',
+                                          log_Val = valid, log_Ori = right)
             desc = f'{ds_name}: log-Val{valid:.2f}, log-Ori{right:.2}'
 
         self._model.train()

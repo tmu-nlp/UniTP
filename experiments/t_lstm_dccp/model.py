@@ -33,7 +33,7 @@ class DiscoRnnTree(BaseRnnTree):
         self._half_dim_diff = diff >> 1
         self._residual_add = residual_add
 
-    def forward(self, word_idx, tune_pre_trained, ingore_logits = False, **kw_args):
+    def forward(self, word_idx, tune_pre_trained, **kw_args):
         batch_size,   batch_len  = word_idx.shape
         static, bottom_existence = self._input_layer(word_idx, tune_pre_trained)
         if self._contextual_layer is None:
@@ -47,6 +47,6 @@ class DiscoRnnTree(BaseRnnTree):
                 static = torch.cat([zero_pads, static, zero_pads], dim = 2)
             if self._residual_add:
                 base_inputs = base_inputs + static
-        base_returns = super().forward(base_inputs, bottom_existence.squeeze(dim = 2), ingore_logits, **kw_args)
+        base_returns = super().forward(base_inputs, bottom_existence.squeeze(dim = 2), **kw_args)
         top3_labels  = super().get_label(top3_hidden) if top3_hidden is not None else None
         return (batch_size, batch_len, static, top3_labels) + base_returns

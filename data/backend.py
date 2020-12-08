@@ -386,5 +386,5 @@ def post_batch(mode, len_sort_ds, sort_by_length, bucket_length, batch_size):
             len_sort_ds.plain_mode()
     else:
         len_sort_ds.bucketed_mode(bucket_length)
-    di = DataLoader(len_sort_ds, batch_size = batch_size, collate_fn = len_sort_ds.collate_fn, shuffle = mode == M_TRAIN)#, num_workers = 1) # no way to get more!
+    di = DataLoader(len_sort_ds, batch_size = batch_size, collate_fn = len_sort_ds.collate_fn, shuffle = mode == M_TRAIN, num_workers = 1) # no way to get more!
     return BatchSpec(len(len_sort_ds), di)

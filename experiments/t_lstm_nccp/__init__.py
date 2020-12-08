@@ -1,18 +1,16 @@
 from data.penn import PennReader
-from data.penn_types import C_ABSTRACT, parsing_config, select_and_split_corpus
+from data.penn_types import C_ABSTRACT, nccp_data_config, select_and_split_corpus
 from utils.types import M_TRAIN, M_DEVEL, M_TEST
 from utils.param_ops import HParams, get_sole_key
 from utils.shell_io import byte_style
 
-from experiments.t_lstm_nccp.model import PennRnnTree, model_type
+from experiments.t_lstm_nccp.model import ContinuousRnnTree, model_type
 from experiments.t_lstm_nccp.operator import PennOperator, train_type
-
-require_source_path = False
 
 get_any_penn = lambda ptb = None, ctb = None, ktb = None: ptb or ctb or ktb
 def get_configs(recorder = None):
     if recorder is None:
-        return {C_ABSTRACT: parsing_config}, model_type, train_type
+        return {C_ABSTRACT: nccp_data_config}, model_type, train_type
     
     data_config, model_config, train_config, _ = recorder.task_specs()
     penn = HParams(get_any_penn(**data_config), fallback_to_none = True)
@@ -52,7 +50,7 @@ def get_configs(recorder = None):
 
     task_params = {pname: reader.get_to_model(pname) for pname in ('initial_weights', 'num_tokens', 'num_tags', 'num_labels', 'paddings')}
 
-    model = PennRnnTree(**model_config, **task_params)
+    model = ContinuousRnnTree(**model_config, **task_params)
     model.to(reader.device)
     return PennOperator(model, get_datasets, recorder, reader.i2vs, recorder.evalb, train_config)
         
