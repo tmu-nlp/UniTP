@@ -2,7 +2,6 @@ from utils.types import fill_placeholder, M_TRAIN, M_DEVEL, M_TEST, NIL
 from data.io import load_i2vs
 from data.io import isfile
 
-SUB = '_SUB'
 from data.backend import WordBaseReader, post_batch
 
 class DiscoReader(WordBaseReader):
@@ -18,7 +17,7 @@ class DiscoReader(WordBaseReader):
         if unify_sub:
             labels = [t for t in i2vs['label'] if t[0] not in '#_']
             oovs['label'] = len(labels)
-            labels.append(SUB)
+            labels.append('_SUB')
             i2vs['label'] = labels
         super(DiscoReader, self).__init__(vocab_dir, vocab_size, True, i2vs, oovs)
 

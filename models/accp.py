@@ -24,7 +24,7 @@ stem_config = dict(fence_dim    = orient_dim,
                    trainable_initials = true_type)
 from models.loss import cross_entropy, hinge_loss, binary_cross_entropy
 from models.utils import hinge_score as hinge_score_
-from models.utils import blocky_softmax, blocky_sum, birnn_fwbw, fencepost, condense_helper, condense_left
+from models.utils import blocky_max, blocky_softmax, birnn_fwbw, fencepost, condense_helper, condense_left
 
 class MAryStem(nn.Module):
     def __init__(self,
@@ -56,13 +56,19 @@ class MAryStem(nn.Module):
             self.register_parameter('_c0', None)
             self._initial_size = None
 
+        # pad = torch.empty(1, 1, hidden_size)
+        # self._pad = nn.Parameter(pad, requires_grad = True)
+        # self._tanh = nn.Tanh()
         self._raw_threshold = threshold - 0.5 # TODO this should be raw
-        self._stem_dp = dp_layer = nn.Dropout(drop_out)
+        self._stem_dp = nn.Dropout(drop_out)
         self._fence_l1 = nn.Linear(fence_dim, hidden_size)
         self._fence_act = activation()
         self._fence_l2 = nn.Linear(hidden_size, 1)
         self._domain = nn.Linear(fence_dim, model_dim)
         self._subject = nn.Linear(model_dim, model_dim)
+        self._sigmoid = nn.Sigmoid()
+        finfo = torch.finfo(torch.get_default_dtype())
+        self._fminmax = finfo.min, finfo.max
 
     @property
     def threshold(self):
@@ -81,21 +87,24 @@ class MAryStem(nn.Module):
     def predict_fence(self, unit_hidden, h0c0, seq_len):
         fence_hidden, _ = self._fence_emb(unit_hidden, h0c0)
         fence_hidden = self._stem_dp(fence_hidden)
-        fw, bw = birnn_fwbw(fence_hidden)
+        fw, bw = birnn_fwbw(fence_hidden, seq_len = seq_len)#, pad = self._tanh(self._pad))
         fence_hidden = torch.cat([fw, bw], dim = 2)
         fence = self._fence_l1(fence_hidden)
+        fence = self._stem_dp(fence)
         fence = self._fence_act(fence)
         fence = self._fence_l2(fence).squeeze(dim = 2)
         return fence, fence_hidden, fw, bw
     
     def forward(self, unit_emb, existence,
                 supervised_fence = None,
+                keep_low_attention_rate = 1,
                 **kw_args):
         batch_size, seg_len = existence.shape
         h0c0 = self.get_h0c0(batch_size)
         max_iter_n = seg_len << 2 # 4 times
         teacher_forcing = isinstance(supervised_fence, list)
         segment, seg_length = [], []
+        batch_dim = torch.arange(batch_size, device = unit_emb.device)
         
         layers_of_u_emb = []
         layers_of_fence = []
@@ -122,18 +131,38 @@ class MAryStem(nn.Module):
                     print(f'WARNING: Action layers overflow maximun {l_cnt}', file = stderr, end = '')
                     break
 
+            longer_seq_idx = torch.arange(seg_len + 1, device = unit_emb.device)[None, :]
             if teacher_forcing:
                 fence_idx = supervised_fence[l_cnt]
+
+                sections = torch.zeros(batch_size, seg_len + 1, dtype = torch.bool, device = unit_emb.device)
+                sections[batch_dim[:, None], fence_idx] = True
+                sections = sections.cumsum(dim = 1)
             else:
+                fmin, fmax = self._fminmax
+                fence_logits[:, 0] = fmax
+                fence_logits[batch_dim, seq_len] = fmax
+                fence_logits[longer_seq_idx > seq_len[:, None]] = fmin
                 fence = fence_logits > self._raw_threshold
-                idx = torch.arange(seg_len + 1, device = fence.device)[None, :] * fence
+                idx = longer_seq_idx * fence
                 helper = condense_helper(fence, as_existence = True)
                 fence_idx = condense_left(idx, helper)
                 layers_of_fence_idx.append(fence_idx)
 
-            fence_emb = fencepost(fw, bw, fence_idx)
-            weights = blocky_softmax(self._subject(unit_emb), fence_idx, self._domain(fence_emb), 0)
-            unit_emb = blocky_sum(unit_emb * weights, fence_idx)
+                sections = fence.cumsum(dim = 1)
+            
+            fence_emb = self._domain(fencepost(fw, bw, fence_idx))
+            fence_emb = self._stem_dp(fence_emb)
+            sub_emb  = self._subject(unit_emb)
+            sections = torch.where(longer_seq_idx < seq_len[:, None], sections, torch.zeros_like(sections))[:, :-1]
+
+            if keep_low_attention_rate < 1:
+                max_mask = blocky_max(sections, sub_emb.mean(dim = 2))
+                max_mask |= torch.rand(batch_size, seg_len, device = sub_emb.device) < keep_low_attention_rate
+                max_mask |= torch.rand(batch_size, seg_len, device = sub_emb.device) < self._sigmoid(sub_emb.sum(dim = 2))
+                sub_emb = torch.where(max_mask[:, :, None], sub_emb, sub_emb - (sub_emb.max() - sub_emb.min()) / 2) # max must be kept
+                
+            weights, unit_emb = blocky_softmax(sections, sub_emb, fence_emb, unit_emb)
             seg_len  = unit_emb.shape[1]
             existence = fence_idx[:, 1:] > 0
             layers_of_weight.append(weights)
@@ -142,8 +171,10 @@ class MAryStem(nn.Module):
         embeddings = torch.cat(layers_of_u_emb, dim = 1)
         fence      = torch.cat(layers_of_fence, dim = 1)
         existence  = torch.cat(layers_of_existence, dim = 1)
-        weight     = torch.cat(layers_of_weight,    dim = 1)
-        if not teacher_forcing:
+        if teacher_forcing:
+            weight = None
+        else:
+            weight     = torch.cat(layers_of_weight,    dim = 1)
             fence_idx  = torch.cat(layers_of_fence_idx, dim = 1)
             seg_length = torch.stack(seg_length, dim = 1)
 

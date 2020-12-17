@@ -65,7 +65,13 @@ def lr_gen(list_or_tuple, start):
             continue
         break
 
-if __name__ == '__main__1':
+def itp(lhs, rhs, res):
+    lhs_itp = (res - rhs)
+    lhs_itp /= (lhs - rhs)
+    rhs_itp = 1 - lhs_itp
+    return lhs_itp, rhs_itp
+
+if __name__ == '__main__':
     def max_nil_relay(n):
         if n < 3:
             return (0, 0)

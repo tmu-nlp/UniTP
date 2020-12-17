@@ -19,8 +19,14 @@ class MAryWorker(Process):
         q, trees, field_v2is = self._args
         for tree in trees:
             mtree = MAryX(tree)
-            signals = mtree.signals(*field_v2is)
-            q.put((mtree.words, signals, tuple(None in s for s in signals[:2])))
+            signals = wd, tg, lb, fc = mtree.signals(*field_v2is)
+            if None in wd:
+                overall_safe = not fc
+                has_oov_word = True
+            else:
+                overall_safe = True
+                has_oov_word = False
+            q.put((mtree.words, signals, (overall_safe, has_oov_word)))
             # if field_v2is['label']._flag:
             #     print('\n'.join(draw_str_lines(Tree.fromstring(_tree))))
             #     print('\n'.join(draw_str_lines(tree)))
@@ -52,17 +58,21 @@ class MAryDataset(LengthOrderedDataset):
         text = []
         lengths = []
         signals = []
+        lack_fences = 0
         oov_errors = []
         with tqdm(desc = 'Load ' + byte_style(mode.title().ljust(5, '-') + 'Set', '2') + f' from {num_threads} threads', total = len(samples)) as qbar:
             try:
                 while any(x.is_alive() for x in works):
                     if q.empty():
-                        sleep(0.00001)
+                        sleep(0.001)
                     else:
-                        words, signal, oov = q.get()
+                        words, signal, (overall_safe, has_oov_word) = q.get()
                         qbar.update(1)
-                        if any(oov):
-                            oov_errors.append((oov, words))
+                        if has_oov_word:
+                            if overall_safe:
+                                lack_fences += 1
+                            else:
+                                oov_errors.append((oov, words))
                         else:
                             text.append(words)
                             lengths.append(len(words))
@@ -73,8 +83,14 @@ class MAryDataset(LengthOrderedDataset):
                         x.kill()
                 raise ex
 
+            error_strings = []
+            if lack_fences:
+                error_strings.append(byte_style(f'-{lack_fences}', '3') + ' w/o tree')
             if oov_errors:
-                qbar.desc += ', ended with ' + byte_style(f'{len(oov_errors)} OOV errors', '3')
+                error_strings.append(byte_style(f'-{len(oov_errors)}', '3') + ' oovs')
+
+            if error_strings:
+                qbar.desc += ', ' + ', '.join(error_strings)
 
         if oov_errors:
             oov_length = defaultdict(int)

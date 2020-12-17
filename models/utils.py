@@ -13,6 +13,13 @@ class PCA:
         pc = torch.matmul(emb, self._bases)
         return torch.cat([m_, pc], -1)
 
+def mean_stdev(weights, dim = -1):
+    wm = weights.mean(dim = dim, keepdim = True)
+    sd = (weights - wm) ** 2
+    sd = sd.sum(dim = dim, keepdim = True) / (weights.shape[dim] - 1)
+    sd = torch.sqrt(sd)
+    return torch.cat([wm, sd], dim = dim)
+
 def fraction(cnt_n, cnt_d = None, dtype = torch.float32):
     if cnt_d is None:
         return cnt_n.sum().type(dtype) / cnt_n.nelement()
@@ -254,56 +261,74 @@ def shuffle_some_from(new_size, base, existence):
 
     return some, continuous
 
-def blocky_softmax(logits, splits, domains = None, map_inf_to = None):
-    _, batch_len, _ = logits.shape
-    exp_logits    = logits.exp() # [b, s, *]
-    exp_domains   = None if domains is None else domains.exp()
-    batch_seq_idx = torch.arange(batch_len, device = logits.device)[None, :]
-    base          = torch.zeros_like(logits)
-    _, n_blocks   = splits.shape
-    for nid in range(1, n_blocks):
-        start = splits[:, nid - 1, None]
-        end   = splits[:, nid,     None]
-        area = batch_seq_idx >= start
-        area &= batch_seq_idx < end
-        area.unsqueeze_(dim = 2)
-        if domains is not None:
-            exp_domain = exp_domains[:, nid - 1, None] # exp(x + y) == exp(x) * exp(y)
-            exp_logits = exp_logits * torch.where(area, exp_domain, torch.ones_like(exp_domain))
-        blocky_z = (exp_logits * area).sum(dim = 1, keepdims = True)
-        blocky_z = area * blocky_z
-        base = base + blocky_z
-    if map_inf_to is not None:
-        good_base = base > 0
-        ones = torch.ones_like(base)
-        base = torch.where(good_base, base, ones)
-        exp_logits = torch.where(good_base, exp_logits, ones * map_inf_to)
-    return exp_logits / base
+def blocky_softmax(sections,
+                   logits,
+                   domains = None,
+                   values = None,
+                   pad_first = True,
+                   map_pad_weights_to_zero = True,
+                   use_ones_as_values = False):
+    # 0 in sections indicate a dump
+    # [1 2 2 3 0] -> [0 1 2 3]
+    idx = sections.unsqueeze(dim = 2)
+    expanded_idx = idx.expand_as(logits)
+    bs, sl, eb = logits.shape
+    domain_sl = sections.max() + 1
+    if domains is not None:
+        padded = torch.zeros(bs, 1, eb, device = logits.device)
+        padded = torch.cat([padded, domains] if pad_first else [domains, padded], dim = 1)
+        padded = torch.gather(padded, 1, expanded_idx)
+        logits = logits + padded # empty pad section will pollute logits
+    exp_logits = logits.exp()
+    zer_domains = torch.zeros(bs, domain_sl, eb, device = logits.device)
+    exp_domains = zer_domains.scatter_add(1, expanded_idx, exp_logits)
+    exp_domains = torch.gather(exp_domains, 1, expanded_idx)
+    if map_pad_weights_to_zero: # polluted logits yield zero weights
+        if pad_first:
+            section_idx = idx != 0
+        else:
+            section_idx = idx != sections.max(dim = 1).values[:, None, None]
+        exp_logits = section_idx * exp_logits
+    weights = exp_logits / exp_domains
+    if use_ones_as_values:
+        from utils.shell_io import byte_style
+        print(byte_style('[WARNING: use_ones_as_values only for debugging!!!]', '1'))
+        print(byte_style('[+PROMPT: final_domains should have either 0 or 1]', '3'))
+        values = torch.ones_like(weights)
+    if values is None:
+        return weights
+    final_domains = zer_domains.scatter_add(1, expanded_idx, weights * values)
+    final_domains = final_domains[:, 1:] if pad_first else final_domains[:, :-1]
+    return weights, final_domains
 
-def blocky_sum(embeddings, splits):
-    _, batch_len, _ = embeddings.shape # [b, s, *]
-    batch_seq_idx = torch.arange(batch_len, device = embeddings.device)[None, :]
-    _, n_blocks   = splits.shape
-    blocks        = []
-    for nid in range(1, n_blocks):
-        start = splits[:, nid - 1, None]
-        end   = splits[:, nid,     None]
-        area = batch_seq_idx >= start
-        area &= batch_seq_idx < end
-        area.unsqueeze_(dim = 2)
-        blocks.append((embeddings * area).sum(dim = 1).unsqueeze(dim = 1))
-    return torch.cat(blocks, dim = 1)
+def blocky_max(sections, values):
+    m = sections.max() + 1
+    m_range = torch.arange(m, device = sections.device)[None, :, None]
+    idx = sections[:, None, :].repeat(1, m, 1) == m_range # [b, m, s]
+    m_values = idx * values.unsqueeze(dim = 1)
+    any_idx = idx.any(dim = 2, keepdim = True)
+    m_max = m_values.max(dim = 2, keepdim = True).values
+    mask = m_values == m_max
+    mask &= any_idx
+    return mask.any(dim = 1)
 
-def birnn_fwbw(embeddings, padding = True):
+def birnn_fwbw(embeddings, pad = None, seq_len = None):
     bs, sl, ed = embeddings.shape
     half_dim = ed >> 1
+    if pad is None:
+        pad = torch.ones(bs, 1, half_dim, dtype = embeddings.dtype, device = embeddings.device)
+    else:
+        pad = pad.repeat(bs, 1, 1)
     embeddings = embeddings.view(bs, sl, 2, half_dim)
     fw = embeddings[:, :, 0]
     bw = embeddings[:, :, 1]
-    if padding:
-        pad = torch.zeros(bs, 1, half_dim, dtype = fw.dtype, device = fw.device)
-        fw = torch.cat([pad, fw], dim = 1)
-        bw = torch.cat([bw, pad], dim = 1)
+    if seq_len is not None:
+        seq_idx = torch.arange(sl, dtype = embeddings.dtype, device = embeddings.device)
+        within_seq = seq_idx[None, :, None] < seq_len[:, None, None]
+        fw = torch.where(within_seq, fw, pad)
+        bw = torch.where(within_seq, bw, pad)
+    fw = torch.cat([pad, fw], dim = 1)
+    bw = torch.cat([bw, pad], dim = 1)
     return fw, bw
 
 def fencepost(fw, bw, splits):

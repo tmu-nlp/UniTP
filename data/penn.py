@@ -1,7 +1,6 @@
 from utils.types import fill_placeholder, M_TRAIN, M_DEVEL, M_TEST, NIL
 from data.io import load_i2vs
 
-SUB = '_SUB'
 from data.backend import WordBaseReader, post_batch
 
 class PennReader(WordBaseReader):
@@ -25,7 +24,7 @@ class PennReader(WordBaseReader):
         if load_label and unify_sub:
             labels = [t for t in i2vs['label'] if t[0] not in '#_']
             oovs['label'] = len(labels)
-            labels.append(SUB)
+            labels.append('_SUB')
             i2vs['label'] = labels
         super(PennReader, self).__init__(vocab_dir, vocab_size, nil_as_pads, i2vs, oovs)
 
@@ -91,7 +90,7 @@ class MAryReader(WordBaseReader):
         if unify_sub:
             labels = [t for t in labels if t[0] not in '#_']
             oovs['label'] = len(labels)
-            labels.append(SUB)
+            labels.append('#SUB')
             i2vs['label'] = labels
         else: # MAry does not have binarization
             i2vs['label'] = [t for t in labels if t[0] != '_']

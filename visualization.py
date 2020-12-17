@@ -369,7 +369,7 @@ if desktop:
     from nltk.draw import TreeWidget
     from nltk.draw.util import CanvasFrame
     from time import time, sleep
-    from utils.math_ops import uneven_split
+    from utils.math_ops import uneven_split, itp
     from math import exp, sqrt, pi
     from functools import partial
     from data.delta import warning_level, NIL
@@ -1995,14 +1995,19 @@ if desktop:
                         last_right = data.right[l - 1]
                         last_exist = data.label[l - 1]
                         if np.issubdtype(last_exist.dtype, np.integer): # TODO: unlabeled dtype is float, all Trues
-                            last_exist = last_exist[:, 0] > -1 if data.tag is None else last_exist[l - 1] > 0
+                            last_exist = last_exist[:, 0] > -1 if data.tag is None else last_exist > 0
                         layer_tracker = []
+                        last_stat = stat.phrase[l - 1]._global_data
                         for p, (lhr, rhr, lhe, rhe) in enumerate(zip(last_right, last_right[1:], last_exist, last_exist[1:])):
                             rw_relay = lhe and lhr
                             lw_relay = rhe and not rhr
+                            if lhr and not rhr:
+                                get_itp = lambda res: itp(last_stat[p, 1:], last_stat[p + 1, 1:], res)
+                            else:
+                                get_itp = None
                             if rw_relay or lw_relay:
                                 center_x = ((l + 1)/2 + p) * self._conf.word_width + self._conf.offset_x
-                                layer_tracker.append((center_x, line_y))
+                                layer_tracker.append((center_x, line_y, get_itp))
                     continue
 
                 for p, (ps, pr) in enumerate(zip(label_layer, right_layer)):
@@ -2077,7 +2082,25 @@ if desktop:
                                                                 outline = 'red', dash = (1, 2),
                                                                 tags = ('elems', 'err')))
                             errors.append(elems[-1])
-                    board_item_coord[sbox] = elems, (l, p)
+                    rhs_itp = None
+                    if layer_tracker is not None:
+                        _, _, get_itp = layer_tracker[p]
+                        if callable(get_itp):
+                            rhs_itp = get_itp(stat.phrase[l]._global_data[p, 1:])[1].mean()
+                    elif l > 0:
+                        last_right = data.right[l - 1]
+                        last_exist = data.label[l - 1]
+                        last_stat = stat.phrase[l - 1]._global_data
+                        if np.issubdtype(last_exist.dtype, np.integer): # TODO: unlabeled dtype is float, all Trues
+                            last_exist = last_exist[:, 0] > -1 if data.tag is None else last_exist > 0
+                        if last_right[p] and not last_right[p + 1] and last_exist[p] and last_exist[p + 1]:
+                            rhs_itp = itp(last_stat[p, 1:], last_stat[p + 1, 1:], stat.phrase[l]._global_data[p, 1:])[1].mean()
+                    if rhs_itp is not None:
+                        elems.append(board.create_text(center_x, tag_label_center + text_offy + self._conf.word_height,
+                                                       text = f'{rhs_itp:.2f}',
+                                                       fill = label_color,
+                                                       tags = ('elems', 'itp'),
+                                                       font = (font_name, round_int(font_max_size * 0.8)),))
 
                     if not self._conf.show_paddings:
                         if l >= head.length - 1:
@@ -2144,8 +2167,7 @@ if desktop:
                         color = mpc_color
 
                     if layer_tracker is not None:
-                        last_x, last_y = layer_tracker[p]
-
+                        last_x, last_y, _ = layer_tracker[p]
                         
                         if last_x == center_x:
                             to_x = center_x
@@ -2170,6 +2192,7 @@ if desktop:
                         #     elems.append(board.create_oval(to_x - r, last_line_bo - r,
                         #                                    to_x + r, last_line_bo + r,
                         #                                    fill = mpc_color, outline = '', tags = ('elems', 'u_dot')))
+                    board_item_coord[sbox] = elems, (l, p)
                 layer_tracker = None
                 # if layer_len == 1#: or not self._conf.show_paddings and np.any(layer_label):
                 #     break

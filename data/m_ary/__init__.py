@@ -68,40 +68,89 @@ def signals(tree, w2i = keep_str, t2i = keep_str, l2i = keep_str):
         layers_of_splits.append(split_layer)
     return words, tags, layers_of_labels, layers_of_splits
 
-def get_tree_from_signals(word, tag, layers_of_labels, layers_of_splits, fall_back_root = None):
+def flatten_children(nodes):
+    children = []
+    for x in nodes:
+        if isinstance(x, Tree):
+            children.append(x)
+        else:
+            children.extend(x)
+    return children
+
+def flatten_children_with_weights(bottom, start, weights):
+    children = []
+    for nid, sub_tree in enumerate(bottom):
+        mean, stdev = weights[start + nid] * 100
+        sub_tree = [sub_tree] if isinstance(sub_tree, Tree) else flatten_children(sub_tree)
+        children.append(Tree(f'{mean:.0f}%', sub_tree))
+    return children
+
+def get_tree_from_signals(word, tag, layers_of_labels, layers_of_splits, fall_back_root = None, layers_of_weights = None):
     bottom = []
     for w, t, label in zip(word, tag, layers_of_labels[0]):
         if w == '(':
             w = '-LRB-'
-        elif w == '(':
+        elif w == ')':
             w = '-RRB-'
+        if t in ('LRB', 'RRB'):
+            t = '-' + t + '-'
         leave = Tree(t, [w])
         if label[0] != '#':
             leave = Tree(label, [leave])
         bottom.append(leave)
 
-    for split_layer, label_layer in zip(layers_of_splits, layers_of_labels[1:]):
+    # quit_on_error = False
+    # bottom_len = len(bottom)
+
+    for lid, (split_layer, label_layer) in enumerate(zip(layers_of_splits, layers_of_labels[1:])):
         new_bottom = []
+        # leave_cnt = 0
         for label, start, end in zip(label_layer, split_layer, split_layer[1:]):
-            sub_tree = bottom[start]
-            if label[0] != '#' and label != sub_tree.label():
-                sub_tree = Tree(label, bottom[start:end])
+
+            if end - start == 1:
+                if label[0] == '#' or bottom[start].label() == label:
+                    sub_tree = bottom[start]
+                else:
+                    sub_tree = Tree(label, flatten_children(bottom[start:end]))
+                # leave_cnt += len(sub_tree.leaves())
+            elif label[0] == '#':
+                assert fall_back_root is not None
+                sub_tree = flatten_children(bottom[start:end])
+                # leave_cnt += sum(len(x.leaves()) for x in sub_tree)
+            else:
+                if layers_of_weights is not None and lid < len(layers_of_weights):
+                    children = flatten_children_with_weights(bottom[start:end], start, layers_of_weights[lid])
+                else:
+                    children = flatten_children(bottom[start:end])
+                sub_tree = Tree(label, children)
+                # leave_cnt += len(sub_tree.leaves())
             # print(str(sub_tree))
             new_bottom.append(sub_tree)
         # import pdb; pdb.set_trace()
         bottom = new_bottom
-    
+
+        # if leave_cnt != bottom_len:
+        #     quit_on_error = True
+        # if quit_on_error:
+        #     break
+        
     if fall_back_root is None:
         tree = bottom.pop()
         assert not bottom
     elif len(bottom) > 1:
+        if layers_of_weights and layers_of_weights[lid + 1]: # never be here
+            bottom = flatten_children_with_weights(bottom, 0, layers_of_weights[lid + 1])
+        else:
+            bottom = flatten_children(bottom)
         tree = Tree(fall_back_root, bottom)
     else:
+        bottom = flatten_children(bottom)
         tree = bottom.pop()
+        
     tree.un_chomsky_normal_form()
     if fall_back_root is None:
         return tree
-    return tree, not bottom
+    return tree, not bottom # and not quit_on_error
 
 def draw_str_lines(tree):
     bottom_info, top_down, _ = _read_dpenn(tree)

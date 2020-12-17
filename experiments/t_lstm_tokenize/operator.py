@@ -22,7 +22,7 @@ class TokenizerOperator(Operator):
         self._train_config = train_config
 
     def _build_optimizer(self, start_epoch):
-        self._loss_weights = 0.49, 0.01, 0.5
+        self._loss_weights = 0.01, 0.49, 0.01, 0.5
         optim, schedule_lr = warm_adam(self._model, self._train_config.learning_rate)
         self._schedule_lr = schedule_lr
         self.recorder.init_tensorboard()
@@ -120,8 +120,9 @@ class TokenizerOperator(Operator):
                     seq_of_pairs = self._sigmoid(seq_of_pairs)
                     bpe_loss = binary_cross_entropy(seq_of_pairs, pair_signals, None)
 
-                alpha, beta, gamma = self._loss_weights
+                total, alpha, beta, gamma = self._loss_weights
                 total_loss = alpha * valid_loss + beta * right_loss + gamma * bpe_loss
+                total_loss = total * total_loss
                 total_loss.backward()
                 self.recorder.tensorboard(self.global_step, f'Accuracy/{ds_name.title()}/%s',
                                           Validity    = fraction(valid_match, None),
@@ -269,6 +270,7 @@ class ChunkVis(BaseVis):
     def _process(self, batch_id, accu, racy, size, offsets, lengths, token_ids, validity_logits):
         self._accu += accu
         self._racy += racy
+        split_threshold = 0.15
 
         if self._work_dir is None:
             return
@@ -276,34 +278,34 @@ class ChunkVis(BaseVis):
             for offset, length, tokens, logits in zip(offsets, lengths, token_ids, validity_logits):
                 tokens = ''.join(self._i2vs.token[t] for t in tokens[offset:offset+length])
                 chunks = []
-                if length > 2:
-                    end_threshold = 0.15
-                    start  = 0
-                    logits = logits[size:] # second layer
-                    for i in range(0, length - 1):
-                        split = False
-                        if i == 0: # start
-                            mid, right = logits[offset:offset + 2]
-                            split = mid + end_threshold < right
-                        elif i == length - 2: # end
-                            left, mid = logits[offset + i - 1:offset + i + 1]
-                            split = left > mid + end_threshold
-                        else: # mid
-                            left, mid, right = logits[offset + i - 1:offset + i + 2]
-                            split = left > mid < right
-                        if split:
-                            chunk = tokens[start:i + 1]
-                            self._subs[chunk] += 1
-                            chunks.append(chunk)
-                            start = i + 1
-                        fw.write(f'{mid}\n')
-                    chunks.append(tokens[start:])
-                    self._tokens[tokens] = '|'.join(chunks)
-                    self._subs[tokens[start:]] += 1
-                else:
-                    self._subs[tokens] += 1
-                    self._tokens[tokens] = tokens
-                    fw.write(f'{logits[size + offset]}\n')
+                start  = 0
+                logits = logits[size+offset:] # second layer # 0
+                # for i in range(0, length - 1):        # abcde
+                #     split = False
+                #     if i == 0: # start
+                #         mid, right = logits[offset:offset + 2]
+                #         split = mid + end_threshold < right
+                #     elif i == length - 2: # end
+                #         left, mid = logits[offset + i - 1:offset + i + 1]
+                #         split = left > mid + end_threshold
+                #     else: # mid
+                #         left, mid, right = logits[offset + i - 1:offset + i + 2]
+                #         split = left > mid < right
+                for pre, post in zip(logits, logits[1:]):
+                    if abs(pre - post) > split_threshold:
+                        chunk = tokens[start:i + 1]
+                        self._subs[chunk] += 1
+                        chunks.append(chunk)
+                        start = i + 1
+                    fw.write(f'{mid}\n')
+                chunks.append(tokens[start:])
+                self._tokens[tokens] = '|'.join(chunks)
+                self._subs[tokens[start:]] += 1
+                # if length > 2:
+                # else:
+                #     self._subs[tokens] += 1
+                #     self._tokens[tokens] = tokens
+                #     fw.write(f'{logits[size + offset]}\n')
                 self._cnts += 1
 
     def _after(self):

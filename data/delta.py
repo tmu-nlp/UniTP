@@ -297,6 +297,8 @@ def get_tree_from_triangle(word_layer, tag_layer, label_layers, right_layers, po
     else:
         for i, (w, p, s) in enumerate(zip(word_layer, tag_layer, label_layers[0])):
             w = {'(': '-LRB-', ')': '-RRB-'}.get(w, w)
+            if p in ('LRB', 'RRB'):
+                p = '-' + p + '-'
             tagged_leaf = Tree(p, [w])
             if s[0] == _sub:
                 tree = tagged_leaf
