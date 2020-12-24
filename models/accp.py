@@ -65,7 +65,8 @@ class MAryStem(nn.Module):
         self._fence_act = activation()
         self._fence_l2 = nn.Linear(hidden_size, 1)
         self._domain = nn.Linear(fence_dim, model_dim)
-        self._subject = nn.Linear(model_dim, model_dim)
+        self._subject = nn.Linear(fence_dim, model_dim)
+        self._subject_static = nn.Linear(model_dim, model_dim, bias = False)
         self._sigmoid = nn.Sigmoid()
         finfo = torch.finfo(torch.get_default_dtype())
         self._fminmax = finfo.min, finfo.max
@@ -88,8 +89,8 @@ class MAryStem(nn.Module):
         fence_hidden, _ = self._fence_emb(unit_hidden, h0c0)
         fence_hidden = self._stem_dp(fence_hidden)
         fw, bw = birnn_fwbw(fence_hidden, seq_len = seq_len)#, pad = self._tanh(self._pad))
-        fence_hidden = torch.cat([fw, bw], dim = 2)
-        fence = self._fence_l1(fence_hidden)
+        fence = torch.cat([fw, bw], dim = 2)
+        fence = self._fence_l1(fence)
         fence = self._stem_dp(fence)
         fence = self._fence_act(fence)
         fence = self._fence_l2(fence).squeeze(dim = 2)
@@ -153,14 +154,14 @@ class MAryStem(nn.Module):
             
             fence_emb = self._domain(fencepost(fw, bw, fence_idx))
             fence_emb = self._stem_dp(fence_emb)
-            sub_emb  = self._subject(unit_emb)
+            sub_emb  = self._subject(fence_hidden) * self._sigmoid(self._subject_static(unit_emb))
             sections = torch.where(longer_seq_idx < seq_len[:, None], sections, torch.zeros_like(sections))[:, :-1]
 
             if keep_low_attention_rate < 1:
                 max_mask = blocky_max(sections, sub_emb.mean(dim = 2))
                 max_mask |= torch.rand(batch_size, seg_len, device = sub_emb.device) < keep_low_attention_rate
                 max_mask |= torch.rand(batch_size, seg_len, device = sub_emb.device) < self._sigmoid(sub_emb.sum(dim = 2))
-                sub_emb = torch.where(max_mask[:, :, None], sub_emb, sub_emb - (sub_emb.max() - sub_emb.min()) / 2) # max must be kept
+                sub_emb = torch.where(max_mask[:, :, None], sub_emb, sub_emb - (sub_emb.max() - sub_emb.min()) * 0.7) # max must be kept
                 
             weights, unit_emb = blocky_softmax(sections, sub_emb, fence_emb, unit_emb)
             seg_len  = unit_emb.shape[1]
@@ -265,6 +266,10 @@ class BaseRnnTree(MAryStem):
         return get_decision_with_value(self._score_fn, logits)
 
     def get_losses(self, batch, tag_logits, label_logits):
+        height_mask = batch['segment'][None] * (batch['seg_length'] > 0)
+        height_mask = height_mask.sum(dim = 1)
         tag_loss   = get_loss(self._tag_layer,   self._logit_max, tag_logits,   batch, 'tag')
-        label_loss = get_loss(self._label_layer, self._logit_max, label_logits, batch, 'label')
+        label_loss = get_loss(self._label_layer, self._logit_max, label_logits, batch, False, height_mask, 'label')
+        # tag_loss   = get_loss(self._tag_layer,   self._logit_max, tag_logits,   batch, 'tag')
+        # label_loss = get_loss(self._label_layer, self._logit_max, label_logits, batch, 'label')
         return tag_loss, label_loss

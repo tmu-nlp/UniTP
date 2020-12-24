@@ -7,7 +7,7 @@ Unified Tokenization and Parsing framework in PyTorch
 - `pip install -r requirements/visual.txt` to visualize remote tensors locally through sftp. (funny!)
 - `pip install -r requirements/full.txt` to train or test our models with PyTorch.
   - [Evalb](https://nlp.cs.nyu.edu/evalb/) is necessary.
-  - [FastText](https://fasttext.cc/) and [Discontinuous DOP](https://github.com/andreasvc/disco-dop) are optional.
+  - [FastText](https://fasttext.cc/), [huggingface transformers](https://github.com/huggingface/transformers) and, [Discontinuous DOP](https://github.com/andreasvc/disco-dop) are optional.
   (recommmend for reproduce the results.)
 
 ## Models

@@ -101,12 +101,12 @@ class MAryReader(WordBaseReader):
               mode,
               batch_size,
               bucket_length,
-              min_len        = 2,
+              min_len        = 1,
               max_len        = None,
               sort_by_length = True):
         from data.m_ary.dataset import MAryDataset
         samples, extra_text_helper = self._load_options
-        len_sort_ds = MAryDataset(mode, samples[mode], self.v2is, self.device, extra_text_helper)
+        len_sort_ds = MAryDataset(mode, samples[mode], self.v2is, self.device, min_len, max_len, extra_text_helper)
         return post_batch(mode, len_sort_ds, sort_by_length, bucket_length, batch_size)
 
 from utils.types import false_type, true_type

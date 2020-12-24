@@ -78,6 +78,27 @@ class DiscontinuousTensorVis(TensorVis):
         assert len(self._data_type._fields) == len(args)
         pickle_dump(self.join(f'data.{batch_id}_{epoch}.pkl'), args)
 
+def tee_trees(join_fn, mode, lengths, trees, batch_id, bin_width):
+    ftrees = {}
+    write_all = batch_id is None
+    write_len = isinstance(bin_width, int)
+    with ExitStack() as stack:
+        if write_all:
+            fh = stack.enter_context(open(join_fn(f'{mode}.tree'), 'a'))
+        else:
+            fh = stack.enter_context(open(join_fn(f'{mode}.{batch_id}.tree'), 'w'))
+        for wlen, tree in zip(lengths, trees):
+            print(tree, file = fh)
+            if write_len:
+                wbin = wlen // bin_width
+                if wbin in ftrees:
+                    fw = ftrees[wbin]
+                else:
+                    fw = open(join_fn(f'{mode}.bin_{wbin}.tree'), 'a')
+                    ftrees[wbin] = stack.enter_context(fw)
+                print(tree, file = fw)
+    return ftrees.keys()
+
 from data.triangle import head_to_tree as tri_h2t
 from data.triangle import data_to_tree as tri_d2t
 from data.trapezoid import head_to_tree as tra_h2t
@@ -115,24 +136,11 @@ class ContinuousTensorVis(TensorVis):
 
         if batch_id_size_bin_width:
             batch_id, size, bin_width = batch_id_size_bin_width
-            fhead = self.join(f'head.{batch_id}.tree')
-
-            ftrees = {}
-            with ExitStack() as stack, open(fhead, 'w') as fh:
-                for wlen, tree in zip(length, trees):
-                    wbin = wlen // bin_width
-                    if wbin in ftrees:
-                        fw = ftrees[wbin]
-                    else:
-                        fw = open(self.join(f'head.bin_{wbin}.tree'), 'a')
-                        ftrees[wbin] = stack.enter_context(fw)
-                    print(tree, file = fw)
-                    print(tree, file = fh)
 
             fname = self.join(f'head.{batch_id}_{size}.pkl')
             head  = self.IOHead(offset, length, token, old_tag, label, right, trees, segment, seg_length)
             pickle_dump(fname, tuple(head)) # type check
-            return ftrees.keys()
+            return tee_trees(self.join, 'head', length, trees, batch_id, bin_width)
 
     def set_void_head(self, batch_id, size, offset, length, token):
         fname = self.join(f'head.{batch_id}_{size}.pkl')
@@ -187,27 +195,12 @@ class ContinuousTensorVis(TensorVis):
                 return batch_warnings
 
             else: # supervised / labeled
-                
-                fdata = self.join(f'data.{batch_id}.tree')
-                with open(fdata, 'w') as fw:
-                    for tree in trees:
-                        print(tree, file = fw)
-
-                if isinstance(bin_width, int):
-                    ftrees = {}
-                    with ExitStack() as stack:
-                        for wlen, tree in zip(length, trees):
-                            wbin = wlen // bin_width
-                            if wbin in ftrees:
-                                fw = ftrees[wbin]
-                            else:
-                                fw = open(self.join(f'data.bin_{wbin}.tree'), 'a')
-                                ftrees[wbin] = stack.enter_context(fw)
-                            print(tree, file = fw)
+                tee_trees(self.join, 'data', length, trees, batch_id, bin_width)
 
                 fhead = f'head.{batch_id}_{size}.pkl'
                 assert isfile(self.join(fhead)), f"Need a head '{fhead}'"
                 fhead = self.join(f'head.{batch_id}.tree')
+                fdata = self.join(f'data.{batch_id}.tree')
 
                 if evalb is None: # sentiment
                     # 52VII
@@ -428,6 +421,12 @@ if desktop:
                 sftp.close()
 
     get_batch_id = lambda x: int(x[5:-4].split('_')[0])
+
+    class TreeViewer(Frame):
+        def __init__(self,
+                     root,
+                     fpath):
+            super().__init__(root) # To view just symbolic trees ptb or xml.
 
     class TreeExplorer(Frame):
         def __init__(self,

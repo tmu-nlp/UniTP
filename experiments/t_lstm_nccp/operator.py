@@ -357,7 +357,10 @@ def remove_vis_data_from(fpath, start_epoch):
     for fname in listdir(fpath):
         if fname.startswith('data.'):
             if fname.endswith('.tree'): # batch | epoch
-                batch_or_epoch = fname[5:-5]
+                if '.bin_' in fname:
+                    batch_or_epoch = fname[5:fname.find('.bin_')] # data.[].bin_xx.tree
+                else:
+                    batch_or_epoch = fname[5:-5] # data.[].tree
                 if '.' in batch_or_epoch and float(batch_or_epoch) >= start_epoch:
                     remove(join(fpath, fname))
                     removed.append(fname)

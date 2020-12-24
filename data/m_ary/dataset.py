@@ -144,8 +144,8 @@ class MAryDataset(LengthOrderedDataset):
                     sl = [len(seq) for seq in layer]
                     segment.append(max(sl))
                     seg_len.append(sl)
-                field_columns['segment'] = torch.tensor(segment) # CPU
-                field_columns['seg_length'] = torch.tensor(seg_len).transpose(0, 1) # CPU
+                field_columns['segment'] = torch.tensor(segment, device = self._device)
+                field_columns['seg_length'] = torch.tensor(seg_len, device = self._device).transpose(0, 1)
                 tensor = fill_layers(column, segment, np.int32, torch.long)
             else:
                 tensor_seg = [x + 1 for x in segment[1:]]

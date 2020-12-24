@@ -8,6 +8,7 @@ from utils.types import M_TRAIN, BaseType, frac_open_0, true_type, tune_epoch_ty
 from models.utils import PCA, fraction, hinge_score, mean_stdev
 from models.loss import binary_cross_entropy, hinge_loss
 from experiments.helper import warm_adam
+from experiments.t_lstm_nccp.operator import PennOperator
 from utils.shell_io import byte_style
 
 train_type = dict(loss_weight = dict(tag   = BaseType(0.2, validator = frac_open_0),
@@ -50,33 +51,10 @@ def extend_fence_idx(unpacked_fence_idx):
     return torch.cat(layers, dim = 1)
 
 
-class PennOperator(Operator):
+class MAryPennOperator(PennOperator):
     def __init__(self, model, get_datasets, recorder, i2vs, evalb, train_config):
-        super().__init__(model, get_datasets, recorder, i2vs)
-        self._evalb = evalb
-        self._sigmoid = nn.Sigmoid()
-        self._mode_length_bins = None, None
-        self._train_config = train_config
-        self._tune_pre_trained = False
+        super().__init__(model, get_datasets, recorder, i2vs, evalb, train_config)
         self._initial_run = True, True
-
-    def _build_optimizer(self, start_epoch):
-        # self._loss_weights_of_tag_label_fence = 0.3, 0.1, 0.6 betas = (0.9, 0.98), weight_decay = 0.01, eps = 1e-6
-        optim, schedule_lr = warm_adam(self._model, self._train_config.learning_rate)
-        self._schedule_lr = schedule_lr
-        if start_epoch > 0:
-            fpath = self.recorder.create_join('penn_devel')
-            PennOperator.clean_and_report(fpath, start_epoch)
-        self.recorder.init_tensorboard()
-        optim.zero_grad()
-        return optim
-
-    def _schedule(self, epoch, wander_ratio):
-        tune = self._train_config.tune_pre_trained_from_nth_epoch
-        self._tune_pre_trained = tune = tune is not None and tune < epoch
-        lr_factor = self._train_config.lr_factor_for_tuning if tune else 1
-        learning_rate = self._schedule_lr(epoch, wander_ratio, lr_factor)
-        self.recorder.tensorboard(self.global_step, 'Batch/%s', Learning_Rate = learning_rate, Epoch = epoch)
 
     def _step(self, mode, ds_name, batch, batch_id = None):
 
@@ -84,6 +62,9 @@ class PennOperator(Operator):
         if mode == M_TRAIN:
             supervised_signals['supervised_fence'] = gold_fences = unpack_fence(batch['fence'], batch['segment'], True)
             supervised_signals['keep_low_attention_rate'] = self._train_config.keep_low_attention_rate
+        if 'plm_idx' in batch:
+            for x in ('plm_idx', 'plm_start'):
+                supervised_signals[x] = batch[x]
 
         batch_time = time()
         (batch_size, batch_len, static, top3_label_logits,
@@ -127,14 +108,14 @@ class PennOperator(Operator):
                                       Total = total_loss)
             batch_kwargs = dict(Length = batch_len, SamplePerSec = batch_len / batch_time)
             if 'segment' in batch:
-                batch_kwargs['Height'] = len(batch['segment'])
+                batch_kwargs['Height'] = batch['segment'].shape[0]
             self.recorder.tensorboard(self.global_step, 'Batch/%s', **batch_kwargs)
         else:
             vis, _, _ = self._vis_mode
 
             b_size = (batch_len,)
             b_head = tuple((batch[x].type(torch.uint8) if x in ('tag', 'label', 'fence') else batch[x]).cpu().numpy() for x in 'token tag label fence'.split())
-            b_head = b_head + (batch['segment'].numpy(), batch['seg_length'].numpy())
+            b_head = b_head + (batch['segment'].cpu().numpy(), batch['seg_length'].cpu().numpy())
             # batch_len, length, token, tag, label, fence, segment, seg_length
 
             tags   = self._model.get_decision(tag_logits  ).type(torch.uint8).cpu().numpy()
@@ -149,22 +130,27 @@ class PennOperator(Operator):
     def _before_validation(self, ds_name, epoch, use_test_set = False, final_test = False):
         devel_bins, test_bins = self._mode_length_bins
         devel_init, test_init = self._initial_run
+        epoch_major, epoch_minor = epoch.split('.')
         if use_test_set:
             if final_test:
                 folder = 'penn_test'
-                scores_of_bins = save_tensors = True
+                draw_weights = True
             else:
                 folder = 'penn_test_with_devel'
-                save_tensors = is_bin_times(int(float(epoch)) - 1)
-                scores_of_bins = False
+                if int(epoch_minor) == 0:
+                    draw_weights = is_bin_times(int(epoch_major))
+                else:
+                    draw_weights = False
             length_bins = test_bins
             flush_heads = test_init
             self._initial_run = devel_init, False
         else:
             folder = 'penn_devel'
             length_bins = devel_bins
-            save_tensors = is_bin_times(int(float(epoch)) - 1)
-            scores_of_bins = False
+            if int(epoch_minor) == 0:
+                draw_weights = is_bin_times(int(epoch_major))
+            else:
+                draw_weights = False
             flush_heads = devel_init
             self._initial_run = False, test_init
 
@@ -176,10 +162,8 @@ class PennOperator(Operator):
                       self._evalb,
                       self.i2vs,
                       self.recorder.log,
-                      False, # save_tensors
-                      use_test_set,
+                      draw_weights,
                       length_bins,
-                      scores_of_bins,
                       flush_heads)
         vis = VisRunner(vis, async_ = True) # wrapper
         vis.before()
@@ -195,6 +179,14 @@ class PennOperator(Operator):
                 self._mode_length_bins = devel_bins, length_bins # change test
             else:
                 self._mode_length_bins = length_bins, test_bins # change devel
+
+            for wbin in length_bins:
+                fhead = vis._join_fn(f'head.bin_{wbin}.tree')
+                fdata = vis._join_fn(f'data.{self.epoch}.bin_{wbin}.tree')
+                if final_test:
+                    remove(fhead)
+                remove(fdata)
+
         speed = float(f'{count / seconds:.1f}')
         if vis.is_async:
             rate = vis.proc_time / seconds
@@ -208,41 +200,13 @@ class PennOperator(Operator):
         self._vis_mode = None
         return scores, desc, logg
 
-    @staticmethod
-    def combine_scores_and_decide_key(epoch, ds_scores):
-        scores = ds_scores[get_sole_key(ds_scores)]
-        scores['key'] = scores.get('F1', 0)
-        return scores
-
-    @staticmethod
-    def clean_and_report(fpath, start_epoch):
-        removed = remove_vis_data_from(fpath, start_epoch)
-        if removed:
-            if len(removed) == 1:
-                content = removed[0]
-            else:
-                content = f'{len(removed)} files'
-            Operator.msg(f' [{start_epoch:.2f}:] {content} removed in folder penn_devel.')
-
-        fpath = fpath.replace('penn_devel', 'penn_test_with_devel')
-        if isdir(fpath):
-            removed = remove_vis_data_from(fpath, start_epoch)
-            if removed:
-                if len(removed) == 1:
-                    content = removed[0]
-                else:
-                    content = f'{len(removed)} files'
-                Operator.msg(f' [{start_epoch:.2f}:] {content} removed in folder penn_test_with_devel.')
-
-    def optuna_model(self):
-        pass
-
 
 from utils.vis import BaseVis, VisRunner
 from utils.file_io import join, isfile, listdir, remove, isdir
 from utils.param_ops import HParams
 from utils.shell_io import parseval, rpt_summary
 from data.m_ary import get_tree_from_signals, draw_str_lines
+from visualization import tee_trees
 from itertools import count
 
 def batch_trees(b_word, b_tag, b_label, b_fence, b_segment, b_seg_length, i2vs, fb_label, b_weight = None):
@@ -272,70 +236,67 @@ def batch_trees(b_word, b_tag, b_label, b_fence, b_segment, b_seg_length, i2vs, 
 
 class MAryVis(BaseVis):
     def __init__(self, epoch, work_dir, evalb, i2vs, logger,
-                 save_tensors   = True,
                  draw_weights   = False,
                  length_bins    = None,
-                 scores_of_bins = False,
                  flush_heads    = False):
         super().__init__(epoch)
         self._evalb = evalb
         htree = join(work_dir, 'head.tree')
         dtree = join(work_dir, f'data.{epoch}.tree')
+        self._join_fn = lambda x: join(work_dir, x)
         self._is_anew = not isfile(htree) or flush_heads
         self._rpt_file = join(work_dir, f'data.{epoch}.rpt')
         self._logger = logger
         self._fnames = htree, dtree
         self._i2vs = i2vs
-        self._head_tree = None
-        self._data_tree = None
-        self._scores_of_bins = scores_of_bins
-        self.register_property('save_tensors', save_tensors)
         self.register_property('length_bins',  length_bins)
         self._draw_file = join(work_dir, f'data.{epoch}.art') if draw_weights else None
         self._error_idx = 0, []
 
-    def __del__(self):
-        if self._head_tree: self._head_tree.close()
-        if self._data_tree: self._data_tree.close()
-
     def _before(self):
-        htree, dtree = self._fnames
         if self._is_anew:
-            self._head_tree = open(htree, 'w')
             self.register_property('length_bins', set())
-        self._data_tree = open(dtree, 'w')
+            for fn in self._fnames:
+                if isfile(fn):
+                    remove(fn)
         if self._draw_file and isfile(self._draw_file):
             remove(self._draw_file)
 
     def _process(self, batch_id, batch):
         (batch_len, h_token, h_tag, h_label, h_fence, h_segment, h_seg_length,
          d_tag, d_label, d_fence, d_weight, d_segment, d_seg_length) = batch
+
+        if self._is_anew:
+            trees = batch_trees(h_token, h_tag, h_label, h_fence, h_segment, h_seg_length, self._i2vs, None)
+            trees = [' '.join(str(x).split()) for x in trees]
+            self.length_bins |= tee_trees(self._join_fn, 'head', h_seg_length[:, 0], trees, None, 10)
+
+        trees = []
         idx_cnt, error_idx = self._error_idx
-
-        if self._head_tree:
-            for tree in batch_trees(h_token, h_tag, h_label, h_fence, h_segment, h_seg_length, self._i2vs, None):
-                self._head_tree.write(' '.join(str(tree).split()) + '\n')
-
         for tree, safe in batch_trees(h_token, d_tag, d_label, d_fence, d_segment, d_seg_length, self._i2vs, 'S'):
             idx_cnt += 1 # start from 1
             if not safe:
                 error_idx.append(idx_cnt)
-            self._data_tree.write(' '.join(str(tree).split()) + '\n')
+            trees.append(' '.join(str(tree).split()))
         self._error_idx = idx_cnt, error_idx
 
-        if self._draw_file is not None:
+        if self._draw_file is None:
+            bin_size = None
+        else:
+            bin_size = None if self.length_bins is None else 10
             with open(self._draw_file, 'a+') as fw:
                 for tree, safe in batch_trees(h_token, d_tag, d_label, d_fence, d_segment, d_seg_length, self._i2vs, 'S', d_weight):
                     if not safe:
                         fw.write('\n[FORCING TREE WITH ROOT = S]\n')
-                    fw.write('\n'.join(draw_str_lines(tree)) + '\n\n')
+                    try:
+                        fw.write('\n'.join(draw_str_lines(tree)) + '\n\n')
+                    except:
+                        fw.write('FAILING DRAWING\n\n')
+        tee_trees(self._join_fn, f'data.{self.epoch}', d_seg_length[:, 0], trees, None, bin_size)
 
     def _after(self):
         # call evalb to data.emm.rpt return the results, and time counted
         # provide key value in results
-        if self._head_tree:
-            self._head_tree.close()
-        self._data_tree.close()
         proc = parseval(self._evalb, *self._fnames)
         report = proc.stdout.decode()
         scores = rpt_summary(report, False, True)
@@ -359,27 +320,18 @@ class MAryVis(BaseVis):
                 self._logger(f'  Go check {self._rpt_file} for details.')
                 fw.write('\n\n' + '\n'.join(errors))
 
-        self._head_tree = self._data_tree = None
+        if self.length_bins is not None and self._draw_file is not None:
+            with open(self._join_fn(f'{self.epoch}.scores'), 'w') as fw:
+                fw.write('wbin,num,lp,lr,f1,ta\n')
+                for wbin in self.length_bins:
+                    fhead = self._join_fn(f'head.bin_{wbin}.tree')
+                    fdata = self._join_fn(f'data.{self.epoch}.bin_{wbin}.tree')
+                    proc = parseval(self._evalb, fhead, fdata)
+                    smy = rpt_summary(proc.stdout.decode(), False, True)
+                    fw.write(f"{wbin},{smy['N']},{smy['LP']},{smy['LR']},{smy['F1']},{smy['TA']}\n")
+
         desc = f'Evalb({scores["LP"]:.2f}/{scores["LR"]:.2f}/'
         key_score = f'{scores["F1"]:.2f}'
         desc_for_screen = desc + byte_style(key_score, underlined = True) + ')'
         desc_for_logger = f'N: {scores["N"]} {desc}{key_score})'
         return scores, desc_for_screen, desc_for_logger
-
-def remove_vis_data_from(fpath, start_epoch):
-    removed = []
-    for fname in listdir(fpath):
-        if fname.startswith('data.'):
-            if fname.endswith('.tree'): # batch | epoch
-                batch_or_epoch = fname[5:-5]
-                if '.' in batch_or_epoch and float(batch_or_epoch) >= start_epoch:
-                    remove(join(fpath, fname))
-                    removed.append(fname)
-            elif fname.endswith('.pkl') or fname.endswith('.rpt'): # batch_epoch
-                epoch = fname[5:-4]
-                if '_' in epoch:
-                    epoch = epoch[epoch.index('_') + 1:]
-                if float(epoch) >= start_epoch:
-                    remove(join(fpath, fname))
-                    removed.append(fname)
-    return removed

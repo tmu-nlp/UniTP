@@ -7,7 +7,7 @@ from models.plm import XLNetDatasetHelper
 from experiments.t_xlnet_nccp.model import ContinuousXLNetTree, model_type
 from experiments.t_lstm_nccp.operator import PennOperator, train_type
 
-get_any_penn = lambda ptb = None, ctb = None: ptb or ctb
+get_any_penn = lambda ptb = None: ptb
 def get_configs(recorder = None):
     if recorder is None:
         return {C_PTB: nccp_data_config}, model_type, train_type
