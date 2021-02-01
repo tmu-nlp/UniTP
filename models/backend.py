@@ -208,10 +208,10 @@ class Stem(nn.Module):
 
 
 from models.utils import PCA
-from utils.types import false_type, num_ctx_layer
+from utils.types import false_type, num_ctx_layer, frac_06, hidden_dim
 from utils.param_ops import HParams, dict_print
 act_fasttext = BaseType(None, as_index = True, as_exception = True, default_set = BaseWrapper.from_gen((nn.Tanh, nn.Softsign), to_name))
-input_config = dict(pre_trained = true_type, activation = act_fasttext, drop_out = frac_4)
+input_config = dict(pre_trained = true_type, activation = act_fasttext, drop_out = frac_4)#, random_unk_prob = frac_06, random_unk_from_id = hidden_dim)
 
 class InputLeaves(nn.Module):
     def __init__(self,
@@ -219,9 +219,12 @@ class InputLeaves(nn.Module):
                  num_tokens,
                  initial_weight,
                  nil_as_pad,
+                #  unk_id,
                  pre_trained,
                  activation,
-                 drop_out):
+                 drop_out):#,
+                #  random_unk_from_id,
+                #  random_unk_prob):
         super().__init__()
 
         if initial_weight is None: # tokenization without <nil>, <bos> & <eos> are included tuned with others

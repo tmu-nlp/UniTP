@@ -7,10 +7,10 @@ from time import time
 from utils.str_ops import strange_to
 from utils.math_ops import is_bin_times, f_score
 from utils.types import M_TRAIN, BaseType, frac_open_0, frac_06, frac_close
-from utils.types import str_num_array, true_type, tune_epoch_type
+from utils.types import str_num_array, false_type, tune_epoch_type
 from models.utils import PCA, fraction, hinge_score
 from models.loss import binary_cross_entropy, hinge_loss
-from experiments.helper import warm_adam
+from experiments.helper import WarmOptimHelper
 from data.cross.evalb_lcfrs import DiscoEvalb, ExportWriter, read_param
 from utils.shell_io import has_discodop, discodop_eval, byte_style
 from utils.file_io import join, basename
@@ -24,6 +24,7 @@ train_type = dict(loss_weight = dict(tag    = BaseType(0.3, validator = frac_ope
                                      shuffled = BaseType(0.6, validator = frac_open_0),
                                      _undirect_orient = BaseType(0.9, validator = frac_close)),
                   learning_rate = BaseType(0.001, validator = frac_open_0),
+                  label_freq_as_loss_weight = false_type,
                   tune_pre_trained_from_nth_epoch = tune_epoch_type,
                   lr_factor_for_tuning = frac_06)
 
@@ -53,9 +54,9 @@ class DiscoOperator(Operator):
 
     def _build_optimizer(self, start_epoch):
         # self._loss_weights_of_tag_label_orient = 0.3, 0.1, 0.6 betas = (0.9, 0.98), weight_decay = 0.01, eps = 1e-6
-        optim, schedule_lr = warm_adam(self._model, self._train_config.learning_rate)
-        self._schedule_lr = schedule_lr
+        self._schedule_lr = hp = WarmOptimHelper(self._model, self._train_config.learning_rate)
         self.recorder.init_tensorboard()
+        optim = hp.optimizer
         optim.zero_grad()
         return optim
 
@@ -98,10 +99,16 @@ class DiscoOperator(Operator):
                                       Right = fraction(right_match, gold_direcs),
                                       Direc = fraction(direcs == gold_direcs),
                                       Joint = fraction(joints == gold_joints))
+
+            if self._train_config.label_freq_as_loss_weight:
+                label_mask = self._train_config.label_log_freq_inv[batch['label']]
+            else:
+                label_mask = None
+
             batch['existence'] = gold_exists
             shuffled = self._train_config.loss_weight.shuffled
             tb_loss_kwargs = {}
-            losses = self._model.get_losses(batch, tag_logits, top3_label_logits, label_logits, right_direc_logits, joint_logits, shuffled_right_direc, shuffled_joint, self._train_config.loss_weight._undirect_orient)
+            losses = self._model.get_losses(batch, label_mask, tag_logits, top3_label_logits, label_logits, right_direc_logits, joint_logits, shuffled_right_direc, shuffled_joint, self._train_config.loss_weight._undirect_orient)
             if self._model.has_fewer_losses:
                 tag_loss, label_loss, orient_loss, joint_loss, shuffled_orient_loss, shuffled_joint_loss = losses
                 total_loss = self._train_config.loss_weight.tag * tag_loss

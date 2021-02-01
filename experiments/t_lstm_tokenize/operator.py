@@ -8,7 +8,7 @@ from time import time
 from math import log
 from models.utils import PCA, fraction, hinge_score, eos_mask
 from models.loss import binary_cross_entropy, hinge_loss
-from experiments.helper import warm_adam
+from experiments.helper import WarmOptimHelper
 from experiments.t_lstm_tokenize.types import D_NOISE, D_CLEAN
 
 train_type = dict(learning_rate = BaseType(0.001, validator = frac_open_0))
@@ -23,8 +23,9 @@ class TokenizerOperator(Operator):
 
     def _build_optimizer(self, start_epoch):
         self._loss_weights = 0.01, 0.49, 0.01, 0.5
-        optim, schedule_lr = warm_adam(self._model, self._train_config.learning_rate)
-        self._schedule_lr = schedule_lr
+        self._schedule_lr = hp = WarmOptimHelper.adam(self._model, self._train_config.learning_rate)
+        optim = hp.optimizer
+        optim.zero_grad()
         self.recorder.init_tensorboard()
         return optim
 

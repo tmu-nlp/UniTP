@@ -34,4 +34,5 @@ def get_configs(recorder = None):
 
     model = DiscoRnnTree(**model_config, **task_params)
     model.to(reader.device)
+    train_config.create(label_log_freq_inv = reader.frequency('label', log_inv = True))
     return DiscoOperator(model, get_datasets, recorder, reader.i2vs, train_config, recorder.evalb)

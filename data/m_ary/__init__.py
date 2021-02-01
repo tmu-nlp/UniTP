@@ -1,5 +1,37 @@
 from data.delta import preproc_cnf, Tree, defaultdict
 from data.cross import _read_dpenn, draw_str_lines as _draw_str_lines
+from data.mp import DM
+
+class MaryDM(DM):
+    @staticmethod
+    def tree_gen_fn(i2w, i2t, i2l, segments, token, tag, label, fence, seg_length):
+        for tokens, tags, labels, fences, seg_lengths in zip(token, tag, label, fence, seg_length):
+            layers_of_label = []
+            layers_of_fence = []
+            label_start = 0
+            fence_start = 0
+            for l_cnt, (l_size, l_len) in enumerate(zip(segments, seg_lengths)):
+                label_layer = tuple(i2l(i) for i in labels[label_start: label_start + l_len])
+                layers_of_label.append(label_layer)
+                if l_cnt:
+                    layers_of_fence.append(fences[fence_start: fence_start + l_len + 1])
+                    fence_start += l_size + 1
+                else:
+                    ln = l_len
+                if l_len == 1:
+                    break
+                label_start += l_size
+            wd = [i2w[i] for i in tokens[:ln]]
+            tg = [i2t[i] for i in   tags[:ln]]
+            tree, _ = get_tree_from_signals(wd, tg, layers_of_label, layers_of_fence, 'VROOT')
+            yield ' '.join(str(tree).split())
+
+    @staticmethod
+    def arg_segment_fn(seg_id, seg_size, batch_size, args):
+        # import pdb; pdb.set_trace()
+        start = seg_id * seg_size
+        if start < batch_size:
+            return args[:1] + tuple(x[start: (seg_id + 1) * seg_size] for x in args[1:])
 
 def clear_label(label, umark = '+', fmark = '@'):
     '''Most unaries are introduce by preproc_cnf/remove trace'''
@@ -157,8 +189,14 @@ def draw_str_lines(tree):
     return _draw_str_lines(bottom_info, top_down)
 
 class MAryX:
-    def __init__(self, tree):
-        preproc_cnf(tree)
+    def __init__(self, tree, word_trace = False):
+        if word_trace:
+            try:
+                preproc_cnf(tree, word_trace = True)
+            except:
+                print(tree)
+        else:
+            preproc_cnf(tree)
         tree.collapse_unary(collapseRoot = True)
         self._raw_tree = tree
 

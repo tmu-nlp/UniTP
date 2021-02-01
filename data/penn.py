@@ -60,8 +60,8 @@ class PennReader(WordBaseReader):
             len_sort_ds = TriangularDataset(self.dir_join, mode, **common_args)
         else:
             from data.trapezoid.dataset import TrapezoidDataset
-            tree_reader, get_fnames, _, data_splits, trapezoid_height = trapezoid_specs
-            len_sort_ds = TrapezoidDataset.from_penn(tree_reader, get_fnames, data_splits[mode], trapezoid_height, **common_args)
+            tree_reader, get_fnames, _, data_splits, trapezoid_height, word_trace = trapezoid_specs
+            len_sort_ds = TrapezoidDataset.from_penn(tree_reader, get_fnames, data_splits[mode], trapezoid_height, word_trace = word_trace, **common_args)
         return post_batch(mode, len_sort_ds, sort_by_length, bucket_length, batch_size)
 
 
@@ -74,7 +74,8 @@ class MAryReader(WordBaseReader):
                  tree_reader,
                  get_fnames,
                  data_splits,
-                 vocab_size  = None,
+                 vocab_size = None,
+                 word_trace = False,
                  extra_text_helper = None):
         samples = {}
         for mode, data_split in zip((M_TRAIN, M_DEVEL, M_TEST), data_splits):
@@ -83,7 +84,7 @@ class MAryReader(WordBaseReader):
                 for tree in tree_reader.parsed_sents(fn):
                     m_samples.append((mode, tree))
             samples[mode] = m_samples
-        self._load_options = samples, extra_text_helper
+        self._load_options = samples, word_trace, extra_text_helper
         i2vs = load_i2vs(vocab_dir, 'word tag label'.split())
         oovs = {}
         labels = i2vs['label']
@@ -105,8 +106,8 @@ class MAryReader(WordBaseReader):
               max_len        = None,
               sort_by_length = True):
         from data.m_ary.dataset import MAryDataset
-        samples, extra_text_helper = self._load_options
-        len_sort_ds = MAryDataset(mode, samples[mode], self.v2is, self.device, min_len, max_len, extra_text_helper)
+        samples, word_trace, extra_text_helper = self._load_options
+        len_sort_ds = MAryDataset(mode, samples[mode], self.v2is, self.device, min_len, max_len, word_trace, extra_text_helper)
         return post_batch(mode, len_sort_ds, sort_by_length, bucket_length, batch_size)
 
 from utils.types import false_type, true_type

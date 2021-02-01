@@ -34,7 +34,7 @@ class PennTreeKeeper:
             return self._factored[factor]
 
         w2i, t2i, l2i, x2i = self._v2is
-        dx, _ = DeltaX.from_penn(self._tree, factor, do_preproc = False) # watch for keyaki arg wordtrace
+        dx, _ = DeltaX.from_penn(self._tree, factor, do_preproc = False) # [not here] watch for keyaki arg wordtrace for preproc_cnf
         if self._w_p is None:
             word, tag = dx.word_tag(w2i, t2i)
             word = np.asarray(word)
@@ -105,12 +105,15 @@ class PennWorker(Process):
         self._q_reader_fns_height_v2is_factors = args
 
     def run(self):
-        (q, reader, fns, height, v2is,
-         factors) = self._q_reader_fns_height_v2is_factors
+        (q, reader, fns, height, v2is, factors,
+         word_trace) = self._q_reader_fns_height_v2is_factors
 
         for fn in fns:
             for tree in reader.parsed_sents(fn):
-                preproc_cnf(tree)
+                try:
+                    preproc_cnf(tree, word_trace = word_trace) # watch for ktb
+                except:
+                    print(tree)
                 words = tree.leaves()
                 length = len(words)
                 keeper = PennTreeKeeper(tree, v2is, height)
@@ -173,6 +176,7 @@ class TrapezoidDataset(LengthOrderedDataset):
                   paddings,
                   device,
                   factors,
+                  word_trace,
                   min_len  = 0,
                   max_len  = None,
                   extra_text_helper = None,
@@ -190,7 +194,7 @@ class TrapezoidDataset(LengthOrderedDataset):
         works = distribute_jobs(fnames, num_threads)
         q = Queue()
         for i in range(num_threads):
-            w = PennWorker(q, reader, works[i], trapezoid_height, v2is, factors)
+            w = PennWorker(q, reader, works[i], trapezoid_height, v2is, factors, word_trace)
             w.start()
             works[i] = w
         def core_fn(words, length, tree_str, factored):

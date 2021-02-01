@@ -61,6 +61,7 @@ class VisRunner:
             worker.start()
         else:
             self._vis._before()
+        self._duration = time()
 
     def process(self, *args, **kw_args):
         if self._async:
@@ -72,6 +73,7 @@ class VisRunner:
             self._timer += time() - start
 
     def after(self):
+        self._duration = time() - self._duration
         if self._async:
             worker, iq, oq = self._async
             iq.put(None) # end while loop | _after
@@ -89,6 +91,10 @@ class VisRunner:
     @property
     def proc_time(self):
         return self._timer
+
+    @property
+    def before_after_duration(self):
+        return self._duration
 
     @property
     def is_async(self):

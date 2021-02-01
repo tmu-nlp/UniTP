@@ -11,8 +11,8 @@ def avg_fn(fname):
             if lid:
                 size, ratio, count = line.split(',')
                 size = int(size)
-                if size < 40: # size < start:# or size > end:
-                    continue
+                # if size < 40: # size < start:# or size > end:
+                #     continue
                 count = int(count)
                 ratio = float(ratio)
                 situations.append((count, ratio))
@@ -57,11 +57,14 @@ for x in listdir('R_ggplot'):
         if len(y) == 3:
             _, corp_name, factor = y
             factor = factor[:-4]
+            if corp_name in ('dptb', 'tiger') and factor == 'multi':
+                continue
             files[(corp_name, factor)] = avg_fn(f'R_ggplot/{x}')
 
 for corp_name in ('ptb', 'ctb', 'ktb'):
     lnr = ratio_fn(corp_name, False)
-    for factor in E_ORIF4:
+    print(f'\textbf{{{corp_name.upper()}}}', end = ' & ')
+    for factor in E_ORIF4 + ('multi',):
         avg, std, cnt = files[(corp_name, factor)]
         cnt = f'{cnt / 10 ** 6:.2f}M'
         print(f'${avg:.2f}\\ _{{\pm{std:.2f}}}$', end = ' & ')

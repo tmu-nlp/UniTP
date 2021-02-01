@@ -532,11 +532,11 @@ class BaseRnnTree(DiscoStem):
     def get_decision_with_value(self, logits):
         return get_decision_with_value(self._score_fn, logits)
 
-    def get_losses(self, batch, tag_logits, top3_label_logits, label_logits, right_direc_logits, joint_logits, shuffled_right_direc, shuffled_joint, undirect_orient):
+    def get_losses(self, batch, weight_mask, tag_logits, top3_label_logits, label_logits, right_direc_logits, joint_logits, shuffled_right_direc, shuffled_joint, undirect_orient):
         height_mask = batch['segments'][None] * (batch['seq_len'] > 0)
         height_mask = height_mask.sum(dim = 1)
         tag_loss   = get_loss(self._tag_layer,   self._logit_max, tag_logits,   batch, 'tag')
-        label_loss = get_loss(self._label_layer, self._logit_max, label_logits, batch, False, height_mask, 'label')
+        label_loss = get_loss(self._label_layer, self._logit_max, label_logits, batch, False, height_mask, weight_mask, 'label')
         if top3_label_logits is not None:
             tag_loss += get_loss(self._label_layer, self._logit_max, top3_label_logits, batch, 'top3_label')
         basic = tag_loss, label_loss

@@ -1,6 +1,7 @@
 library(ggplot2)
+library(scales)
 
-data <- read.csv('conti_ptb.csv')
+data <- read.csv('parse_ptb.csv')
 length <- length(data$len)
 left <- data[c('len', 'left')]
 left$type <- rep('left', length)
@@ -13,22 +14,72 @@ midout$type <- rep('midout', length)
 
 names(left) <- c('len', 'size', 'type')
 names(right) <- c('len', 'size', 'type')
-# names(midin) <- c('len', 'size', 'type')
-# names(midout) <- c('len', 'size', 'type')
+names(midin) <- c('len', 'size', 'type')
+names(midout) <- c('len', 'size', 'type')
 
-data <- rbind(left, right)#, midin, midout)
-data$type <- factor(data$type, levels = c('left', 'right', 'midin', 'midout'), labels = c('CNF Left', 'CNF Right', 'Non-CNF Midin', 'Non-CNF Midout'))
+data <- rbind(left, right, midin, midout)
+data$corp <- rep('PTB', 4 * length)
+ptb <- data
+
+data <- read.csv('parse_ctb.csv')
+length <- length(data$len)
+left <- data[c('len', 'left')]
+left$type <- rep('left', length)
+right <- data[c('len', 'right')]
+right$type <- rep('right', length)
+midin <- data[c('len', 'midin')]
+midin$type <- rep('midin', length)
+midout <- data[c('len', 'midout')]
+midout$type <- rep('midout', length)
+
+names(left) <- c('len', 'size', 'type')
+names(right) <- c('len', 'size', 'type')
+names(midin) <- c('len', 'size', 'type')
+names(midout) <- c('len', 'size', 'type')
+
+data <- rbind(left, right, midin, midout)
+data$corp <- rep('CTB', 4 * length)
+ctb <- data
+
+data <- read.csv('parse_ktb.csv')
+length <- length(data$len)
+left <- data[c('len', 'left')]
+left$type <- rep('left', length)
+right <- data[c('len', 'right')]
+right$type <- rep('right', length)
+midin <- data[c('len', 'midin')]
+midin$type <- rep('midin', length)
+midout <- data[c('len', 'midout')]
+midout$type <- rep('midout', length)
+
+names(left) <- c('len', 'size', 'type')
+names(right) <- c('len', 'size', 'type')
+names(midin) <- c('len', 'size', 'type')
+names(midout) <- c('len', 'size', 'type')
+
+data <- rbind(left, right, midin, midout)
+data$corp <- rep('KTB', 4 * length)
+ktb <- data
+
+multi <- read.csv('parse_multi.csv')
+
+data <- rbind(ptb, ctb, ktb, multi)
+data$corp <- factor(data$corp, levels = c('PTB', 'CTB', 'KTB'))
+data$type <- factor(data$type, levels = c('left', 'right', 'midin', 'midout', 'none'), labels = c('CNF Left', 'CNF Right', 'nCNF Midin', 'nCNF Midout', 'Multi.'))
 
 p <- ggplot(data, aes(len, size, fill = type))#, alpha = I(0.2)))
-p <- p + coord_cartesian(xlim = c(0, 100), ylim = c(0, 650))
-p <- p + facet_wrap(~type, ncol = 2)
+p <- p + scale_x_log10()
+p <- p + scale_y_log10(
+        breaks = c(1, 10, 100, 1000),
+        labels = trans_format("log10", math_format(10^.x)))
+p <- p + facet_grid(corp~type)
 p <- p + labs(x = 'Sentence Length', y = 'Number of Nodes  ')
 # p <- p + labs(x = 'Training Batch Length', y = 'Speed (sents/sec)')
 # p <- p + labs(color = "", shape = "")
 p <- p + theme(legend.position = "none",
                axis.title = element_text(size = 14),
                text = element_text(size = 15))
-p <- p + geom_bin2d(bins = c(100, 650))
+p <- p + geom_bin2d(bins = c(150, 650))
 p <- p + stat_smooth(method = 'lm', formula = y ~ splines::bs(x, 4), geom = 'line', alpha = 0.5, color = 'black', show.legend=FALSE)
 p
 
@@ -49,4 +100,4 @@ p
 # p <- p + theme(legend.position = "none", text = element_text(size = 15), axis.title = element_blank())
 # p
 
-ggsave('complexity_cnf.pdf', height = 1.8, width = 5.2)
+ggsave('complexity_log.pdf', height = 3, width = 6.5)

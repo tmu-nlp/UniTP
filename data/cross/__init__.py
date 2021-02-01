@@ -1164,7 +1164,7 @@ class SpanTale:
         blocks += f':{last_end - 1}'
         return blocks
 
-
+from utils.str_ops import len_ea
 def draw_str_lines(bottom, top_down, reverse = True, root_stamp = ''):
     if reverse:
         LC, MC, RC, MP = '┌┬┐┴'
@@ -1183,7 +1183,7 @@ def draw_str_lines(bottom, top_down, reverse = True, root_stamp = ''):
     start_bars = set()
     next_top_down = defaultdict(list)
     for bid, word, tag in bottom:
-        unit_len = max(len(word), len(tag)) + 2
+        unit_len = max(len_ea(word), len(tag)) + 2
         word_line += word.center(unit_len)
         tag_line  +=  tag.center(unit_len)
         mid_pos = len(word_line) - round(unit_len // 2)

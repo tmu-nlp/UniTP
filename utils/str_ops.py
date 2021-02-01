@@ -97,3 +97,9 @@ def strange_to(string, unit_op = lambda x:x, include_end_to_range = True):
             g = int(g)
             final.append(unit_op(g))
     return final
+
+import unicodedata
+def len_ea(string, ea_unit = 2):
+    nfc_string = unicodedata.normalize('NFC', string)
+    ea_len = sum((ea_unit if unicodedata.east_asian_width(c) in 'WF' else 1) for c in nfc_string)
+    return int(ea_len + 0.5)

@@ -1,5 +1,5 @@
 from data.penn import PennReader
-from data.penn_types import C_ABSTRACT, nccp_data_config, select_and_split_corpus
+from data.penn_types import C_ABSTRACT, C_KTB, nccp_data_config, select_and_split_corpus
 from utils.types import M_TRAIN, M_DEVEL, M_TEST
 from utils.param_ops import HParams, get_sole_key
 from utils.shell_io import byte_style
@@ -17,7 +17,6 @@ def get_configs(recorder = None):
     train_cnf     = penn.binarization._nested
     non_train_cnf = {max(train_cnf, key = lambda x: train_cnf[x]): 1}
 
-    trapezoid_specs = None
     if penn.trapezoid_height:
         specs = select_and_split_corpus(get_sole_key(data_config), 
                                         penn.source_path,
@@ -25,9 +24,10 @@ def get_configs(recorder = None):
                                         penn.data_splits.devel_set,
                                         penn.data_splits.test_set)
         data_splits = {k:v for k,v in zip((M_TRAIN, M_DEVEL, M_TEST), specs[-1])}
-        trapezoid_specs = specs[:-1] + (data_splits, penn.trapezoid_height)
+        trapezoid_specs = specs[:-1] + (data_splits, penn.trapezoid_height, get_sole_key(data_config) == C_KTB)
         prompt = f'Use trapezoidal data ({penn.trapezoid_height})', '2'
     else:
+        trapezoid_specs = None
         prompt = f'Use triangular data', '3'
     print(byte_style(*prompt))
 
@@ -45,13 +45,14 @@ def get_configs(recorder = None):
             datasets[C_ABSTRACT] = reader.batch(M_TRAIN, penn.batch_size, penn.bucket_len, train_cnf,
                                                 max_len = penn.max_len, sort_by_length = penn.sort_by_length)
         else:
-            datasets[C_ABSTRACT] = reader.batch(mode, penn.batch_size, 0, non_train_cnf)
+            datasets[C_ABSTRACT] = reader.batch(mode, penn.batch_size << 1, 0, non_train_cnf)
         return datasets
 
     task_params = {pname: reader.get_to_model(pname) for pname in ('initial_weights', 'num_tokens', 'num_tags', 'num_labels', 'paddings')}
 
     model = ContinuousRnnTree(**model_config, **task_params)
     model.to(reader.device)
+    train_config.create(label_log_freq_inv = reader.frequency('label', log_inv = True))
     return PennOperator(model, get_datasets, recorder, reader.i2vs, recorder.evalb, train_config)
         
 # def get_datasets_for_tagging(ptb = None, ctb = None, ktb = None):

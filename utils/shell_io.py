@@ -67,6 +67,14 @@ def rpt_summary(rpt_lines, get_individual, get_summary):
         return individuals, summary
     return summary
 
+def concatenate(src_files, dst_file):
+    command = ['cat']
+    command.extend(src_files)
+    rs = run(command, stdout = PIPE, stderr = PIPE)
+    with open(dst_file, 'wb') as fw:
+        fw.write(rs.stdout)
+    assert not rs.stderr
+
 def has_discodop():
     try:
         command = ['discodop', 'eval']

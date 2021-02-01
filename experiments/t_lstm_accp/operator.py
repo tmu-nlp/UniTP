@@ -4,10 +4,9 @@ from utils.operator import Operator
 from utils.param_ops import get_sole_key
 from time import time
 from utils.math_ops import is_bin_times
-from utils.types import M_TRAIN, BaseType, frac_open_0, true_type, tune_epoch_type, frac_06, frac_close
+from utils.types import M_TRAIN, BaseType, frac_open_0, true_type, false_type, tune_epoch_type, frac_06, frac_close
 from models.utils import PCA, fraction, hinge_score, mean_stdev
 from models.loss import binary_cross_entropy, hinge_loss
-from experiments.helper import warm_adam
 from experiments.t_lstm_nccp.operator import PennOperator
 from utils.shell_io import byte_style
 
@@ -17,7 +16,9 @@ train_type = dict(loss_weight = dict(tag   = BaseType(0.2, validator = frac_open
                   keep_low_attention_rate = BaseType(1.0, validator = frac_close),
                   learning_rate = BaseType(0.001, validator = frac_open_0),
                   tune_pre_trained_from_nth_epoch = tune_epoch_type,
+                  label_freq_as_loss_weight = false_type,
                   lr_factor_for_tuning = frac_06,
+                  multiprocessing_decode = false_type,
                   fence_hinge_loss = true_type)
 
 
@@ -54,7 +55,6 @@ def extend_fence_idx(unpacked_fence_idx):
 class MAryPennOperator(PennOperator):
     def __init__(self, model, get_datasets, recorder, i2vs, evalb, train_config):
         super().__init__(model, get_datasets, recorder, i2vs, evalb, train_config)
-        self._initial_run = True, True
 
     def _step(self, mode, ds_name, batch, batch_id = None):
 
@@ -85,8 +85,13 @@ class MAryPennOperator(PennOperator):
             tag_weight   = (  tag_mis | bottom_existence)
             label_weight = (label_mis | existences)
             extended_gold_fences = extend_fence_idx(gold_fences)
+
+            if self._train_config.label_freq_as_loss_weight:
+                label_mask = self._train_config.label_log_freq_inv[batch['label']]
+            else:
+                label_mask = None
             
-            tag_loss, label_loss = self._model.get_losses(batch, tag_logits, label_logits)
+            tag_loss, label_loss = self._model.get_losses(batch, label_mask, tag_logits, label_logits)
             if self._train_config.fence_hinge_loss:
                 fence_loss = hinge_loss(fence_logits, extended_gold_fences, None)
             else:
@@ -111,20 +116,29 @@ class MAryPennOperator(PennOperator):
                 batch_kwargs['Height'] = batch['segment'].shape[0]
             self.recorder.tensorboard(self.global_step, 'Batch/%s', **batch_kwargs)
         else:
-            vis, _, _ = self._vis_mode
-
-            b_size = (batch_len,)
-            b_head = tuple((batch[x].type(torch.uint8) if x in ('tag', 'label', 'fence') else batch[x]).cpu().numpy() for x in 'token tag label fence'.split())
-            b_head = b_head + (batch['segment'].cpu().numpy(), batch['seg_length'].cpu().numpy())
-            # batch_len, length, token, tag, label, fence, segment, seg_length
+            vis, _, _, serial = self._vis_mode
 
             tags   = self._model.get_decision(tag_logits  ).type(torch.uint8).cpu().numpy()
             labels = self._model.get_decision(label_logits).type(torch.uint8).cpu().numpy()
-            weight = mean_stdev(weights).cpu().numpy()
-            b_data = (tags, labels, fence_idx.type(torch.uint8).cpu().numpy(), weight, segment, seg_length.type(torch.uint8).cpu().numpy())
+            fences = fence_idx.type(torch.int16).cpu().numpy()
+            seg_length = seg_length.type(torch.int16).cpu().numpy()
+            if serial:
+                b_size = (batch_len,)
+                b_head = tuple((batch[x].type(torch.uint8) if x in ('tag', 'label', 'fence') else batch[x]).cpu().numpy() for x in 'token tag label fence'.split())
+                b_head = b_head + (batch['segment'].cpu().numpy(), batch['seg_length'].cpu().numpy())
+                # batch_len, length, token, tag, label, fence, segment, seg_length
+
+                weight = mean_stdev(weights).cpu().numpy()
+                b_data = (tags, labels, fences, weight, segment, seg_length)
+            else:
+                b_size = (batch_size,)
+                b_head = (batch['token'].cpu().numpy(),)
+                # batch_size, segment, token, tag, label, fence, seg_length
+                b_data = (tags, labels, fences, segment, seg_length)
+
             # tag, label, fence, segment, seg_length
             tensors = b_size + b_head + b_data
-            vis.process(batch_id, tensors)
+            vis.process(tensors)
         return batch_size, batch_len
 
     def _before_validation(self, ds_name, epoch, use_test_set = False, final_test = False):
@@ -154,26 +168,37 @@ class MAryPennOperator(PennOperator):
             flush_heads = devel_init
             self._initial_run = False, test_init
 
+        work_dir = self.recorder.create_join(folder)
         # if self._model._input_layer.has_static_pca:
         #     self._model._input_layer.flush_pc_if_emb_is_tuned()
-
-        vis = MAryVis(epoch,
-                      self.recorder.create_join(folder),
-                      self._evalb,
-                      self.i2vs,
-                      self.recorder.log,
-                      draw_weights,
-                      length_bins,
-                      flush_heads)
-        vis = VisRunner(vis, async_ = True) # wrapper
+        serial = draw_weights or flush_heads or not self._mp_decode
+        if serial:
+            async_ = True
+            vis = MAryVis(epoch,
+                          work_dir,
+                          self._evalb,
+                          self.i2vs,
+                          self.recorder.log,
+                          draw_weights,
+                          length_bins,
+                          flush_heads)
+        else:
+            async_ = False
+            vis = ParallelVis(epoch, work_dir, self._evalb, self.i2vs, self.recorder.log, self._dm)
+        vis = VisRunner(vis, async_ = async_) # wrapper
         vis.before()
-        self._vis_mode = vis, use_test_set, final_test
+        self._vis_mode = vis, use_test_set, final_test, serial
 
     def _after_validation(self, ds_name, count, seconds):
-        vis, use_test_set, final_test = self._vis_mode
-        scores, desc, logg = vis.after()
-        length_bins = vis.length_bins
+        vis, use_test_set, final_test, serial = self._vis_mode
+        scores, desc, logg, length_bins_dm = vis.after()
         devel_bins, test_bins = self._mode_length_bins
+        if serial:
+            length_bins = length_bins_dm
+        else:
+            self._dm = length_bins_dm
+            length_bins = None
+
         if length_bins is not None:
             if use_test_set:
                 self._mode_length_bins = devel_bins, length_bins # change test
@@ -182,21 +207,35 @@ class MAryPennOperator(PennOperator):
 
             for wbin in length_bins:
                 fhead = vis._join_fn(f'head.bin_{wbin}.tree')
-                fdata = vis._join_fn(f'data.{self.epoch}.bin_{wbin}.tree')
+                fdata = vis._join_fn(f'data.{vis.epoch}.bin_{wbin}.tree')
                 if final_test:
                     remove(fhead)
-                remove(fdata)
+                if isfile(fdata):
+                    remove(fdata)
 
-        speed = float(f'{count / seconds:.1f}')
+        speed_outer = float(f'{count / seconds:.1f}')
+        speed_inner = float(f'{count / vis.proc_time:.1f}') # unfolded with multiprocessing
         if vis.is_async:
             rate = vis.proc_time / seconds
         else:
             rate = vis.proc_time / (seconds - vis.proc_time)
-        logg += f' @{speed}sps. (sym:nn {rate:.2f})'
-        scores['speed'] = speed
-        if not final_test:
+
+        if self._dm:
+            dmt = self._dm.duration
+            speed_dm = f' ◇ {count / dmt:.1f}'
+            dmt = f' ◇ {dmt:.3f}'
+            desc += speed_dm + 'sps.'
+        else:
+            dmt = speed_dm = ''
+
+        logg += f' @{speed_outer} ◇ {speed_inner}{speed_dm} sps. (sym:nn {rate:.2f}; {seconds:.3f}{dmt} sec.)'
+        scores['speed'] = speed_outer
+        if final_test:
+            if self._dm:
+                self._dm.close()
+        else:
             self.recorder.tensorboard(self.global_step, 'TestSet/%s' if use_test_set else 'DevelSet/%s',
-                                      F1 = scores.get('F1', 0), SamplePerSec = speed)
+                                      F1 = scores.get('F1', 0), SamplePerSec = speed_outer)
         self._vis_mode = None
         return scores, desc, logg
 
@@ -262,7 +301,7 @@ class MAryVis(BaseVis):
         if self._draw_file and isfile(self._draw_file):
             remove(self._draw_file)
 
-    def _process(self, batch_id, batch):
+    def _process(self, batch):
         (batch_len, h_token, h_tag, h_label, h_fence, h_segment, h_seg_length,
          d_tag, d_label, d_fence, d_weight, d_segment, d_seg_length) = batch
 
@@ -334,4 +373,67 @@ class MAryVis(BaseVis):
         key_score = f'{scores["F1"]:.2f}'
         desc_for_screen = desc + byte_style(key_score, underlined = True) + ')'
         desc_for_logger = f'N: {scores["N"]} {desc}{key_score})'
-        return scores, desc_for_screen, desc_for_logger
+        return scores, desc_for_screen, desc_for_logger, self.length_bins
+
+from data.m_ary import MaryDM
+from utils.types import num_threads
+class ParallelVis(BaseVis):
+    def __init__(self, epoch, work_dir, evalb, i2vs, logger, dm):
+        super().__init__(epoch)
+        self._join = lambda fname: join(work_dir, fname)
+        self._fdata = self._join(f'data.{self.epoch}.tree')
+        self._args = evalb, i2vs, logger
+        self._dm = dm
+
+    def _before(self):
+        if self._dm:
+            self._dm.timeit()
+
+    def _process(self, batch):
+        batch_size, h_token, d_tag, d_label, d_fence, d_segment, d_seg_length = batch
+        evalb, i2vs, logger = self._args
+        
+        if self._dm is None:
+            self._dm = MaryDM(batch_size, i2vs, num_threads)
+        self._dm.batch(d_segment, h_token, d_tag, d_label, d_fence, d_seg_length)
+    
+    def _after(self):
+        evalb, i2vs, logger = self._args
+        dm = self._dm
+        fhead = self._join(f'head.tree')
+        fdata = self._fdata
+
+        tree_text = dm.batched()
+        if tree_text: # none mean text concat without a memory travel
+            with open(fdata, 'w') as fw:
+                fw.write(tree_text)
+
+        proc = parseval(evalb, fhead, fdata)
+        report = proc.stdout.decode()
+        scores = rpt_summary(report, False, True)
+        errors = proc.stderr.decode().split('\n')
+        assert errors.pop() == ''
+        num_errors = len(errors)
+        if num_errors:
+            logger(f'  {num_errors} errors from evalb')
+            if num_errors < 10:
+                for e, error in enumerate(errors):
+                    logger(f'    {e}. ' + error)
+                fname = f'data.{self.epoch}.rpt'
+                with open(self._join(fname), 'w') as fw:
+                    fw.write(report)
+                logger(f'  Go check {fname} for details.')
+
+        desc = f'Evalb({scores["LP"]:.2f}/{scores["LR"]:.2f}/'
+        key_score = f'{scores["F1"]:.2f}'
+        desc_for_screen = desc + byte_style(key_score, underlined = True) + ')'
+        desc_for_logger = f'N: {scores["N"]} {desc}{key_score})'
+        return scores, desc_for_screen, desc_for_logger, dm
+
+    @property
+    def save_tensors(self):
+        return False
+
+    @property
+    def length_bins(self):
+        return None

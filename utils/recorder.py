@@ -355,6 +355,7 @@ class Recorder:
                 else:
                     status['other'].append(instance_path)
 
+        rename_list = []
         instance_folders.sort(key = lambda x: int(x[0]))
         for _cnt, (instance, exp_name, folder, fpath) in enumerate(instance_folders):
             _instance = str(_cnt)
@@ -365,7 +366,7 @@ class Recorder:
                 new_folder = f'{_instance}.{exp_name}' if exp_name else _instance
                 new_fpath = join(task_path, new_folder)
                 change_key(instance_status, instance, _instance)
-                rename(fpath, new_fpath)
+                rename_list.append(fpath, new_fpath)
                 fpath = new_fpath + '\t<- ' + folder
                 instance = _instance
                 modifed = True
@@ -378,6 +379,8 @@ class Recorder:
         unlock()
         if modifed:
             save_yaml(instance_status, rt_file, rt_lock)
+            for fpath, new_fpath in rename_list:
+                rename(fpath, new_fpath)
         return status
 
     @property

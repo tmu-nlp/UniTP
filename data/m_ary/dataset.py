@@ -16,9 +16,9 @@ class MAryWorker(Process):
         self._args = args
 
     def run(self):
-        q, trees, field_v2is = self._args
+        q, trees, field_v2is, jp_wt = self._args
         for tree in trees:
-            mtree = MAryX(tree)
+            mtree = MAryX(tree, word_trace = jp_wt)
             signals = wd, tg, lb, fc = mtree.signals(*field_v2is)
             if None in wd:
                 overall_safe = not fc
@@ -42,6 +42,7 @@ class MAryDataset(LengthOrderedDataset):
                  device,
                  min_len = 0,
                  max_len = None,
+                 word_trace = False,
                  extra_text_helper = None,
                  num_threads = 0):
 
@@ -51,7 +52,7 @@ class MAryDataset(LengthOrderedDataset):
         works = distribute_jobs(samples, num_threads)
         q = Queue()
         for i in range(num_threads):
-            w = MAryWorker(q, works[i], tuple(field_v2is[x][1] for x in ('token', 'tag', 'label')))
+            w = MAryWorker(q, works[i], tuple(field_v2is[x][1] for x in ('token', 'tag', 'label')), word_trace)
             w.start()
             works[i] = w
 
@@ -72,7 +73,7 @@ class MAryDataset(LengthOrderedDataset):
                             if overall_safe:
                                 lack_fences += 1
                             else:
-                                oov_errors.append((oov, words))
+                                oov_errors.append(words)
                         else:
                             text.append(words)
                             lengths.append(len(words))
@@ -95,13 +96,9 @@ class MAryDataset(LengthOrderedDataset):
         if oov_errors:
             oov_length = defaultdict(int)
             oov_words = Counter()
-            oov_tags = 0
-            for (word_oov, tag_oov), words in oov_errors:
-                if word_oov:
-                    oov_length[len(words)] += 1
-                    oov_words += Counter(words)
-                if tag_oov:
-                    oov_tags += 1
+            for words in oov_errors:
+                oov_words += Counter(words)
+                oov_length[len(words)] += 1
 
             error_string = ''
             if oov_words:
@@ -109,7 +106,7 @@ class MAryDataset(LengthOrderedDataset):
                 error_string += ' '.join(f'{l}/{c}' for l,c in oov_length.items())
                 error_string += ' | OOV word(s): '
                 error_string += ' '.join(w+f'/{c}' for w,c in oov_words.items())
-            if oov_tags: error_string += f'; {oov_tags} OOV tag(s)'
+            # if oov_tags: error_string += f'; {oov_tags} OOV tag(s)'
             print(error_string, file = stderr)
 
         heads = 'token', 'tag', 'label', 'fence'

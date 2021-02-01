@@ -18,6 +18,15 @@ def load_i2vs(vocab_dir, suffixes):
         i2vs[suf] = py_v
     return i2vs
 
+def load_freq(fname):
+    freq = {}
+    with open(fname) as fr:
+        for line in fr:
+            if '\t' in line:
+                tok, cnt = line.split('\t')
+                freq[tok] = int(cnt)
+    return freq
+
 def encapsulate_vocabs(i2vs, oovs):
     def inner(i2v, f): # python bug: namespace
         size = len(i2v)

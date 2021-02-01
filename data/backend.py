@@ -1,6 +1,6 @@
 from os.path import join
 from utils.pickle_io import pickle_load
-from data.io import TreeSpecs, get_fasttext, encapsulate_vocabs
+from data.io import TreeSpecs, get_fasttext, encapsulate_vocabs, load_freq
 from data.delta import xtype_to_logits, logits_to_xtype
 from collections import defaultdict, namedtuple
 from utils.param_ops import HParams
@@ -88,6 +88,17 @@ class _BaseReader:
                 s += f' {v[0]}(0)\n'
         return s
 
+    def frequency(self, key, oov_id = -1, log_inv = False):
+        tok_list = self._i2vs._nested[key]
+        sum_cnt = [0 for _ in tok_list]
+        for tok, cnt in load_freq(join(self._vocab_dir, 'vocab.' + key)).items():
+            tid = tok_list.index(tok) if tok in tok_list else oov_id
+            sum_cnt[tid] += cnt
+        if log_inv:
+            sum_cnt = torch.tensor(sum_cnt, dtype = torch.get_default_dtype(), device = self._device)
+            sum_cnt = 1 / sum_cnt.log()
+        return sum_cnt
+
 from utils.param_ops import change_key
 class WordBaseReader(_BaseReader):
     def __init__(self,
@@ -144,6 +155,10 @@ class WordBaseReader(_BaseReader):
     @property
     def info(self):
         return self._info
+
+    @property
+    def unk_id(self):
+        return self._oovs.get('token')
 
     def extend_vocab(self, extra_vocab, extra_weights):
         i2vs = self._i2vs._nested
@@ -389,3 +404,25 @@ def post_batch(mode, len_sort_ds, sort_by_length, bucket_length, batch_size):
     di = DataLoader(len_sort_ds, batch_size = batch_size, collate_fn = len_sort_ds.collate_fn, shuffle = mode == M_TRAIN)#, num_workers = 1) # no way to get more!
     # RuntimeError: Cannot re-initialize CUDA in forked subprocess. To use CUDA with multiprocessing, you must use the 'spawn' start method 
     return BatchSpec(len(len_sort_ds), di)
+
+
+def before_to_seq(vocabs):
+    if 'tag' in vocabs: # label_mode
+        i2t = vocabs['tag']
+        label_vocab = vocabs['label'].__getitem__
+    else:
+        i2t = None
+        if 'label' in vocabs:
+            i2l = vocabs['label']
+            label_vocab = lambda x: i2l[x]
+        elif 'polar' in vocabs:
+            i2p = vocabs['polar']
+            def label_vocab(x):
+                if isinstance(x, np.ndarray):
+                    if x[0] < 0:
+                        return NIL
+                    return ''.join(i2p[xi] for xi in x)
+                return NIL if x < 0 else i2p[x]
+        else:
+            label_vocab = lambda x: f'{x * 100:.2f}%' if x > 0 else NIL
+    return vocabs['token'], i2t, label_vocab

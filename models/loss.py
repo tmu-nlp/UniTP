@@ -2,16 +2,18 @@ import torch
 from torch.nn import functional as F
 from models.utils import bos_mask, eos_mask
 
-def cross_entropy(x_, y_, *big_endian_w):
+def cross_entropy(x_, y_, *big_endian_length_weight):
     b_, t_, c_ = x_.shape
     losses = F.cross_entropy(x_.view(-1, c_), y_.view(-1), reduction = 'none')
-    if big_endian_w:
-        big_endian, w_ = big_endian_w
+    if big_endian_length_weight:
+        big_endian, length, weight = big_endian_length_weight
         if big_endian:
-            w_ = eos_mask(t_, w_)
+            m_ = eos_mask(t_, length)
         else:
-            w_ = bos_mask(t_, w_)
-        losses = losses * w_.view(-1)
+            m_ = bos_mask(t_, length)
+        if weight is not None:
+            m_ = m_ * weight
+        losses = losses * m_.view(-1)
     return losses.sum() # TODO turn off non-train gradient tracking
 
 def binary_cross_entropy(x, y, w):
@@ -55,8 +57,8 @@ def get_loss(net, argmax, logits, batch, *big_endian_height_mask_key):
         if len(big_endian_height_mask_key) == 1:
             key, = big_endian_height_mask_key
             return cross_entropy(logits, batch[key]) # endian does not matter
-        big_endian, height_mask, key = big_endian_height_mask_key
-        return cross_entropy(logits, batch[key], big_endian, height_mask)
+        big_endian, height_mask, weight, key = big_endian_height_mask_key
+        return cross_entropy(logits, batch[key], big_endian, height_mask, weight)
 
     if len(big_endian_height_mask_key) == 1:
         key, = big_endian_height_mask_key

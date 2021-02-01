@@ -1,5 +1,5 @@
 from data.penn import PennReader
-from data.penn_types import C_PTB, nccp_data_config, select_and_split_corpus
+from data.penn_types import C_PTB, C_KTB, nccp_data_config, select_and_split_corpus
 from utils.types import M_TRAIN, M_DEVEL, M_TEST
 from utils.param_ops import HParams, get_sole_key
 
@@ -19,13 +19,14 @@ def get_configs(recorder = None):
     
     trapezoid_specs = None
     if penn.trapezoid_height:
-        specs = select_and_split_corpus(get_sole_key(data_config), 
+        corp_name = get_sole_key(data_config)
+        specs = select_and_split_corpus(corp_name, 
                                         penn.source_path,
                                         penn.data_splits.train_set,
                                         penn.data_splits.devel_set,
                                         penn.data_splits.test_set)
         data_splits = {k:v for k,v in zip((M_TRAIN, M_DEVEL, M_TEST), specs[-1])}
-        trapezoid_specs = specs[:-1] + (data_splits, penn.trapezoid_height)
+        trapezoid_specs = specs[:-1] + (data_splits, penn.trapezoid_height, corp_name == C_KTB)
 
     reader = PennReader(penn.data_path,
                         penn.vocab_size,

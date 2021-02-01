@@ -1,11 +1,36 @@
 import numpy as np
+from data.backend import before_to_seq
 from data.delta import NIL, t_index, s_index
-from data.delta import get_tree_from_triangle, explain_warnings, explain_one_error
+from data.delta import get_tree_from_triangle, after_to_tree
 from nltk.tree import Tree
+from data.mp import DM
+
+class TriangularDM(DM):
+    @staticmethod
+    def tree_gen_fn(i2w, i2t, i2l, offsets, lengths, token, tag, label, right):
+        for offset, length, tokens, tags, labels, rights in zip(offsets, lengths, token, tag, label, right):
+            size = len(tokens)
+            token_layer = tuple(i2w[w] for w in tokens[offset:offset+length])
+            tag_layer   = tuple(i2t[t] for t in tags  [offset:offset+length])
+            label_layers = triangle_to_layers(labels, size, offset, length, i2l)
+            right_layers = triangle_to_layers(rights, size, offset, length, None)
+            tree = after_to_tree(token_layer, tag_layer, label_layers, right_layers)
+            yield ' '.join(str(tree).split())
+
+    @staticmethod
+    def arg_segment_fn(seg_id, seg_size, batch_size, args):
+        start = seg_id * seg_size
+        if start < batch_size:
+            return tuple(x[start: (seg_id + 1) * seg_size] for x in args)
+
 def head_to_tree(offset, length, tokens, tags, labels, rights, vocabs):
     tree, warn = get_tree_from_triangle(*__before_to_tree(offset, length, tokens, tags, labels, rights, vocabs))
     assert len(warn) == 0
     return tree
+
+# def to_tree(x): # slower than single
+#     return head_to_tree(*x)
+
 
 def data_to_tree(offset, length, tokens, tags, labels, rights, vocabs,
                  return_warnings = False,
@@ -42,51 +67,11 @@ def triangle_to_layers(data, *size_offset_length_vocab):
     layers.reverse()
     return layers
 
-def before_to_seq(offset, length, tokens, tags, vocabs):
-    token_layer     = tuple(vocabs.token[w] for w in tokens[offset:offset+length])
-    if tags is not None: # label_mode
-        tag_layer   = tuple(vocabs.tag[t]  for t in tags [offset:offset+length])
-        label_vocab = vocabs.label.__getitem__
-    else:
-        tag_layer = None
-        if 'label' in vocabs._nested:
-            label_vocab = lambda x: vocabs.label[x]
-        elif 'polar' in vocabs._nested:
-            def label_vocab(x):
-                if isinstance(x, np.ndarray):
-                    if x[0] < 0:
-                        return NIL
-                    return ''.join(vocabs.polar[xi] for xi in x)
-                return NIL if x < 0 else vocabs.polar[x]
-        else:
-            label_vocab = lambda x: f'{x * 100:.2f}%' if x > 0 else NIL
-    return token_layer, tag_layer, label_vocab
-
-def after_to_tree(token_layer, tag_layer, label_layers, right_layers,
-                    return_warnings = False,
-                    on_warning      = None,
-                    on_error        = None,
-                    error_prefix    = '',
-                    error_root      = 'S'):
-    try:
-        tree, warnings = get_tree_from_triangle(token_layer, tag_layer, label_layers, right_layers)
-    except ValueError as e:
-        error, last_layer, warnings = e.args
-        if callable(on_error):
-            on_error(error_prefix, explain_one_error(error))
-        tree = Tree(error_root, [x for x in last_layer if x]) # Trust the model: TODO report failure rate
-        warnings.append(error)
-    if warnings and callable(on_warning) and tag_layer is not None:
-        on_warning(explain_warnings(warnings, label_layers, tag_layer))
-    if return_warnings: # [:, 2] > 8 is error
-        warnings = np.asarray(warnings, dtype = np.int8)
-        warnings.shape = (-1, 3)
-        return tree, warnings
-    return tree
-
 def __before_to_tree(offset, length, tokens, tags, labels, rights, vocabs):
     size = len(tokens)
-    token_layer, tag_layer, label_vocab = before_to_seq(offset, length, tokens, tags, vocabs)
+    i2w, i2t, label_vocab = before_to_seq(vocabs._nested)
+    token_layer = tuple(i2w[w] for w in tokens[offset:offset+length])
+    tag_layer   = tuple(i2t[t]  for t in tags [offset:offset+length]) if i2t else None
     label_layers = triangle_to_layers(labels, size, offset, length, label_vocab)
     right_layers = triangle_to_layers(rights, size, offset, length,        None)
     return token_layer, tag_layer, label_layers, right_layers

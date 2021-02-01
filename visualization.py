@@ -23,15 +23,14 @@ class TensorVis:
 
     def __init__(self, fpath, vocabs, IOHead_fields, IOData_fields, thresholds = None, clean_fn = None, fname = 'vocabs.pkl'):
         files = listdir(fpath)
-        fname = join(fpath, fname)
         if fname in files:
-            assert isfile(fname)
+            assert isfile(join(fpath, fname))
             if callable(clean_fn): # TODO
                 clean_fn(files)
             anew = False
         else:
             assert isinstance(vocabs, HParams)
-            pickle_dump(fname, IOVocab(vocabs._nested, IOHead_fields, IOData_fields, thresholds))
+            pickle_dump(join(fpath, fname), IOVocab(vocabs._nested, IOHead_fields, IOData_fields, thresholds))
             anew = True
         self._anew = anew
         self._fpath = fpath
@@ -1918,7 +1917,7 @@ if desktop:
                     wbox = (left_x, 0       )
                     pbox = (left_x, w_p_s[1])
 
-                word_color = to_color(1.0 if apply_dash else stat.token[i])
+                word_color = to_color(1.0 if apply_dash else (stat.token[i] if self._conf.force_bottom_color else stat.tag[i]))
                 token = vocabs.token[w]
 
                 if data.tag is None:

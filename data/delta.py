@@ -411,6 +411,28 @@ def get_tree_from_triangle(word_layer, tag_layer, label_layers, right_layers, po
         # root.set_label('S' if root_label == '_SUB' else i[root_label:])
     return root, warnings
 
+def after_to_tree(token_layer, tag_layer, label_layers, right_layers,
+                    return_warnings = False,
+                    on_warning      = None,
+                    on_error        = None,
+                    error_prefix    = '',
+                    error_root      = 'S'):
+    try:
+        tree, warnings = get_tree_from_triangle(token_layer, tag_layer, label_layers, right_layers)
+    except ValueError as e:
+        error, last_layer, warnings = e.args
+        if callable(on_error):
+            on_error(error_prefix, explain_one_error(error))
+        tree = Tree(error_root, [x for x in last_layer if x]) # Trust the model: TODO report failure rate
+        warnings.append(error)
+    if warnings and callable(on_warning) and tag_layer is not None:
+        on_warning(explain_warnings(warnings, label_layers, tag_layer))
+    if return_warnings: # [:, 2] > 8 is error
+        warnings = np.asarray(warnings, dtype = np.int8)
+        warnings.shape = (-1, 3)
+        return tree, warnings
+    return tree
+
 def explore_unary(func, unary, *args):
     if unary.height() > 2:
         return Tree(unary.label(), list(func(t, *args) for t in unary))

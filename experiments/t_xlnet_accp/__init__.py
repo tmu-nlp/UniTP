@@ -28,6 +28,7 @@ def get_configs(recorder = None):
                         get_fnames,
                         data_splits,
                         penn.vocab_size,
+                        False,
                         XLNetDatasetHelper)
     
     def get_datasets(mode):
