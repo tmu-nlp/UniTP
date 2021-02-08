@@ -6,9 +6,8 @@ Unified Tokenization and Parsing framework in PyTorch
 ## Requirements
 - `pip install -r requirements/visual.txt` to visualize remote tensors locally through sftp. (funny!)
 - `pip install -r requirements/full.txt` to train or test our models with PyTorch.
-  - [Evalb](https://nlp.cs.nyu.edu/evalb/) is necessary.
-  - [FastText](https://fasttext.cc/), [huggingface transformers](https://github.com/huggingface/transformers) and, [Discontinuous DOP](https://github.com/andreasvc/disco-dop) are optional.
-  (recommmend for reproduce the results.)
+  - [Evalb](https://nlp.cs.nyu.edu/evalb/) and [fastText](https://fasttext.cc/) are necessary. You need to download and configure `manager.yaml` for them.
+  - [Huggingface transformers](https://github.com/huggingface/transformers) and [Discontinuous DOP](https://github.com/andreasvc/disco-dop) are optional.
 
 ## Models
 - NCCP: Neural Combinatory Constituency Parsing (continuous)
@@ -43,11 +42,11 @@ If you want a new work folder, try `mkdir Oh-My-Folder; ./manager.py Oh-My-Folde
 - Use `./manager.py Oh-My-Folder` to check the status and available experiments.
 - Use `./manager.py Oh-My-Folder -s lstm_nccp/ptb:Oh-My-Model` to train a continuous model on PTB.
   - Add `-x [fv=fine evaluation start:[early stop count:[fine eval count]]],[max=max epoch count],[! test along with evaluation]` to change training settings.
-  - Use `-s [lstm_nccp/[ptb/ctb/ktb]|xlnet_nccp]` to choose a continuous binary parsing experiment.
-  - Use `-s [lstm_accp/[ptb/ctb/ktb]|xlnet_accp]` to choose a continuous multi-branching parsing experiment.
-  - Use `-s [lstm_dccp|xbert_dccp]/[dptb/tiger]` to choose a discontinuous parsing experiment.
-  - Use `-s [lstm_sentiment|xlnet_sentiment]` to run a joint task with [Stanford Sentiment Treebank](https://nlp.stanford.edu/sentiment/treebank.html). Set `task/lstm_sentiment/model/hidden_dim: null` as so to turn off the joint task. You can also check the SST tensors with `Oh-My-Folder/lstm_sentiment/0.Oh-My-Model/stan_devel` in a remote/local folder or similar test folders.
-  - Use `-s [lstm_tokenization]/[ptb/ctb/ktb]` run a BPE-style neural tokenization. Also please try visualization:)
+- Use `-s [lstm_nccp/[ptb/ctb/ktb]|xlnet_nccp]` to choose a continuous binary parsing experiment.
+- Use `-s [lstm_accp/[ptb/ctb/ktb]|xlnet_accp]` to choose a continuous multi-branching parsing experiment.
+- Use `-s [lstm_dccp|xbert_dccp]/[dptb/tiger]` to choose a discontinuous parsing experiment.
+- Use `-s [lstm_sentiment|xlnet_sentiment]` to run a joint task with [Stanford Sentiment Treebank](https://nlp.stanford.edu/sentiment/treebank.html). Set `task/lstm_sentiment/model/hidden_dim: null` as so to turn off the joint task. You can also check the SST tensors with `Oh-My-Folder/lstm_sentiment/0.Oh-My-Model/stan_devel` in a remote/local folder or similar test folders.
+- Use `-s [lstm_tokenization]/[ptb/ctb/ktb]` run a BPE-style neural tokenization. Also please try visualization:)
 
 ### Tips
 - Try modifying the hyper-parameters in your `Oh-My-Folder/manager.yaml`.
