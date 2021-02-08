@@ -5,7 +5,6 @@ from models.self_att import SelfAttention
 
 from utils.types import orient_dim, hidden_dim, num_ori_layer, true_type, frac_2, frac_4, frac_5, BaseWrapper, BaseType
 from utils.math_ops import inv_sigmoid
-from visualization import DiscoThresholds
 from random import random
 from sys import stderr
 

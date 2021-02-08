@@ -1,6 +1,6 @@
 from data.backend import LengthOrderedDataset, np, torch
 from utils.shell_io import byte_style
-from data.m_ary import MAryX, Tree, draw_str_lines
+from data.multib import MAryX, Tree, draw_str_lines
 from tqdm import tqdm
 from itertools import zip_longest
 from data.io import distribute_jobs
@@ -16,10 +16,15 @@ class MAryWorker(Process):
         self._args = args
 
     def run(self):
-        q, trees, field_v2is, jp_wt = self._args
+        q, trees, field_v2is, greediness, jp_wt = self._args
         for tree in trees:
             mtree = MAryX(tree, word_trace = jp_wt)
-            signals = wd, tg, lb, fc = mtree.signals(*field_v2is)
+            if greediness == 0:
+                signals = wd, tg, lb, fc = mtree.signals(*field_v2is)
+            else:
+                signals = wd, tg, lb, fc = mtree.sub_signals(*field_v2is)
+                if greediness < 1:
+                    signals = mtree.signals(*field_v2is), signals
             if None in wd:
                 overall_safe = not fc
                 has_oov_word = True
@@ -40,6 +45,7 @@ class MAryDataset(LengthOrderedDataset):
                  samples,
                  field_v2is,
                  device,
+                 greediness = 0,
                  min_len = 0,
                  max_len = None,
                  word_trace = False,
@@ -50,9 +56,10 @@ class MAryDataset(LengthOrderedDataset):
         if num_threads < 1:
             from utils.types import num_threads
         works = distribute_jobs(samples, num_threads)
+        v2is = tuple(field_v2is[x][1] for x in ('token', 'tag', 'label'))
         q = Queue()
         for i in range(num_threads):
-            w = MAryWorker(q, works[i], tuple(field_v2is[x][1] for x in ('token', 'tag', 'label')), word_trace)
+            w = MAryWorker(q, works[i], v2is, greediness, word_trace)
             w.start()
             works[i] = w
 
@@ -113,13 +120,19 @@ class MAryDataset(LengthOrderedDataset):
         self._signals_heads = signals, heads
         if extra_text_helper:
             extra_text_helper = extra_text_helper(text, device)
-        super().__init__(heads, lengths, None, min_len, max_len, extra_text_helper)
+        if 0 < greediness < 1:
+            factors = {0: 1 - greediness, 1: greediness}
+        else:
+            factors = None
+        super().__init__(heads, lengths, factors, min_len, max_len, extra_text_helper)
         self._device = device
 
     def at_idx(self, idx, factor, length):
-        assert factor is None
         signals, heads = self._signals_heads
-        sample = {h:s for h, s  in zip(heads, signals[idx])}
+        signals = signals[idx]
+        if factor is not None:
+            signals = signals[factor]
+        sample = {h:s for h, s  in zip(heads, signals)}
         sample['length'] = length
         return sample
 

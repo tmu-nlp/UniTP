@@ -168,3 +168,75 @@ def check_data(save_dir, valid_sizes):
             print(histo_count(info[ds], bin_size = 10), file = stderr)
     
     return res
+
+
+def neg_pos(head, data, _numerators, _denominators, offset):
+    gr = head.label()
+    pr = data.label()
+    neg_set = '01'
+    pos_set = '34'
+    neutral = pr[0] == '2'
+    fine = gr == pr[0]
+    if gr in neg_set:
+        ternary = pr[0] in neg_set
+        binary = pr[1] in neg_set if neutral else ternary
+    elif gr in pos_set:
+        ternary = pr[0] in pos_set
+        binary = pr[1] in pos_set if neutral else ternary
+    else:
+        ternary = True
+        binary = None
+        
+    _denominators[0 + offset] += 1
+    _denominators[1 + offset] += 1
+    if fine:
+        _numerators[0 + offset] += 1
+    if ternary:
+        _numerators[1 + offset] += 1
+    if binary is not None:
+        _denominators[2 + offset] += 1
+        if binary:
+            _numerators[2 + offset] += 1
+
+from nltk.tree import Tree
+import numpy as np
+def calc_stan_accuracy(hfname, dfname, error_prefix, on_error):
+    
+    numerators   = [0,0,0,0,0,0]
+    denominators = [0,0,0,0,0,0]
+    sents = []
+    with open(hfname) as fh,\
+         open(dfname) as fd:
+        for i, head, data in zip(count(), fh, fd):
+
+            warnings = []
+            _numerators   = [0,0,0,0,0,0]
+            _denominators = [0,0,0,0,0,0]
+            head = Tree.fromstring(head)
+            data = Tree.fromstring(data)
+            seq_len = len(head.leaves())
+            if seq_len != len(data.leaves()):
+                warnings.append(f'lengths do not match vs. {len(data.leaves())}')
+            for ith in range(seq_len):
+                if head.leaf_treeposition(ith) != data.leaf_treeposition(ith):
+                    warnings.append(f'shapes do not match at {ith}-th leaf')
+                    break
+            if warnings:
+                on_error(error_prefix + f'.{i} len={seq_len}', warnings[-1])
+
+            neg_pos(head, data, _numerators, _denominators, 0)
+            for gt, pt in zip(head.subtrees(), data.subtrees()):
+                neg_pos(gt, pt, _numerators, _denominators, 3)
+
+            scores = []
+            for i, (n, d) in enumerate(zip(_numerators, _denominators)):
+                numerators  [i] += n
+                denominators[i] += d
+                scores.append(n/d*100 if d else float('nan'))
+            sents.append(scores)
+
+    scores = []
+    for n,d in zip(numerators, denominators):
+        scores.append(n/d*100 if d else float('nan'))
+    # 0: root_fine, 1: root_PnN 2: root_PN, 3: fine, 4: PnN 5: PN
+    return sents, scores, (np.asarray(numerators), np.asarray(denominators))

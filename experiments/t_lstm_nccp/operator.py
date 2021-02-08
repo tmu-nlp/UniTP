@@ -250,7 +250,7 @@ class PennOperator(Operator):
             dmt = self._dm.duration
             speed_dm = f' ◇ {count / dmt:.1f}'
             dmt = f' ◇ {dmt:.3f}'
-            desc += speed_dm + 'sps.'
+            desc += byte_style(speed_dm + 'sps.', '2')
         else:
             dmt = speed_dm = ''
 

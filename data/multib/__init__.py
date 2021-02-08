@@ -33,6 +33,42 @@ class MaryDM(DM):
         if start < batch_size:
             return args[:1] + tuple(x[start: (seg_id + 1) * seg_size] for x in args[1:])
 
+def add_efficient_subs(stretched_tree, sub = '_', max_range = 3):
+    if stretched_tree.height() > 3:
+        parent_label = stretched_tree.label()
+        modified = False
+        children = []
+        for t in stretched_tree:
+            m, t = add_efficient_subs(t, sub, max_range)
+            modified |= m
+            children.append(t)
+        heights = set(t.height() for t in children)
+        if max_range is None:
+            upper = max(heights)
+        else:
+            upper = min(heights) + max_range
+            upper = min(upper, max(heights))
+        for ht in range(min(heights), upper):
+            new_children = []
+            for child in children:
+                if not new_children or child.height() > ht:
+                    new_children.append([child])
+                else:
+                    if new_children[-1][-1].height() > ht:
+                        new_children.append([child])
+                    else:
+                        new_children[-1].append(child)
+            children = []
+            for group in new_children:
+                if len(group) == 1:
+                    children.append(group.pop())
+                else:
+                    modified = True
+                    children.append(Tree(sub + parent_label, group))
+        if modified:
+            return True, Tree(parent_label, children)
+    return False, stretched_tree
+
 def clear_label(label, umark = '+', fmark = '@'):
     '''Most unaries are introduce by preproc_cnf/remove trace'''
     segs = []
@@ -127,7 +163,7 @@ def get_tree_from_signals(word, tag, layers_of_labels, layers_of_splits, fall_ba
         if t in ('LRB', 'RRB'):
             t = '-' + t + '-'
         leave = Tree(t, [w])
-        if label[0] != '#':
+        if label[0] not in '#_':
             leave = Tree(label, [leave])
         bottom.append(leave)
 
@@ -140,7 +176,7 @@ def get_tree_from_signals(word, tag, layers_of_labels, layers_of_splits, fall_ba
         for label, start, end in zip(label_layer, split_layer, split_layer[1:]):
 
             if end - start == 1:
-                if label[0] == '#' or bottom[start].label() == label:
+                if label[0] in '#_' or bottom[start].label() == label:
                     sub_tree = bottom[start]
                 else:
                     sub_tree = Tree(label, flatten_children(bottom[start:end]))
@@ -152,9 +188,10 @@ def get_tree_from_signals(word, tag, layers_of_labels, layers_of_splits, fall_ba
             else:
                 if layers_of_weights is not None and lid < len(layers_of_weights):
                     children = flatten_children_with_weights(bottom[start:end], start, layers_of_weights[lid])
+                    sub_tree = Tree(label, children) if label != '_SUB' else children
                 else:
                     children = flatten_children(bottom[start:end])
-                sub_tree = Tree(label, children)
+                    sub_tree = Tree(label, children) if label[0] != '_' else children
                 # leave_cnt += len(sub_tree.leaves())
             # print(str(sub_tree))
             new_bottom.append(sub_tree)
@@ -217,6 +254,10 @@ class MAryX:
 
     def signals(self, *vocabs):
         return signals(self._raw_tree, *vocabs)
+
+    def sub_signals(self, *vocabs):
+        _, tree = add_efficient_subs(self._raw_tree)
+        return signals(tree, *vocabs)
 
     # def __len__(self):
     #     return len(self._signals[0])

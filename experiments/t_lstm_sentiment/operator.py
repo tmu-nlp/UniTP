@@ -190,7 +190,8 @@ from utils.file_io import join, isfile, listdir, remove, isdir
 from utils.pickle_io import pickle_dump
 from utils.param_ops import HParams
 from utils.shell_io import parseval, rpt_summary
-from visualization import ContinuousTensorVis, calc_stan_accuracy
+from visualization import ContinuousTensorVis
+from data.stan_types import calc_stan_accuracy
 class StanVis(BaseVis):
     def __init__(self, epoch, work_dir, i2vs, logger,
                  save_tensors   = True,

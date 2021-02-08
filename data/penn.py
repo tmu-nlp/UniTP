@@ -66,10 +66,12 @@ class PennReader(WordBaseReader):
 
 
 from data.io import isfile
+from utils.shell_io import byte_style
 
 class MAryReader(WordBaseReader):
     def __init__(self,
                  vocab_dir,
+                 has_greedy_sub,
                  unify_sub,
                  tree_reader,
                  get_fnames,
@@ -88,12 +90,14 @@ class MAryReader(WordBaseReader):
         i2vs = load_i2vs(vocab_dir, 'word tag label'.split())
         oovs = {}
         labels = i2vs['label']
+        if has_greedy_sub:
+            print(byte_style('Use greedy_subs', '2'))
         if unify_sub:
             labels = [t for t in labels if t[0] not in '#_']
             oovs['label'] = len(labels)
-            labels.append('#SUB')
+            labels.append('_SUB' if has_greedy_sub else '#SUB')
             i2vs['label'] = labels
-        else: # MAry does not have binarization
+        elif not has_greedy_sub: # MAry does not have binarization
             i2vs['label'] = [t for t in labels if t[0] != '_']
             
         super(MAryReader, self).__init__(vocab_dir, vocab_size, True, i2vs, oovs)
@@ -102,12 +106,13 @@ class MAryReader(WordBaseReader):
               mode,
               batch_size,
               bucket_length,
+              greediness     = 0,
               min_len        = 1,
               max_len        = None,
               sort_by_length = True):
-        from data.m_ary.dataset import MAryDataset
+        from data.multib.dataset import MAryDataset
         samples, word_trace, extra_text_helper = self._load_options
-        len_sort_ds = MAryDataset(mode, samples[mode], self.v2is, self.device, min_len, max_len, word_trace, extra_text_helper)
+        len_sort_ds = MAryDataset(mode, samples[mode], self.v2is, self.device, greediness, min_len, max_len, word_trace, extra_text_helper)
         return post_batch(mode, len_sort_ds, sort_by_length, bucket_length, batch_size)
 
 from utils.types import false_type, true_type

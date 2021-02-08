@@ -224,7 +224,7 @@ class MAryPennOperator(PennOperator):
             dmt = self._dm.duration
             speed_dm = f' ◇ {count / dmt:.1f}'
             dmt = f' ◇ {dmt:.3f}'
-            desc += speed_dm + 'sps.'
+            desc += byte_style(speed_dm + 'sps.', '2')
         else:
             dmt = speed_dm = ''
 
@@ -244,7 +244,7 @@ from utils.vis import BaseVis, VisRunner
 from utils.file_io import join, isfile, listdir, remove, isdir
 from utils.param_ops import HParams
 from utils.shell_io import parseval, rpt_summary
-from data.m_ary import get_tree_from_signals, draw_str_lines
+from data.multib import get_tree_from_signals, draw_str_lines
 from visualization import tee_trees
 from itertools import count
 
@@ -375,7 +375,7 @@ class MAryVis(BaseVis):
         desc_for_logger = f'N: {scores["N"]} {desc}{key_score})'
         return scores, desc_for_screen, desc_for_logger, self.length_bins
 
-from data.m_ary import MaryDM
+from data.multib import MaryDM
 from utils.types import num_threads
 class ParallelVis(BaseVis):
     def __init__(self, epoch, work_dir, evalb, i2vs, logger, dm):

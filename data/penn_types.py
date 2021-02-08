@@ -12,7 +12,7 @@ build_params = {C_PTB: split_dict('2-21',             '22',      '23'    ),
 ft_bin = {C_PTB: 'en', C_CTB: 'zh', C_KTB: 'ja'}
 call_fasttext = make_call_fasttext(ft_bin)
 
-from utils.types import none_type, false_type, true_type, binarization, NIL
+from utils.types import none_type, false_type, true_type, binarization, NIL, frac_close_0
 from utils.types import train_batch_size, train_max_len, train_bucket_len, vocab_size, trapezoid_height
 nccp_data_config = dict(vocab_size       = vocab_size,
                         binarization     = binarization,
@@ -27,6 +27,7 @@ nccp_data_config = dict(vocab_size       = vocab_size,
 
 accp_data_config = dict(vocab_size       = vocab_size,
                         batch_size       = train_batch_size,
+                        greediness       = frac_close_0,
                         max_len          = train_max_len,
                         bucket_len       = train_bucket_len,
                         unify_sub        = true_type,

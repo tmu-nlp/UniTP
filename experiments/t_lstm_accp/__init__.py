@@ -23,6 +23,7 @@ def get_configs(recorder = None):
                                             penn.data_splits.test_set)
 
     reader = MAryReader(penn.data_path,
+                        penn.greediness > 0,
                         penn.unify_sub,
                         corpus_reader,
                         get_fnames,
@@ -34,6 +35,7 @@ def get_configs(recorder = None):
         datasets = {}
         if mode == M_TRAIN:
             datasets[C_ABSTRACT] = reader.batch(M_TRAIN, penn.batch_size, penn.bucket_len,
+                                                greediness = penn.greediness,
                                                 max_len = penn.max_len,
                                                 sort_by_length = penn.sort_by_length)
         else:
