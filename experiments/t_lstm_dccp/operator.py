@@ -54,7 +54,7 @@ class DiscoOperator(Operator):
 
     def _build_optimizer(self, start_epoch):
         # self._loss_weights_of_tag_label_orient = 0.3, 0.1, 0.6 betas = (0.9, 0.98), weight_decay = 0.01, eps = 1e-6
-        self._schedule_lr = hp = WarmOptimHelper(self._model, self._train_config.learning_rate)
+        self._schedule_lr = hp = WarmOptimHelper.adam(self._model, self._train_config.learning_rate)
         self.recorder.init_tensorboard()
         optim = hp.optimizer
         optim.zero_grad()
@@ -314,7 +314,8 @@ class DiscoOperator(Operator):
 from utils.vis import BaseVis, VisRunner
 from utils.file_io import isfile, listdir, remove, isdir
 from utils.pickle_io import pickle_dump, pickle_load
-from data.cross import disco_tree, bracketing, Counter, draw_str_lines
+from data.cross import bracketing, Counter, draw_str_lines
+from data.cross.binary import disco_tree
 def batch_trees(bid_offset, heads_gen, segments, i2vs, fall_back_root_label = None,
                 export_writer = None,
                 v_errors = None,

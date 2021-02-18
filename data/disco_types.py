@@ -32,7 +32,7 @@ def build(save_to_dir,
           devel_set,
           test_set,
           **kwargs):
-    from data.cross import read_tiger_graph, read_disco_penn, zip_to_logit, zip_swaps
+    from data.cross.binary import read_tiger_graph, read_disco_penn, zip_to_logit, zip_swaps
     from tqdm import tqdm
     from xml.etree import ElementTree
     from nltk.corpus import BracketParseCorpusReader

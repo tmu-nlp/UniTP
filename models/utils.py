@@ -58,7 +58,7 @@ class SimplerLinear(Module):
         self.reset_parameters()
 
     def reset_parameters(self):
-        bound = 1 / math.sqrt(5)
+        bound = 1 / math.sqrt(self.in_features)
         if self.weight is not None:
             init.uniform_(self.weight, -bound, bound)
         if self.bias is not None:
@@ -75,6 +75,24 @@ class SimplerLinear(Module):
         return 'in_features={}, bias={}'.format(
             self.in_features, self.bias is not None
         )
+
+class Bias(Module):
+    __constants__ = ['bias', 'in_features']
+    def __init__(self, in_features):
+        super(Bias, self).__init__()
+        self.in_features = in_features
+        self.bias = Parameter(torch.Tensor(in_features))
+        self.reset_parameters()
+
+    def reset_parameters(self):
+        bound = 1 / math.sqrt(self.in_features)
+        init.uniform_(self.bias, -bound, bound)
+
+    def forward(self):
+        return self.bias
+
+    def extra_repr(self):
+        return 'in_features={}'.format(self.in_features)
 
 class GaussianCodebook(Module):
     __constants__ = ['bias', 'codebook' 'io_features']

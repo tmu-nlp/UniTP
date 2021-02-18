@@ -1,25 +1,35 @@
 import torch
 from torch import nn, Tensor
 from models.backend import Stem, activation_type, logit_type
+from models.utils import Bias
 from models.self_att import SelfAttention
 
-from utils.types import orient_dim, hidden_dim, num_ori_layer, true_type, frac_2, frac_4, frac_5, BaseWrapper, BaseType
+from utils.types import orient_dim, hidden_dim, num_ori_layer, BaseWrapper, BaseType
+from utils.types import frac_2, frac_4, frac_5, true_type, false_type
 from utils.math_ops import inv_sigmoid
+from utils.param_ops import HParams
 from random import random
 from sys import stderr
 
 
 to_name = lambda x: x.__name__
 fence_module = BaseType(0, as_index = True, as_exception = True, default_set = BaseWrapper.from_gen((nn.LSTM, nn.GRU), to_name))
+attention_hint = dict(self       = false_type,
+                      state      = false_type,
+                      difference = true_type,
+                      boundary   = false_type,
+                      before     = false_type,
+                      after      = false_type)
 
 from models.combine import get_combinator, get_components, valid_trans_compound
-stem_config = dict(fence_dim    = orient_dim,
-                   fence_module = fence_module,
-                   activation   = activation_type,
-                   threshold    = frac_5,
-                   num_layers   = num_ori_layer,
-                   drop_out     = frac_4,
-                   rnn_drop_out = frac_2,
+stem_config = dict(fence_dim      = orient_dim,
+                   fence_module   = fence_module,
+                   activation     = activation_type,
+                   threshold      = frac_5,
+                   attention_hint = attention_hint,
+                   num_layers     = num_ori_layer,
+                   drop_out       = frac_4,
+                   rnn_drop_out   = frac_2,
                    trainable_initials = true_type)
 from models.loss import cross_entropy, hinge_loss, binary_cross_entropy
 from models.utils import hinge_score as hinge_score_
@@ -32,6 +42,7 @@ class MAryStem(nn.Module):
                  fence_module,
                  activation,
                  threshold,
+                 attention_hint,
                  num_layers,
                  drop_out,
                  rnn_drop_out,
@@ -63,15 +74,30 @@ class MAryStem(nn.Module):
         self._fence_l1 = nn.Linear(fence_dim, hidden_size)
         self._fence_act = activation()
         self._fence_l2 = nn.Linear(hidden_size, 1)
-        self._domain = nn.Linear(fence_dim, model_dim)
-        self._subject_fw = nn.Linear(hidden_size, model_dim)
-        self._subject_bw = nn.Linear(hidden_size, model_dim, bias = False)
-        self._subject_fwd = nn.Linear(hidden_size, model_dim, bias = False)
-        self._subject_bwd = nn.Linear(hidden_size, model_dim, bias = False)
-        # self._subject_bfw = nn.Linear(hidden_size, model_dim, bias = False)
-        # self._subject_bbw = nn.Linear(hidden_size, model_dim, bias = False)
-        # self._subject = nn.Linear(fence_dim, model_dim)
-        # self._subject_static = nn.Linear(model_dim, model_dim, bias = False)
+
+        attention_hint = HParams(attention_hint)
+        self._domain = nn.Linear(fence_dim, model_dim, bias = False) if attention_hint.boundary else None
+        self._subject_self  = nn.Linear(model_dim, model_dim, bias = False) if attention_hint.self else None
+        self._subject_state = nn.Linear(fence_dim, model_dim, bias = False) if attention_hint.state else None
+        if attention_hint.before:
+            self._subject_fw_b = nn.Linear(hidden_size, model_dim, bias = False)
+            self._subject_bw_b = nn.Linear(hidden_size, model_dim, bias = False)
+        else:
+            self._subject_fw_b = None
+            self._subject_bw_b = None
+        if attention_hint.after:
+            self._subject_fw_a = nn.Linear(hidden_size, model_dim, bias = False)
+            self._subject_bw_a = nn.Linear(hidden_size, model_dim, bias = False)
+        else:
+            self._subject_fw_a = None
+            self._subject_bw_a = None
+        if attention_hint.difference:
+            self._subject_fw_d = nn.Linear(hidden_size, model_dim, bias = False)
+            self._subject_bw_d = nn.Linear(hidden_size, model_dim, bias = False)
+        else:
+            self._subject_fw_d = None
+            self._subject_bw_d = None
+        self._subject_bias = Bias(model_dim)
         self._sigmoid = nn.Sigmoid()
         finfo = torch.finfo(torch.get_default_dtype())
         self._fminmax = finfo.min, finfo.max
@@ -157,17 +183,23 @@ class MAryStem(nn.Module):
 
                 sections = fence.cumsum(dim = 1)
             
-            dom_emb = self._domain(fencepost(fw, bw, fence_idx))
-            dom_emb = self._stem_dp(dom_emb)
-            # sub_emb  = self._subject_ffw(fw[:, 1:]) + self._subject_fbw(fw[:, :-1]) + self._subject_bfw(bw[:, :-1]) + self._subject_bbw(bw[:, 1:])
-            #* self._sigmoid(self._subject_static(unit_emb)) #* 20
-            sub_emb = self._stem_dp(self._subject_fwd(fw[:, 1:] - fw[:, :-1]))
-            sub_emb = sub_emb + self._stem_dp(self._subject_bwd(bw[:, :-1] - bw[:, 1:]))
-            sub_emb = sub_emb + self._stem_dp(self._subject_fw(fw[:, :-1]))
-            sub_emb = sub_emb + self._stem_dp(self._subject_bw(bw[:, 1:]))
-            # sub_emb = self._stem_dp(sub_emb)
+            if self._domain:
+                dom_emb = self._domain(fencepost(fw, bw, fence_idx))
+                dom_emb = self._stem_dp(dom_emb)
+            else:
+                dom_emb = None
+            sub_emb = self._stem_dp(self._subject_bias())
+            if self._subject_self:  sub_emb = sub_emb + self._stem_dp(self._subject_self(unit_emb))
+            if self._subject_state: sub_emb = sub_emb + self._stem_dp(self._subject_state(fence_hidden))
+            if self._subject_fw_a:  sub_emb = sub_emb + self._stem_dp(self._subject_fw_a(fw[:, 1:]))
+            if self._subject_bw_a:  sub_emb = sub_emb + self._stem_dp(self._subject_bw_a(bw[:, :-1]))
+            if self._subject_fw_b:  sub_emb = sub_emb + self._stem_dp(self._subject_fw_b(fw[:, :-1]))
+            if self._subject_bw_b:  sub_emb = sub_emb + self._stem_dp(self._subject_bw_b(bw[:, 1:]))
+            if self._subject_fw_d:  sub_emb = sub_emb + self._stem_dp(self._subject_fw_d(fw[:, 1:] - fw[:, :-1]))
+            if self._subject_bw_d:  sub_emb = sub_emb + self._stem_dp(self._subject_bw_d(bw[:, :-1] - bw[:, 1:]))
             sections = torch.where(longer_seq_idx < seq_len[:, None], sections, torch.zeros_like(sections))[:, :-1]
 
+            #* self._sigmoid(self._subject_static(unit_emb)) #* 20
             if keep_low_attention_rate < 1:
                 max_mask = blocky_max(sections, sub_emb.mean(dim = 2))
                 max_mask |= torch.rand(batch_size, seg_len, device = sub_emb.device) < keep_low_attention_rate

@@ -33,7 +33,7 @@ class MaryDM(DM):
         if start < batch_size:
             return args[:1] + tuple(x[start: (seg_id + 1) * seg_size] for x in args[1:])
 
-def add_efficient_subs(stretched_tree, sub = '_', max_range = 3):
+def add_efficient_subs(stretched_tree, sub = '_', max_range = None):
     if stretched_tree.height() > 3:
         parent_label = stretched_tree.label()
         modified = False

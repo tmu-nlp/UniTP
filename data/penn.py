@@ -91,7 +91,7 @@ class MAryReader(WordBaseReader):
         oovs = {}
         labels = i2vs['label']
         if has_greedy_sub:
-            print(byte_style('Use greedy_subs', '2'))
+            print(byte_style('+ greedy_subs', '2'))
         if unify_sub:
             labels = [t for t in labels if t[0] not in '#_']
             oovs['label'] = len(labels)

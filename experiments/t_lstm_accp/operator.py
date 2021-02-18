@@ -220,13 +220,13 @@ class MAryPennOperator(PennOperator):
         else:
             rate = vis.proc_time / (seconds - vis.proc_time)
 
-        if self._dm:
+        if serial:
+            dmt = speed_dm = ''
+        else:
             dmt = self._dm.duration
             speed_dm = f' ◇ {count / dmt:.1f}'
             dmt = f' ◇ {dmt:.3f}'
             desc += byte_style(speed_dm + 'sps.', '2')
-        else:
-            dmt = speed_dm = ''
 
         logg += f' @{speed_outer} ◇ {speed_inner}{speed_dm} sps. (sym:nn {rate:.2f}; {seconds:.3f}{dmt} sec.)'
         scores['speed'] = speed_outer
