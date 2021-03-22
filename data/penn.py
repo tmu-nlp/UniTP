@@ -68,7 +68,7 @@ class PennReader(WordBaseReader):
 from data.io import isfile
 from utils.shell_io import byte_style
 
-class MAryReader(WordBaseReader):
+class MultiReader(WordBaseReader):
     def __init__(self,
                  vocab_dir,
                  has_greedy_sub,
@@ -84,7 +84,7 @@ class MAryReader(WordBaseReader):
             m_samples = []
             for fn in get_fnames(data_split):
                 for tree in tree_reader.parsed_sents(fn):
-                    m_samples.append((mode, tree))
+                    m_samples.append(tree)
             samples[mode] = m_samples
         self._load_options = samples, word_trace, extra_text_helper
         i2vs = load_i2vs(vocab_dir, 'word tag label'.split())
@@ -100,19 +100,19 @@ class MAryReader(WordBaseReader):
         elif not has_greedy_sub: # MAry does not have binarization
             i2vs['label'] = [t for t in labels if t[0] != '_']
             
-        super(MAryReader, self).__init__(vocab_dir, vocab_size, True, i2vs, oovs)
+        super(MultiReader, self).__init__(vocab_dir, vocab_size, True, i2vs, oovs)
 
     def batch(self,
               mode,
               batch_size,
               bucket_length,
-              greediness     = 0,
+              balanced     = 0,
               min_len        = 1,
               max_len        = None,
               sort_by_length = True):
         from data.multib.dataset import MAryDataset
         samples, word_trace, extra_text_helper = self._load_options
-        len_sort_ds = MAryDataset(mode, samples[mode], self.v2is, self.device, greediness, min_len, max_len, word_trace, extra_text_helper)
+        len_sort_ds = MAryDataset(mode, samples[mode], self.v2is, self.device, balanced, min_len, max_len, word_trace, extra_text_helper)
         return post_batch(mode, len_sort_ds, sort_by_length, bucket_length, batch_size)
 
 from utils.types import false_type, true_type

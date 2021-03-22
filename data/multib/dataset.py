@@ -16,14 +16,14 @@ class MAryWorker(Process):
         self._args = args
 
     def run(self):
-        q, trees, field_v2is, greediness, jp_wt = self._args
+        q, trees, field_v2is, balanced, jp_wt = self._args
         for tree in trees:
             mtree = MAryX(tree, word_trace = jp_wt)
-            if greediness == 0:
+            if balanced == 0:
                 signals = wd, tg, lb, fc = mtree.signals(*field_v2is)
             else:
                 signals = wd, tg, lb, fc = mtree.sub_signals(*field_v2is)
-                if greediness < 1:
+                if balanced < 1:
                     signals = mtree.signals(*field_v2is), signals
             if None in wd:
                 overall_safe = not fc
@@ -45,21 +45,20 @@ class MAryDataset(LengthOrderedDataset):
                  samples,
                  field_v2is,
                  device,
-                 greediness = 0,
+                 balanced = 0,
                  min_len = 0,
                  max_len = None,
                  word_trace = False,
                  extra_text_helper = None,
                  num_threads = 0):
 
-        samples = [x for m, x in samples if m == mode]
         if num_threads < 1:
             from utils.types import num_threads
         works = distribute_jobs(samples, num_threads)
         v2is = tuple(field_v2is[x][1] for x in ('token', 'tag', 'label'))
         q = Queue()
         for i in range(num_threads):
-            w = MAryWorker(q, works[i], v2is, greediness, word_trace)
+            w = MAryWorker(q, works[i], v2is, balanced, word_trace)
             w.start()
             works[i] = w
 
@@ -120,8 +119,8 @@ class MAryDataset(LengthOrderedDataset):
         self._signals_heads = signals, heads
         if extra_text_helper:
             extra_text_helper = extra_text_helper(text, device)
-        if 0 < greediness < 1:
-            factors = {0: 1 - greediness, 1: greediness}
+        if 0 < balanced < 1:
+            factors = {0: 1 - balanced, 1: balanced}
         else:
             factors = None
         super().__init__(heads, lengths, factors, min_len, max_len, extra_text_helper)
@@ -156,27 +155,28 @@ class MAryDataset(LengthOrderedDataset):
                     seg_len.append(sl)
                 field_columns['segment'] = torch.tensor(segment, device = self._device)
                 field_columns['seg_length'] = torch.tensor(seg_len, device = self._device).transpose(0, 1)
-                tensor = fill_layers(column, segment, np.int32, torch.long)
+                tensor = fill_layers(column, segment, np.int32)
             else:
                 tensor_seg = [x + 1 for x in segment[1:]]
-                tensor = fill_layers(column, tensor_seg, np.int32, torch.long, 1)
+                tensor = fill_layers(column, tensor_seg, np.int32, 1)
             field_columns[field] = torch.as_tensor(tensor, dtype = torch.long, device = self._device)
         return field_columns
 
-def fill_layers(sample_layers, tensor_seg, np_dtype, torch_dtype, last_elem = None):
+def fill_layers(sample_layers, tensor_seg, np_dtype, last_elem = None):
     batch_size = len(sample_layers)
     tensor = np.zeros([batch_size, sum(tensor_seg)], dtype = np_dtype)
     start = 0
-    last_elem_offset = 0 if last_elem is None else 1 # label vs. fence
+    is_label = last_elem is None
+    last_elem_offset = 0 if is_label else 1 # label vs. fence
     for seg_len, layer in zip(tensor_seg, zip_longest(*sample_layers, fillvalue = [])):
         end = start + seg_len
         for bid, seq in enumerate(layer):
             if seq:
                 seq_len = len(seq)
                 tensor[bid, start:start + seq_len] = seq
-                if last_elem is None and seq_len == 1:
+                if is_label and seq_len == 1:
                     last_elem = seq[0]
-            else:
+            elif last_elem is not None:
                 tensor[bid, start + last_elem_offset] = last_elem
         start = end
     return tensor

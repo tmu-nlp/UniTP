@@ -316,17 +316,7 @@ from utils.file_io import isfile, listdir, remove, isdir
 from utils.pickle_io import pickle_dump, pickle_load
 from data.cross import bracketing, Counter, draw_str_lines
 from data.cross.binary import disco_tree
-def batch_trees(bid_offset, heads_gen, segments, i2vs, fall_back_root_label = None,
-                export_writer = None,
-                v_errors = None,
-                unlabel = None,
-                equal_labels = None,
-                equal_words = None,
-                excluded_words = None,
-                excluded_labels = None):
-    trees = []
-    errors = []
-    top_downs = []
+def batch_trees(bid_offset, heads_gen, segments, i2vs, fall_back_root_label = None):
     for sid, (s_seq_len, s_token, s_tag, s_label, s_right, s_joint, s_direc) in enumerate(heads_gen):
         sid += bid_offset
         layers_of_label = []
@@ -348,41 +338,38 @@ def batch_trees(bid_offset, heads_gen, segments, i2vs, fall_back_root_label = No
         bottom_end = s_seq_len[0] + 1
         tags  = tuple(i2vs.tag[i]   for i in   s_tag[1:bottom_end])
         words = tuple(i2vs.token[i] for i in s_token[1:bottom_end])
+        yield disco_tree(words, tags, layers_of_label, layers_of_right, layers_of_joint, layers_of_direc, fall_back_root_label)
 
-        bottom, td, rt, error = disco_tree(words, tags, layers_of_label, layers_of_right, layers_of_joint, layers_of_direc, fall_back_root_label)
-        if fall_back_root_label is None: # head conversion
-            assert error is None
-        else: # data conversion
-            errors.append(error)
-            if error:
-                v_errors[sid] = error
-        # except Exception as err:
-        #     import traceback
-        #     traceback.print_exc()
-        #     print(err)
-        #     import pdb; pdb.set_trace()
-        #     bottom, td, rt = disco_tree(words, tags, layers_of_label, layers_of_right, layers_of_joint, layers_of_direc, fall_back_root_label)
-        #     brackets_cnt = None
-        #     bottom = ((bid, wd, tg) for bid, (wd, tg) in enumerate(zip(words, tags)))
-        # else:
-        if td:
-            brackets_cnt = bracketing(bottom, td, rt, False, unlabel, excluded_labels, equal_labels)
-        else:
-            brackets_cnt = Counter()
-        top_downs.append(td)
-        bottom_set = set()
-        for bid, word, tag in bottom:
-            if equal_words:
-                word = equal_words.get(word, word)
-            if word in excluded_words:
-                continue
-            bottom_set.add((bid, word, tag))
-        trees.append((brackets_cnt, bottom_set))
-        if export_writer:
-            export_writer.add(bottom, td, rt)
-    if fall_back_root_label is None: # head
-        return trees, top_downs
-    return trees, top_downs, errors # data
+def inner_score(bt, td, rt,
+                export_writer = None,
+                unlabel = None,
+                equal_labels = None,
+                equal_words = None,
+                excluded_words = None,
+                excluded_labels = None):
+    if export_writer:
+        export_writer.add(bt, td, rt)
+    brackets_cnt = bracketing(bt, td, rt, False, unlabel, excluded_labels, equal_labels) if td else Counter()
+    bottom_set = set()
+    for bid, word, tag in bt:
+        if equal_words:
+            word = equal_words.get(word, word)
+        if word in excluded_words:
+            continue
+        bottom_set.add((bid, word, tag))
+    return brackets_cnt, bottom_set
+
+class Dummy:
+    def __init__(self, work_dir, i2vs):
+        self._work_dir = work_dir
+        self._i2vs = i2vs
+
+    @property
+    def vocabs(self):
+        return self._i2vs
+
+    def join(self, *fpath):
+        return join(self._work_dir, *fpath)
 
 from visualization import DiscontinuousTensorVis
 from data.cross import explain_error
@@ -390,7 +377,6 @@ class DiscoVis(BaseVis):
     def __init__(self, epoch, work_dir, i2vs, head_trees, logger, evalb_lcfrs_kwargs, discodop_prm, thresholds, save_tensors):
         super().__init__(epoch)
         self._evalb = DiscoEvalb()
-        self._dtv = DiscontinuousTensorVis(work_dir, i2vs, thresholds)
         self._logger = logger
         self._head_batches = head_trees
         self._pending_heads = ph = not head_trees
@@ -401,39 +387,55 @@ class DiscoVis(BaseVis):
         self._xd_writer = ExportWriter() if discodop_prm else None
         self._v_errors = {}
         self.register_property('save_tensors', save_tensors)
+        if save_tensors:
+            self._dtv = DiscontinuousTensorVis(work_dir, i2vs, thresholds)
+        else:
+            self._dtv = Dummy(work_dir, i2vs)
 
     def _before(self):
         pass
 
     def _process(self, batch_id, batch):
 
-        bid_offset, _ = self._evalb.total_missing
-
         i2vs = self._dtv.vocabs
+        bid_offset, _ = self._evalb.total_missing
         if self.save_tensors:
             mpc_word, mpc_phrase, tag_score, label_score, right_score, joint_score, direc_score = batch[:7]
             batch = batch[7:]
+
         if self._pending_heads:
             (h_segment, h_seq_len, h_token, h_tag, h_label, h_right, h_joint, h_direc,
              d_segment, d_seq_len,          d_tag, d_label, d_right, d_joint, d_direc) = batch
+            head_top_downs = []
+            head_trees_for_scores = []
             heads = zip(h_seq_len, h_token, h_tag, h_label, h_right, h_joint, h_direc)
-            heads, trees = batch_trees(bid_offset, heads, h_segment, i2vs, export_writer = self._xh_writer, **self._evalb_lcfrs_kwargs)
-            self._head_batches.append(heads)
+            for bt, td, rt, error in batch_trees(bid_offset, heads, h_segment, i2vs):
+                assert not error
+                head_top_downs.append(td)
+                head_trees_for_scores.append(inner_score(bt, td, rt, self._xh_writer, **self._evalb_lcfrs_kwargs))
+            self._head_batches.append(head_trees_for_scores)
             if self.save_tensors:
-                self._dtv.set_head(batch_id, h_token.shape[1], h_token, h_tag, h_label, h_right, h_joint, h_direc, trees, h_segment, h_seq_len)
+                self._dtv.set_head(batch_id, h_token.shape[1], h_token, h_tag, h_label, h_right, h_joint, h_direc, head_top_downs, h_segment, h_seq_len)
         else:
             (d_segment, d_seq_len, h_token, d_tag, d_label, d_right, d_joint, d_direc) = batch
-            heads = self._head_batches[self._data_batch_cnt]
+            head_trees_for_scores = self._head_batches[self._data_batch_cnt]
             self._data_batch_cnt += 1
         
-        evalb = DiscoEvalb()
+        data_errors = []
+        data_top_downs = []
+        data_trees_for_scores = []
         data = zip(d_seq_len, h_token, d_tag, d_label, d_right, d_joint, d_direc)
-        data, trees, errors = batch_trees(bid_offset, data, d_segment, i2vs, 'VROOT', v_errors = self._v_errors, export_writer = self._xd_writer, **self._evalb_lcfrs_kwargs)
+        for sid, (bt, td, rt, error) in enumerate(batch_trees(bid_offset, data, d_segment, i2vs, 'VROOT')):
+            data_errors.append(error)
+            data_top_downs.append(td)
+            data_trees_for_scores.append(inner_score(bt, td, rt, self._xd_writer, **self._evalb_lcfrs_kwargs))
+            if error: self._v_errors[sid] = error
         scores = []
+        evalb = DiscoEvalb()
         self._evalb.add_batch_line(batch_id)
-        for gold, prediction in zip(heads, data):
-            scores.append(self._evalb.add(*prediction, *gold))
-            evalb.add(*prediction, *gold)
+        for gold, prediction in zip(head_trees_for_scores, data_trees_for_scores):
+            self._evalb.add(*prediction, *gold)
+            scores.append(evalb.add(*prediction, *gold))
 
         if self.save_tensors:
             fname = self._dtv.join('summary.pkl')
@@ -441,9 +443,7 @@ class DiscoVis(BaseVis):
             smy = pickle_load(fname) if isfile(fname) else {}
             smy[(batch_id, self.epoch)] = dict(F1 = tf, DF = df)
             pickle_dump(fname, smy)
-
-        if self.save_tensors:
-            self._dtv.set_data(batch_id, self.epoch, h_token, d_tag, d_label, d_right, d_joint, d_direc, trees, d_segment, d_seq_len, mpc_word, mpc_phrase, errors, scores, tag_score, label_score, right_score, joint_score, direc_score)
+            self._dtv.set_data(batch_id, self.epoch, h_token, d_tag, d_label, d_right, d_joint, d_direc, data_top_downs, d_segment, d_seq_len, mpc_word, mpc_phrase, data_errors, scores, tag_score, label_score, right_score, joint_score, direc_score)
 
     def _after(self):
         total_sents, num_errors = self._evalb.total_missing

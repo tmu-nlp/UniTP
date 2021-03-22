@@ -1,9 +1,9 @@
-from models.accp import BaseRnnTree, model_type, torch, nn, Tensor
+from models.accp import BaseRnnTree, model_type
 from utils.types import word_dim, num_ctx_layer, frac_2, frac_4
 from models.plm import subword_proc, XLNetLeaves
 
-from models.backend import contextual_type, activation_type
-xlnt_leaves_config = dict(contextual   = contextual_type,
+from models.types import rnn_module_type, activation_type
+xlnt_leaves_config = dict(contextual   = rnn_module_type,
                           num_layers   = num_ctx_layer,
                           drop_out     = frac_4,
                           rnn_drop_out = frac_2,

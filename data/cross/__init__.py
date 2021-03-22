@@ -98,24 +98,6 @@ def _preorder(tree):
         yield _CMD_EOL
         yield remove_eq(tree.label())
 
-def boundaries(top_down, nid):
-    if nid not in top_down:
-        return nid, nid
-    nids = [nid]
-    cids = []
-    coverage = []
-    while nids:
-        for nid in nids:
-            for cid in top_down[nid].children:
-                if cid in top_down:
-                    cids.append(cid)
-                else:
-                    assert cid < 500
-                    coverage.append(cid)
-        nids = cids
-        cids = []
-    return min(coverage), max(coverage)
-
 def is_a_child(top_down, pid, cid):
     if pid < 500:
         return False
@@ -307,7 +289,7 @@ def _read_dpenn(tree, convert_id_to_str = True):
                 children[cnid] = pd_args.pop(cnid, '')
 
                 if cnid in trace_src:
-                    lhs, rhs = boundaries(top_down, cnid)
+                    lhs, rhs = boundary(top_down, cnid)
                     tid = trace_src.pop(cnid)
                     if tid in trace_src:
                         was_wh_movement = top_down[trace_src[tid].cid].label.startswith('WH')
@@ -376,12 +358,81 @@ def _read_dpenn(tree, convert_id_to_str = True):
 
     return bottom, top_down, root_id
 
+def boundary(top_down, nid):
+    if nid not in top_down:
+        return nid, nid
+    nids = [nid]
+    cids = []
+    coverage = []
+    while nids:
+        for nid in nids:
+            for cid in top_down[nid].children:
+                if cid in top_down:
+                    cids.append(cid)
+                else:
+                    assert cid < 500
+                    coverage.append(cid)
+        nids = cids
+        cids = []
+    return min(coverage), max(coverage)
+
+def height_gen(top_down, root_id):
+    max_height = -1
+    if root_id in top_down:
+        for node in top_down[root_id].children:
+            for cid, height in height_gen(top_down, node):
+                yield cid, height
+                if height > max_height:
+                    max_height = height
+        yield root_id, max_height + 1
+
+def add_efficient_subs(top_down, root_id, sub_prefix = '_'):
+    new_top_down = {}
+    height_cache = {}
+    for node, height in height_gen(top_down, root_id):
+        height_cache[node] = height # a real node
+        h_children = defaultdict(dict)
+        for child, info in top_down[node].children.items():
+            if child in height_cache:
+                ch = height_cache[child]
+            else:
+                ch = height_cache[child] = -1
+            h_children[ch][child] = info
+
+        sub_start = 0
+        new_children = {}
+        p_label = top_down[node].label
+        for h_level in range(min(h_children), max(h_children)):
+            sub_heights = []
+            sub_children = {}
+            for h, c in h_children.items():
+                if h <= h_level:
+                    sub_heights.append(h)
+                    sub_children.update(c)
+            if len(sub_children) > 1:
+                ftags = []
+                while sub_heights:
+                    ftags += h_children.pop(sub_heights.pop()).values()
+                new_node = node + f'.{sub_start}'
+                h_children[h_level + 1][new_node] = '.'.join(x for x in ftags if x)
+                new_children[new_node] = TopDown(sub_prefix + p_label, sub_children)
+                sub_start += 1
+        if new_children:
+            new_top_down.update(new_children)
+            new_children = {}
+            for c in h_children.values():
+                new_children.update(c)
+            new_top_down[node] = TopDown(p_label, new_children)
+        else:
+            new_top_down[node] = top_down[node]
+    return new_top_down
+
 from utils.math_ops import bit_fanout
-def gap_degree(bottom, top_down, nid, bottom_is_bid = True):
+def gap_degree(bottom, top_down, nid, return_coverage = False, bottom_is_bid = True):
     finally_return = True
     if isinstance(bottom, dict):
         if nid in bottom:
-            return {nid: 0}, bottom[nid]
+            return {nid: bottom[nid] if return_coverage else 0}, bottom[nid]
         finally_return = False
     else:
         if not top_down:
@@ -391,19 +442,22 @@ def gap_degree(bottom, top_down, nid, bottom_is_bid = True):
         else:
             bottom = {bid: 1 << eid for eid, (bid, _, _) in enumerate(bottom)}
 
-    gap_cnt = {}
+    gap_return = {}
     bit_coverage = 0 # set()
     for cid in top_down[nid].children:
-        child_gaps, child_coverage = gap_degree(bottom, top_down, cid)
-        gap_cnt.update(child_gaps)
+        child_gaps, child_coverage = gap_degree(bottom, top_down, cid, return_coverage)
+        gap_return.update(child_gaps)
         bit_coverage ^= child_coverage
 
+    if return_coverage:
+        gap_return[nid] = bit_coverage
+    else:
+        gap_return[nid] = bit_fanout(bit_coverage) - 1
     if finally_return: # or nid.endswith('_VROOT'):
         assert bit_fanout(bit_coverage) == 1, 'discontinuous root'
-        return gap_cnt
+        return gap_return
 
-    gap_cnt[nid] = bit_fanout(bit_coverage) - 1
-    return gap_cnt, bit_coverage
+    return gap_return, bit_coverage
 
 def bracketing(bottom, top_down, nid, bottom_is_bid = False,
                unlabel = None,
@@ -504,13 +558,37 @@ def _combine(nts, parent_node, child_node, non_terminals, top_down, perserve_sub
 
 E_SHP = 0
 E_CMB = 1
+E_LBL = 2
 
 def explain_error(error_layer, error_id, sent_len):
     if error_id == E_SHP:
         error = 'Bad tensor shape'
     elif error_id == E_CMB:
         error = 'No action was taken'
+    elif error_id == E_LBL:
+        error = 'Combine into <nil>'
     return f'len={sent_len}, {error} at layer {error_layer}'
+
+def bottom_trees(word, bottom_tag, layers_of_label, fall_back_root_label, perserve_sub):
+    track_nodes = []
+    terminals = []
+    non_terminals = {}
+    top_down = defaultdict(set)
+    NTS = 500
+    for tid, wd_tg in enumerate(zip(word, bottom_tag)):
+        terminals.append((tid,) + wd_tg)
+        if perserve_sub or layers_of_label[0][tid][0] in '#_':
+            track_nodes.append(tid)
+        else:
+            bottom_unary = layers_of_label[0][tid].split('+')
+            last_node = tid
+            while bottom_unary:
+                non_terminals[NTS] = bottom_unary.pop()
+                top_down[NTS] = set({last_node})
+                last_node = NTS
+                NTS += 1
+            track_nodes.append(NTS - 1)
+    return NTS, tid + 1, track_nodes, terminals, non_terminals, top_down, isinstance(fall_back_root_label, str), None
 
 class SpanTale:
     def __init__(self):

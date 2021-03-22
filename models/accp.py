@@ -1,7 +1,6 @@
 import torch
-from torch import nn, Tensor
-from models.backend import Stem, activation_type, logit_type
-from models.utils import Bias
+from torch import nn
+from models.utils import Bias, math, init
 from models.self_att import SelfAttention
 
 from utils.types import orient_dim, hidden_dim, num_ori_layer, BaseWrapper, BaseType
@@ -11,22 +10,16 @@ from utils.param_ops import HParams
 from random import random
 from sys import stderr
 
+fence_vote = BaseType(0, as_index = True, default_set = (None, 'state', 'unit'))
 
-to_name = lambda x: x.__name__
-fence_module = BaseType(0, as_index = True, as_exception = True, default_set = BaseWrapper.from_gen((nn.LSTM, nn.GRU), to_name))
-attention_hint = dict(self       = false_type,
-                      state      = false_type,
-                      difference = true_type,
-                      boundary   = false_type,
-                      before     = false_type,
-                      after      = false_type)
-
+from models.types import rnn_module_type, continuous_attention_hint, activation_type, logit_type
 from models.combine import get_combinator, get_components, valid_trans_compound
 stem_config = dict(fence_dim      = orient_dim,
-                   fence_module   = fence_module,
+                   fence_module   = rnn_module_type,
+                   fence_vote     = fence_vote,
+                   linear_dim     = orient_dim,
                    activation     = activation_type,
-                   threshold      = frac_5,
-                   attention_hint = attention_hint,
+                   attention_hint = continuous_attention_hint,
                    num_layers     = num_ori_layer,
                    drop_out       = frac_4,
                    rnn_drop_out   = frac_2,
@@ -35,65 +28,77 @@ from models.loss import cross_entropy, hinge_loss, binary_cross_entropy
 from models.utils import hinge_score as hinge_score_
 from models.utils import blocky_max, blocky_softmax, birnn_fwbw, fencepost, condense_helper, condense_left
 
-class MAryStem(nn.Module):
+class MultiStem(nn.Module):
     def __init__(self,
                  model_dim,
                  fence_dim,
+                 linear_dim,
                  fence_module,
+                 fence_vote,
                  activation,
-                 threshold,
                  attention_hint,
                  num_layers,
                  drop_out,
                  rnn_drop_out,
                  trainable_initials):
         super().__init__()
-        hidden_size = fence_dim // 2
-        self._fence_emb = fence_module(model_dim, hidden_size,
+        single_size = fence_dim // 2
+        self._fence_emb = fence_module(model_dim, single_size,
                                        num_layers    = num_layers,
                                        bidirectional = True,
                                        batch_first   = True,
                                        dropout = rnn_drop_out if num_layers > 1 else 0)
+        self._tanh = nn.Tanh()
+        bound = 1 / math.sqrt(single_size)
         if trainable_initials:
-            c0 = torch.randn(num_layers * 2, 1, hidden_size)
-            h0 = torch.randn(num_layers * 2, 1, hidden_size)
+            c0 = torch.empty(num_layers * 2, 1, single_size)
+            h0 = torch.empty(num_layers * 2, 1, single_size)
             self._c0 = nn.Parameter(c0, requires_grad = True)
             self._h0 = nn.Parameter(h0, requires_grad = True)
-            self._h0_act = nn.Tanh()
-            self._initial_size = hidden_size
+            init.uniform_(self._c0, -bound, bound)
+            init.uniform_(self._h0, -bound, bound)
+            self._initial_size = single_size
         else:
             self.register_parameter('_h0', None)
             self.register_parameter('_c0', None)
             self._initial_size = None
 
-        pad = torch.empty(1, 1, hidden_size)
-        self._pad = nn.Parameter(pad, requires_grad = True)
-        self._tanh = nn.Tanh()
-        self._raw_threshold = threshold - 0.5 # TODO this should be raw
+        self._pad = nn.Parameter(torch.empty(1, 1, single_size), requires_grad = True)
+        init.uniform_(self._pad, -bound, bound)
         self._stem_dp = nn.Dropout(drop_out)
-        self._fence_l1 = nn.Linear(fence_dim, hidden_size)
+        self._fence_l1 = nn.Linear(fence_dim, linear_dim)
+        self._fence_vote = fence_vote
         self._fence_act = activation()
-        self._fence_l2 = nn.Linear(hidden_size, 1)
+        if fence_vote == 'unit':
+            self._fence_l2 = nn.Linear(model_dim, linear_dim)
+        elif fence_vote == 'state':
+            self._fence_l2 = nn.Linear(fence_dim, linear_dim)
+        else:
+            self._fence_l2 = nn.Linear(linear_dim, 1)
+        # fence_p: f->hidden [b, s+1, h]
+        # fence_c: u->hidden [b, s, h]
+        # pxc: v->vote [b, s+1, s]
+        # fence: s->score [b, s+1] .sum() > 0
 
         attention_hint = HParams(attention_hint)
-        self._domain = nn.Linear(fence_dim, model_dim, bias = False) if attention_hint.boundary else None
-        self._subject_self  = nn.Linear(model_dim, model_dim, bias = False) if attention_hint.self else None
+        self._domain = nn.Linear(fence_dim, model_dim, bias = False) if attention_hint.get('boundary') else None
+        self._subject_unit  = nn.Linear(model_dim, model_dim, bias = False) if attention_hint.unit else None
         self._subject_state = nn.Linear(fence_dim, model_dim, bias = False) if attention_hint.state else None
         if attention_hint.before:
-            self._subject_fw_b = nn.Linear(hidden_size, model_dim, bias = False)
-            self._subject_bw_b = nn.Linear(hidden_size, model_dim, bias = False)
+            self._subject_fw_b = nn.Linear(single_size, model_dim, bias = False)
+            self._subject_bw_b = nn.Linear(single_size, model_dim, bias = False)
         else:
             self._subject_fw_b = None
             self._subject_bw_b = None
         if attention_hint.after:
-            self._subject_fw_a = nn.Linear(hidden_size, model_dim, bias = False)
-            self._subject_bw_a = nn.Linear(hidden_size, model_dim, bias = False)
+            self._subject_fw_a = nn.Linear(single_size, model_dim, bias = False)
+            self._subject_bw_a = nn.Linear(single_size, model_dim, bias = False)
         else:
             self._subject_fw_a = None
             self._subject_bw_a = None
         if attention_hint.difference:
-            self._subject_fw_d = nn.Linear(hidden_size, model_dim, bias = False)
-            self._subject_bw_d = nn.Linear(hidden_size, model_dim, bias = False)
+            self._subject_fw_d = nn.Linear(single_size, model_dim, bias = False)
+            self._subject_bw_d = nn.Linear(single_size, model_dim, bias = False)
         else:
             self._subject_fw_d = None
             self._subject_bw_d = None
@@ -102,30 +107,36 @@ class MAryStem(nn.Module):
         finfo = torch.finfo(torch.get_default_dtype())
         self._fminmax = finfo.min, finfo.max
 
-    @property
-    def threshold(self):
-        return self._raw_threshold
-
     def get_h0c0(self, batch_size):
         if self._initial_size:
             c0 = self._c0.expand(2, batch_size, self._initial_size).contiguous()
             h0 = self._h0.expand(2, batch_size, self._initial_size).contiguous()
-            h0 = self._h0_act(h0)
+            h0 = self._tanh(h0)
             h0c0 = h0, c0
         else:
             h0c0 = None
         return h0c0
 
-    def predict_fence(self, unit_hidden, h0c0, seq_len):
-        fence_hidden, _ = self._fence_emb(unit_hidden, h0c0)
-        fence_hidden = self._stem_dp(fence_hidden)
-        fw, bw = birnn_fwbw(fence_hidden, seq_len = seq_len, pad = self._tanh(self._pad))
+    def pad_fwbw_hidden(self, fence_hidden, seq_len):
+        return birnn_fwbw(fence_hidden, self._tanh(self._pad), seq_len)
+
+    def predict_fence(self, fw, bw):
         fence = torch.cat([fw, bw], dim = 2)
         fence = self._fence_l1(fence)
         fence = self._stem_dp(fence)
         fence = self._fence_act(fence)
-        fence = self._fence_l2(fence).squeeze(dim = 2)
-        return fence, fence_hidden, fw, bw
+        return self._fence_l2(fence).squeeze(dim = 2)
+
+    def predict_fence_2d(self, fw, bw, hidden, seq_len):
+        fence = torch.cat([fw, bw], dim = 2)
+        fence = self._fence_l1(fence)
+        fence = self._fence_act(self._stem_dp(fence))
+        unit = self._fence_l2(hidden)
+        unit = self._fence_act(self._stem_dp(unit))
+        vote = torch.bmm(fence, unit.transpose(1, 2)) # [b, s+1, s]
+        third_dim = torch.arange(unit.shape[1], device = hidden.device)
+        third_dim = third_dim[None, None] < seq_len[:, None, None]
+        return torch.where(third_dim, vote, torch.zeros_like(vote)).sum(dim = 2)
     
     def forward(self, unit_emb, existence,
                 supervised_fence = None,
@@ -146,13 +157,12 @@ class MAryStem(nn.Module):
 
         for l_cnt in range(max_iter_n):
             seq_len = existence.sum(dim = 1)
+            layers_of_u_emb.append(unit_emb)
+            layers_of_existence.append(existence)
             if not teacher_forcing:
                 segment   .append(seg_len)
                 seg_length.append(seq_len)
 
-            fence_logits, fence_hidden, fw, bw = self.predict_fence(unit_emb, h0c0, seq_len)
-            layers_of_u_emb.append(unit_emb)
-            layers_of_existence.append(existence)
             if seg_len == 1:
                 break # teacher forcing or a good model
             elif len(seg_length) > 1:
@@ -163,7 +173,17 @@ class MAryStem(nn.Module):
                     print(f'WARNING: Action layers overflow maximun {l_cnt}', file = stderr, end = '')
                     break
 
+            fence_hidden, _ = self._fence_emb(unit_emb, h0c0)
+            fence_hidden = self._stem_dp(fence_hidden)
+            fw, bw = self.pad_fwbw_hidden(fence_hidden, seq_len)
+            if self._fence_vote is None:
+                fence_logits = self.predict_fence(fw, bw)
+            elif self._fence_vote == 'unit':
+                fence_logits = self.predict_fence_2d(fw, bw, unit_emb, seq_len)
+            else:
+                fence_logits = self.predict_fence_2d(fw, bw, fence_hidden, seq_len)
             longer_seq_idx = torch.arange(seg_len + 1, device = unit_emb.device)[None, :]
+            
             if teacher_forcing:
                 fence_idx = supervised_fence[l_cnt]
 
@@ -175,7 +195,7 @@ class MAryStem(nn.Module):
                 fence_logits[:, 0] = fmax
                 fence_logits[batch_dim, seq_len] = fmax
                 fence_logits[longer_seq_idx > seq_len[:, None]] = fmin
-                fence = fence_logits > self._raw_threshold
+                fence = fence_logits > 0
                 idx = longer_seq_idx * fence
                 helper = condense_helper(fence, as_existence = True)
                 fence_idx = condense_left(idx, helper)
@@ -189,7 +209,7 @@ class MAryStem(nn.Module):
             else:
                 dom_emb = None
             sub_emb = self._stem_dp(self._subject_bias())
-            if self._subject_self:  sub_emb = sub_emb + self._stem_dp(self._subject_self(unit_emb))
+            if self._subject_unit:  sub_emb = sub_emb + self._stem_dp(self._subject_unit(unit_emb))
             if self._subject_state: sub_emb = sub_emb + self._stem_dp(self._subject_state(fence_hidden))
             if self._subject_fw_a:  sub_emb = sub_emb + self._stem_dp(self._subject_fw_a(fw[:, 1:]))
             if self._subject_bw_a:  sub_emb = sub_emb + self._stem_dp(self._subject_bw_a(bw[:, :-1]))
@@ -235,7 +255,7 @@ model_type = dict(fence_layer    = stem_config,
 from models.utils import get_logit_layer
 from models.loss import get_decision, get_decision_with_value, get_loss
 
-class BaseRnnTree(MAryStem):
+class BaseRnnTree(MultiStem):
     def __init__(self,
                  model_dim,
                  num_tags,
@@ -313,5 +333,5 @@ class BaseRnnTree(MAryStem):
         height_mask = height_mask.sum(dim = 1)
         tag_loss   = get_loss(self._tag_layer,   self._logit_max, tag_logits,   batch, 'tag')
         label_loss = get_loss(self._label_layer, self._logit_max, label_logits, batch, False, height_mask, weight_mask, 'label')
-        # height mask and weight_mask are both beneficial!
+        # height mask and weight_mask are both beneficial! (nop, weight_mask by freq is not helping)
         return tag_loss, label_loss

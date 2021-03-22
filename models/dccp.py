@@ -1,7 +1,6 @@
 import torch
 from torch import nn, Tensor
-from models.backend import Stem, activation_type, logit_type
-from models.self_att import SelfAttention
+from models.types import activation_type, logit_type
 
 from utils.types import orient_dim, hidden_dim, num_ori_layer, true_type, frac_2, frac_4, frac_5, BaseWrapper, BaseType
 from utils.math_ops import inv_sigmoid
@@ -119,33 +118,7 @@ def convert23_gold(right, direc):
     right = 1 + right
     return torch.where(direc, right, torch.zeros_like(right))
 
-hinge_bias = lambda x: x - 0.5
-
-class SAL(nn.Module):
-    def __init__(self, in_size, out_size, num_layers):
-        super().__init__()
-        self._sa = SelfAttention(in_size, 10, num_layers)
-        self._fi = nn.Linear(in_size, out_size)
-        self._a1 = nn.ReLU()
-        self._a2 = nn.Tanh()
-
-    def forward(self, base, seq_len):
-        return self._a2(self._fi(self._a1(self._sa(base, seq_len))))
-
-class LSA(nn.Module):
-    def __init__(self, in_size, out_size, num_layers):
-        super().__init__()
-        self._fi = nn.Linear(in_size, out_size)
-        self._sa = SelfAttention(out_size, 10, num_layers, norm_dims = 2)
-        self._a1 = nn.ReLU()
-        self._a2 = nn.Tanh()
-
-    def forward(self, base, seq_len):
-        return self._a2(self._sa(self._a1(self._fi(base)), seq_len))
-
-to_name = lambda x: x.__name__
-orient_module = BaseType(0, as_index = True, as_exception = True, default_set = BaseWrapper.from_gen((nn.LSTM, nn.GRU, SAL, LSA), to_name))
-
+from models.types import SAL, LSA, orient_module, hinge_bias
 from models.combine import get_combinator, get_components, combine_type, valid_trans_compound
 stem_config = dict(orient_dim    = orient_dim,
                    combine_type  = combine_type,

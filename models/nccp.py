@@ -1,6 +1,7 @@
 import torch
 from torch import nn, Tensor
-from models.backend import Stem, activation_type, logit_type
+from models.backend import Stem
+from models.types import activation_type, logit_type
 
 from utils.types import hidden_dim, frac_4
 

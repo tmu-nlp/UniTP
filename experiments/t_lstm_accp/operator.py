@@ -52,7 +52,7 @@ def extend_fence_idx(unpacked_fence_idx):
     return torch.cat(layers, dim = 1)
 
 
-class MAryPennOperator(PennOperator):
+class MultiOperator(PennOperator):
     def __init__(self, model, get_datasets, recorder, i2vs, evalb, train_config):
         super().__init__(model, get_datasets, recorder, i2vs, evalb, train_config)
 
@@ -174,7 +174,7 @@ class MAryPennOperator(PennOperator):
         serial = draw_weights or flush_heads or not self._mp_decode
         if serial:
             async_ = True
-            vis = MAryVis(epoch,
+            vis = MultiVis(epoch,
                           work_dir,
                           self._evalb,
                           self.i2vs,
@@ -273,7 +273,7 @@ def batch_trees(b_word, b_tag, b_label, b_fence, b_segment, b_seg_length, i2vs, 
         yield get_tree_from_signals(wd, tg, layers_of_label, layers_of_fence, fb_label, layers_of_weight)
 
 
-class MAryVis(BaseVis):
+class MultiVis(BaseVis):
     def __init__(self, epoch, work_dir, evalb, i2vs, logger,
                  draw_weights   = False,
                  length_bins    = None,

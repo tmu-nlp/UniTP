@@ -170,6 +170,7 @@ class Recorder:
         if self._writer is None:
             return
         for key, value in kwargs.items():
+            if value is None: continue
             self._writer.add_scalar(template % key, value, step)
 
     @staticmethod

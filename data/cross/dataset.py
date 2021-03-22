@@ -234,13 +234,236 @@ class StaticCrossDataset(LengthOrderedDataset):
         return field_columns
 
 
-# class DynamicCrossDataset(LengthOrderedDataset):
-#     def __init__(self,
-#                  dir_join,
-#                  trees,
-#                  field_v2is,
-#                  device,
-#                  factors  = None,
-#                  min_len  = 0,
-#                  max_len  = None,
-#                  extra_text_helper = None):
+# from data.io import distribute_jobs
+from data.multib.dataset import fill_layers
+from data.cross.multib import F_RANDOM
+class DynamicCrossDataset(LengthOrderedDataset):
+    def __init__(self,
+                 tree_keepers,
+                 device,
+                 factors = None,
+                 min_len = 0,
+                 max_len = None,
+                 min_gap  = 0,
+                 extra_text_helper = None,
+                 num_threads = 0):
+
+        text = []
+        lengths = []
+        static_signals = []
+        for tk in tree_keepers:
+            assert tk.has_signals
+            wd = tk.word
+            wi, ti = tk.word_tag
+            if None in wi:
+                print('Wrong vocab?')
+                lengths.append(-1)
+            elif None in ti:
+                print('Wrong vocab?')
+                lengths.append(-1)
+            elif min_gap and tk.gaps < min_gap:
+                lengths.append(-1)
+            else:
+                lengths.append(len(wd))
+            if factors is None:
+                static_signals.append((wi, ti) + tk.stratify(F_RANDOM))
+            if extra_text_helper is not None:
+                text.append(wd)
+
+        heads = 'token', 'tag', 'label', 'space', 'disco'
+        if factors is None:
+            heads = heads[:-1]
+            tree_keepers = static_signals
+            lines = ['Load ' + byte_style('static D.M. treebank', '3')]
+        else:
+            balanced_prob = factors['balanced']
+            original_prob = 1 - balanced_prob
+            train_factors = {}
+            lines = ' F\Balanced'
+            if balanced_prob:
+                lines += '          Yes'
+            if original_prob:
+                lines += '      No (Origin without _SUB)'
+            lines = ['Load ' + byte_style('dynamic D.M. treebank', '5'), byte_style(lines, '2')]
+            for factor, o_prob in factors['others'].items():
+                line = ''
+                prob = balanced_prob * o_prob
+                if prob:
+                    train_factors['+'+factor] = prob
+                    line += f'{prob * 100:.0f}%'.rjust(9)
+                prob = original_prob * o_prob
+                if prob:
+                    train_factors['-'+factor] = prob
+                    line += f'{prob * 100:.0f}%'.rjust(18)
+                if line:
+                    lines.append(f'  ::{ factor}::'.ljust(15) + line)
+            factors = train_factors
+        print('\n'.join(lines))
+            
+        self._keepers_heads = tree_keepers, heads
+        if extra_text_helper:
+            extra_text_helper = extra_text_helper(text, device)
+        super().__init__(heads, lengths, factors, min_len, max_len, extra_text_helper)
+        self._device = device
+
+    def at_idx(self, idx, factor, length):
+        tree_keepers, heads = self._keepers_heads
+        tk = tree_keepers[idx]
+        if factor is None:
+            signals = tk
+        else:
+            signals = tk.word_tag + tk.stratify(factor[1:], factor[0] == '+')
+        sample = {h:s for h, s  in zip(heads, signals)}
+        sample['length'] = length
+        return sample
+
+    def _collate_fn(self, batch):
+        field_columns = {}
+        for field, column in zip(self.heads, zip(*batch)):
+            if field == 'length':
+                batch_size = len(column)
+                tensor = lengths = np.asarray(column, np.int32)
+                max_len = np.max(lengths)
+            elif field in ('token', 'tag'):
+                tensor = np.zeros([batch_size, max_len], np.int32)
+                for i, (values, length) in enumerate(zip(column, lengths)):
+                    tensor[i, :length] = values
+            elif field == 'label':
+                segment = []
+                seg_len = []
+                for layer in zip_longest(*column, fillvalue = []):
+                    sl = [len(seq) for seq in layer]
+                    segment.append(max(sl))
+                    seg_len.append(sl)
+                field_columns['segment'] = torch.tensor(segment, device = self._device)
+                field_columns['seg_length'] = torch.tensor(seg_len, device = self._device).transpose(0, 1)
+                tensor = fill_layers(column, segment, np.int32)
+            elif field == 'space':
+                tensor = fill_space_layers(batch_size, column, segment[:-1])
+                space_column = column
+            else:
+                # 1d: space as labels; disco as labels; [b, s+]; fence [b, s-]
+                split_segment = []
+                con_split_column = []
+                dis_layer_column = []
+                # 2d: [b, s++] & [b, 2ds--]
+                shape = []
+                components = []
+                for l_space, l_disco in zip(zip_longest(*space_column, fillvalue = []), zip_longest(*column, fillvalue = {})): # all layer slices [(), ] [(), ]
+                    batch_layer_disco = [] # same dim with space
+                    batch_layer_split = [] # splitting points for continuous constituents
+                    max_space_len = 0
+                    for space_layer, disco_set in zip(l_space, l_disco): # every layer for a parse
+                        count = 0
+                        split_layer = []
+                        for lhs, rhs in zip(space_layer, space_layer[1:] + [-1]):
+                            if lhs in disco_set:
+                                continue
+                            else:
+                                count += 1
+                            if lhs != rhs:
+                                split_layer.append(count)
+                        if split_layer:
+                            split_layer.insert(0, 0)
+                        batch_layer_split.append(split_layer)
+                        if count > max_space_len:
+                            max_space_len = count
+                    comp_batch = []
+                    max_comp_len = 0
+                    max_comp_size = 0
+                    for disco_set in l_disco:
+                        disco_children = []
+                        if disco_set:
+                            num_comp_size = len(disco_set)
+                            if num_comp_size > max_comp_size:
+                                max_comp_size = num_comp_size
+                            for ds in disco_set.values():
+                                disco_children += ds
+                            num_comp_len = len(disco_children)
+                            if num_comp_len > max_comp_len:
+                                max_comp_len = num_comp_len
+                            comp_batch.append((disco_set, disco_children))
+                        batch_layer_disco.append(disco_children)
+                    split_segment.append(max_space_len + 1)
+                    con_split_column.append(batch_layer_split)
+                    dis_layer_column.append(batch_layer_disco)
+
+                    comp_layer = []
+                    for disco_set, disco_children in comp_batch:
+                        disco_children.sort()
+                        disco_children = {y:x for x,y in enumerate(disco_children)}
+                        comp_layer.append([[disco_children[d] for d in ds] for ds in disco_set.values()])
+                    components.append(comp_layer)
+                    shape.append((len(comp_batch), max_comp_size, max_comp_len))
+
+                field_columns['split_segment'] = split_segment
+                field_columns['dis_disco'] = torch.tensor(fill_bool_layers(batch_size, dis_layer_column, segment), device = self._device)
+                field_columns['con_split'] = torch.tensor(fill_bool_layers(batch_size, con_split_column, split_segment, True), device = self._device)
+                if any(components):
+                    start = 0
+                    # dis_slice_shape = []
+                    comp = np.zeros(sum(b*l*l for b, _, l in shape), dtype = np.bool)
+                    for (bz, cz, cl), comps in zip(shape, components):
+                        if bz:
+                            end = start + bz * cl * cl
+                            cp = comp[start:end].reshape(bz, cl, cl)
+                            for bid, bpz in enumerate(comps):
+                                for cpz in bpz:
+                                    cps = cp[bid, cpz]
+                                    cps[:, cpz] = True
+                                    cp[bid, cpz] = cps
+                            # dis_slice_shape.append((start, end, bz, cl))
+                            start = end
+                        # else:
+                        #     dis_slice_shape.append(None)
+                    # size = np.array(shape).prod(1)
+                    # comp = np.zeros(size.sum(), dtype = np.bool)
+                    # start = 0
+                    # for sz, sp, comps in zip(size, shape, components): # layer
+                    #     if sz > 0:
+                    #         end = start + sz # layer -> [b-, c+, s-]
+                    #         cp = comp[start:end].reshape(sp)
+                    #         for bid, bpz in enumerate(comps):
+                    #             for cid, cpz in enumerate(bpz):
+                    #                 cp[bid, cid, cpz] = True
+                    #         start = end
+                    # field_columns['dis_slice'] = component_segment(shape) 
+                    # field_columns['dis_shape'] = shape # [(layer, comp_x, comp_y)] [b, 3]
+                    # field_columns['dis_slice_shape'] = dis_slice_shape
+                    field_columns['dis_component'] = torch.tensor(comp, device = self._device)
+
+            field_columns[field] = torch.as_tensor(tensor, dtype = torch.long, device = self._device)
+        return field_columns
+
+def fill_space_layers(batch_size, space_layers, tensor_seg):
+    tensor = np.zeros([batch_size, sum(tensor_seg)], dtype = np.int32)
+    start = 0
+    for seg_len, layer in zip(tensor_seg, zip_longest(*space_layers, fillvalue = [])):
+        end = start + seg_len
+        for bid, seq in enumerate(layer):
+            if seq:
+                seq_len = len(seq)
+                seq_end = start + seq_len
+                tensor[bid, start:seq_end] = seq
+                tensor[bid, start:seq_end] += 1
+            else:
+                tensor[bid, 0] = 1
+        start = end
+    return tensor
+
+def fill_bool_layers(batch_size, sample_layers, tensor_seg, remant = False):
+    tensor = np.zeros([batch_size, sum(tensor_seg)], dtype = np.bool)
+    start = 0
+    for seg_len, layer in zip(tensor_seg, sample_layers):
+        end = start + seg_len
+        for bid, seq in enumerate(layer):
+            if seq:
+                tensor[bid, [start + x for x in seq]] = True
+            elif remant:
+                tensor[bid, [start, start + 1]] = True
+        start = end
+    return tensor
+
+def component_segment(shape):
+    shape = np.array([[0, 0, 0]] + shape)
+    return np.cumsum(np.prod(shape, 1))

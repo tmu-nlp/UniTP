@@ -1,6 +1,7 @@
 from models.backend import InputLeaves, Contextual, input_config, contextual_config
 from models.backend import Stem, stem_config
-from models.backend import torch, nn, Tensor, activation_type
+from models.backend import torch, nn, Tensor
+from models.types import activation_type
 from models.utils import condense_helper, condense_left, bos_mask, eos_mask, shuffle_some_from
 from utils.types import word_dim, orient_dim, frac_2
 from math import log

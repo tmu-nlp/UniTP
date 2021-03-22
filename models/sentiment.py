@@ -3,7 +3,7 @@ from models.utils import get_logit_layer
 from models.backend import nn
 
 from utils.types import true_type, hidden_dim, frac_4, BaseType, valid_size
-from models.backend import activation_type, logit_type
+from models.types import activation_type, logit_type
 special_hidden_dim = BaseType(None, as_exception = True, validator = valid_size)
 
 def inject_sentiment_type(model_type):

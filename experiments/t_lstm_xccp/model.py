@@ -1,5 +1,5 @@
 from models.backend import torch, InputLeaves, Contextual, input_config, contextual_config, true_type
-from models.accp import BaseRnnTree, model_type
+from models.xccp import BaseRnnTree, model_type
 from utils.types import word_dim
 
 model_type = model_type.copy()
@@ -8,7 +8,7 @@ model_type['input_layer']      = input_config
 model_type['contextual_layer'] = contextual_config
 model_type['residual_add']     = true_type
 
-class MultiRnnTree(BaseRnnTree):
+class DiscoMultiRnnTree(BaseRnnTree):
     def __init__(self,
                  num_tokens,
                  initial_weights,
@@ -34,7 +34,7 @@ class MultiRnnTree(BaseRnnTree):
         self._residual_add = residual_add
 
     def forward(self, word_idx, tune_pre_trained, **kw_args):
-        batch_size,   batch_len  = word_idx.shape
+        batch_size, batch_len  = word_idx.shape
         static, bottom_existence = self._input_layer(word_idx, tune_pre_trained)
         if self._contextual_layer is None:
             base_inputs = static

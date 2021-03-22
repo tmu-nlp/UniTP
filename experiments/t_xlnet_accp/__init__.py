@@ -1,11 +1,11 @@
-from data.penn import MAryReader
+from data.penn import MultiReader
 from data.penn_types import C_PTB, accp_data_config, select_and_split_corpus
 from utils.types import M_TRAIN, M_DEVEL, M_TEST
 from utils.param_ops import HParams, get_sole_key
 
 from models.plm import XLNetDatasetHelper
 from experiments.t_xlnet_accp.model import ContinuousXLNetTree, model_type
-from experiments.t_lstm_accp.operator import MAryPennOperator, train_type
+from experiments.t_lstm_accp.operator import MultiOperator, train_type
 from experiments.t_xlnet_nccp import get_any_penn
 
 def get_configs(recorder = None):
@@ -22,8 +22,8 @@ def get_configs(recorder = None):
                                             penn.data_splits.devel_set,
                                             penn.data_splits.test_set)
 
-    reader = MAryReader(penn.data_path,
-                        penn.greediness > 0,
+    reader = MultiReader(penn.data_path,
+                        penn.balanced > 0,
                         penn.unify_sub,
                         corpus_reader,
                         get_fnames,
@@ -36,7 +36,7 @@ def get_configs(recorder = None):
         datasets = {}
         if mode == M_TRAIN:
             datasets[C_PTB] = reader.batch(M_TRAIN, penn.batch_size, penn.bucket_len,
-                                           greediness = penn.greediness,
+                                           balanced = penn.balanced,
                                            max_len = penn.max_len,
                                            sort_by_length = penn.sort_by_length)
         else:
@@ -47,4 +47,4 @@ def get_configs(recorder = None):
 
     model = ContinuousXLNetTree(**model_config, **task_params)
     model.to(reader.device)
-    return MAryPennOperator(model, get_datasets, recorder, reader.i2vs, recorder.evalb, train_config)
+    return MultiOperator(model, get_datasets, recorder, reader.i2vs, recorder.evalb, train_config)

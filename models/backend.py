@@ -1,29 +1,8 @@
 import torch
 from torch import nn, Tensor
 from utils.math_ops import s_index
-
 from utils.types import BaseType, true_type, frac_4, frac_2, BaseWrapper
 from utils.types import orient_dim, num_ori_layer
-
-def valid_codebook(name):
-    if name.startswith('codebook'):
-        if '|' in name:
-            bar = name.index('|') + 1
-            try:
-                bar = float(name[bar:])
-            except:
-                return False
-        return bar >= 0
-    return False
-
-logit_type = BaseType('affine', default_set = ('affine', 'linear', 'codebook'), validator = valid_codebook)
-to_name = lambda x: x.__name__
-contextual_type = BaseType(0, as_index = True, as_exception = True, default_set = BaseWrapper.from_gen((nn.LSTM, nn.GRU), to_name))
-activation_type = BaseType(0, as_index = True, as_exception = True, default_set = BaseWrapper.from_gen((nn.ReLU, nn.ReLU6, nn.Softplus,# end == 0, nn.GELU
-                                                                                   nn.LeakyReLU, nn.ELU, nn.CELU, nn.SELU, nn.RReLU, # end < 0
-                                                                                   nn.Sigmoid, nn.LogSigmoid,
-                                                                                   nn.Tanh, nn.Softsign, nn.Hardtanh, # -<0<+
-                                                                                   nn.Tanhshrink, nn.Softshrink, nn.Hardshrink), to_name)) # -0+
 
 from models.combine import get_combinator, get_components, combine_type, valid_trans_compound
 stem_config = dict(orient_dim   = orient_dim,
@@ -208,9 +187,9 @@ class Stem(nn.Module):
 
 
 from models.utils import PCA
-from utils.types import false_type, num_ctx_layer, frac_06, hidden_dim
+from utils.types import num_ctx_layer, frac_06, hidden_dim
 from utils.param_ops import HParams, dict_print
-act_fasttext = BaseType(None, as_index = True, as_exception = True, default_set = BaseWrapper.from_gen((nn.Tanh, nn.Softsign), to_name))
+from models.types import act_fasttext
 input_config = dict(pre_trained = true_type, activation = act_fasttext, drop_out = frac_4)#, random_unk_prob = frac_06, random_unk_from_id = hidden_dim)
 
 class InputLeaves(nn.Module):
@@ -320,8 +299,9 @@ state_usage = BaseType(None, as_index = False, as_exception = True,
                        validator   = lambda x: isinstance(x, int),
                        default_set = ('sum_layers', 'weight_layers'))
 
+from models.types import rnn_module_type
 contextual_config = dict(num_layers   = num_ctx_layer,
-                         rnn_type     = contextual_type,
+                         rnn_type     = rnn_module_type,
                          rnn_drop_out = frac_2,
                          use_state    = dict(from_cell = true_type, usage = state_usage))
 

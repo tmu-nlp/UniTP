@@ -1,7 +1,7 @@
 import torch
 from torch import nn
 from models.utils import SimplerLinear, condense_helper, condense_left, release_left
-from models.backend import activation_type
+from models.types import activation_type
 from utils.types import BaseType
 from utils.str_ops import is_numeric
 from collections import defaultdict

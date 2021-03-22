@@ -1,5 +1,5 @@
 from data.disco import DiscoReader
-from data.disco_types import C_ABSTRACT, disco_config
+from data.disco_types import C_ABSTRACT, dccp_data_config
 from utils.types import M_TRAIN
 from utils.param_ops import HParams
 
@@ -9,7 +9,7 @@ from experiments.t_lstm_dccp.operator import DiscoOperator, train_type
 get_any_disco = lambda dptb = None, tiger = None: dptb or tiger
 def get_configs(recorder = None):
     if recorder is None:
-        return {C_ABSTRACT: disco_config}, model_type, train_type
+        return {C_ABSTRACT: dccp_data_config}, model_type, train_type
     
     data_config, model_config, train_config, _ = recorder.task_specs()
     disco = HParams(get_any_disco(**data_config), fallback_to_none = True)

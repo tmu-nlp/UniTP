@@ -262,7 +262,7 @@ class Manager:
                 datasets = ('ptb', 'ctb', 'ktb')
                 if not any(x in ready_dpaths for x in datasets):
                     errors.append('None of \'' + "', '".join(datasets) + '\' is ready')
-            elif 'dccp' in module_name:
+            elif 'dccp' in module_name or 'xccp' in module_name:
                 errors.extend(evalb_lcfrs_errors)
                 datasets = ('tiger', 'dptb')
                 if not any(x in ready_dpaths for x in datasets):
@@ -330,7 +330,7 @@ class Manager:
             if task.endswith('_nccp') or task.endswith('_accp') or task.endswith('_sentiment'):
                 evalb = status['tool']['evalb']
                 evalb = abspath(evalb['path']), '-p', abspath(evalb['prm'])
-            elif task.endswith('_dccp'):
+            elif task.endswith('_dccp') or task.endswith('_xccp'):
                 evalb = abspath(status['tool']['evalb_lcfrs_prm'])
             else:
                 evalb = None
@@ -358,7 +358,7 @@ class Manager:
                     data_config[dc] = dict(data_path = ready_paths[dc])
                 else:
                     dc['data_path'] = ready_paths[dn]
-                    if dc.get('trapezoid_height', None) is not None or task.endswith('_accp'): # a trigger for source corpus
+                    if dc.get('trapezoid_height', None) is not None or task.endswith('_accp') or task.endswith('_xccp'): # a trigger for source corpus
                         corp_status = status['data'][dn]
                         dc['source_path'] = corp_status['source_path']
                         dc['data_splits'] = corp_status['build_params']

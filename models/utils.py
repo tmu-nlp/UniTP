@@ -319,16 +319,28 @@ def blocky_softmax(sections,
     final_domains = final_domains[:, 1:] if pad_first else final_domains[:, :-1]
     return weights, final_domains
 
-def blocky_max(sections, values):
+def blocky_max(sections, values, has_batch_dim = True):
     m = sections.max() + 1
-    m_range = torch.arange(m, device = sections.device)[None, :, None]
-    idx = sections[:, None, :].repeat(1, m, 1) == m_range # [b, m, s]
-    m_values = idx * values.unsqueeze(dim = 1)
-    any_idx = idx.any(dim = 2, keepdim = True)
-    m_max = m_values.max(dim = 2, keepdim = True).values
-    mask = m_values == m_max
-    mask &= any_idx
-    return mask.any(dim = 1)
+    if has_batch_dim:
+        _, s = sections.shape
+        s_range = torch.arange(s, device = sections.device)[None, :]
+        m_range = torch.arange(m, device = sections.device)[None, :, None]
+        mask = sections[:, None, :].repeat(1, m, 1) == m_range # [b, m, s]
+        m_dim, s_dim = 1, 2
+    else:
+        s, = sections.shape
+        s_range = torch.arange(s, device = sections.device)
+        m_range = torch.arange(m, device = sections.device)[:, None]
+        mask = sections[None, :].repeat(m, 1) == m_range
+        m_dim, s_dim = 0, 1
+    any_mask = mask.any(s_dim, keepdim = True)
+    m_values = mask * values.unsqueeze(m_dim) # [b, m, s] * [b, 1, s]
+    # _, indices = m_values.max(s_dim, keepdim = True)
+    # print(indices)
+    # print(m_values.argmax(s_dim, keepdim = True))# may have more than one...
+    mask = s_range == m_values.argmax(s_dim, keepdim = True)
+    mask &= any_mask
+    return mask.any(m_dim)
 
 def birnn_fwbw(embeddings, pad = None, seq_len = None):
     bs, sl, ed = embeddings.shape
@@ -356,3 +368,29 @@ def fencepost(fw, bw, splits):
     bw = bw[batch, splits]
     bw_diff = bw[:, :-1] - bw[:, 1:]
     return torch.cat([fw_diff, bw_diff], dim = 2)
+
+def batch_insert(base, indice, subject = None):
+    # base [b, s], obj [b, s-]
+    batch_size, batch_len, emb_size = base.shape
+    bs, extra_len = indice.shape
+    assert batch_size == bs, 'batch_size should match'
+    batch_range = torch.arange(batch_size, device = base.device)[:, None]
+    extended_len = batch_len + extra_len
+
+    inc_start = torch.zeros(batch_size, extended_len, dtype = indice.dtype, device = base.device)
+    inc_start.scatter_add_(1, indice, torch.ones_like(indice)) # mark base (0) and subject (1) 224..
+    # inc_start[batch_range, indice] += 1 does not work
+    base_inc = inc_start.cumsum(dim = 1) # i-th insetion  0011222.. 
+    base_inc = base_inc[:, :batch_len]
+    base_inc += torch.arange(batch_len, device = base.device)[None] # base position 0134678..
+    base_inc = base_inc.unsqueeze(dim = 2)
+
+    new_base = torch.zeros(batch_size, extended_len, emb_size, dtype = base.dtype, device = base.device)
+    new_base = new_base.scatter_add(1, base_inc.expand_as(base), base)
+    if subject is None:
+        return new_base
+    
+    subj_inc = torch.arange(extra_len, dtype = indice.dtype, device = base.device)[None]
+    subj_inc = subj_inc + indice # 224 -> 236
+    subj_inc.unsqueeze_(dim = 2)
+    return new_base.scatter_add(1, subj_inc.expand_as(subject), subject)

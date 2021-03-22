@@ -9,19 +9,108 @@ build_params = {C_DPTB: split_dict(   '2-21',          '22',          '23'),
 ft_bin = {C_DPTB: 'en', C_TGR: 'de'}
 call_fasttext = make_call_fasttext(ft_bin)
 
-from utils.types import none_type, false_type, true_type, binarization_5_head, NIL, swapper
+from utils.types import none_type, false_type, true_type, binarization_5_head, NIL, swapper, frac_close_0, frac_close_1
 from utils.types import train_batch_size, train_max_len, train_bucket_len, vocab_size, tune_epoch_type
-disco_config = dict(vocab_size     = vocab_size,
-                    binarization   = binarization_5_head,
-                    batch_size     = train_batch_size,
-                    max_len        = train_max_len,
-                    bucket_len     = train_bucket_len,
-                    min_gap        = tune_epoch_type,
-                    shuffle_swap   = swapper,
-                    unify_sub      = true_type,
-                    sort_by_length = false_type)
+dccp_data_config = dict(vocab_size     = vocab_size,
+                        binarization   = binarization_5_head,
+                        batch_size     = train_batch_size,
+                        max_len        = train_max_len,
+                        bucket_len     = train_bucket_len,
+                        min_gap        = tune_epoch_type,
+                        shuffle_swap   = swapper,
+                        unify_sub      = true_type,
+                        sort_by_length = false_type)
 
+from data.cross.multib import F_CON, F_RANDOM, F_LEFT, F_RIGHT, F_DEP
+medium_factor = dict(balanced = frac_close_0,
+                     others = {F_RANDOM: frac_close_1,
+                               F_LEFT: frac_close_0,
+                               F_RIGHT: frac_close_0,
+                               F_DEP: frac_close_0,
+                               F_CON: frac_close_0})
+xccp_data_config = dict(vocab_size     = vocab_size,
+                        batch_size     = train_batch_size,
+                        medium_factor  = medium_factor,
+                        max_len        = train_max_len,
+                        bucket_len     = train_bucket_len,
+                        min_gap        = tune_epoch_type,
+                        unify_sub      = true_type,
+                        sort_by_length = false_type)
 # tree = '/Users/zchen/KK/corpora/tiger_release_aug07.corrected.16012013.xml'
+
+from utils.shell_io import byte_style
+def select_and_split_corpus(corp_name, corp_path,
+                            train_set, devel_set, test_set,
+                            binary = True, read_dep = True):
+    from utils.str_ops import strange_to
+    from data.cross.binary import read_tiger_graph, read_disco_penn
+    from data.cross.multib import TreeKeeper
+    if corp_name == C_DPTB:
+        from data.cross.ptb2dep import StanfordDependencies
+        from nltk.corpus import BracketParseCorpusReader
+        from utils.file_io import parpath
+        folder_pattern = lambda x: f'{x:02}'
+        reader = BracketParseCorpusReader(corp_path, r".*/wsj_.*\.mrg")
+        devel_set = strange_to(devel_set, folder_pattern)
+        test_set  = strange_to(test_set,  folder_pattern)
+        non_train_set = set(devel_set + test_set)
+        if train_set == '__rest__':
+            all_folders = reader.fileids()
+            all_sets = set(fp[:2] for fp in all_folders)
+            train_set = all_sets - non_train_set
+        else:
+            train_set = strange_to(train_set, folder_pattern)
+            all_sets = non_train_set | set(train_set)
+            all_folders = [fp for fp in reader.fileids() if fp[:2] in all_sets]
+        in_train_set = lambda fn: fn in train_set
+        in_devel_set = lambda fn: fn in devel_set
+        in_test_set  = lambda fn: fn in test_set
+
+        corpus = []
+        dtrees = []
+        for fp in all_folders:
+            for tree in reader.parsed_sents(fp):
+                corpus.append([fp[:2], tree] if read_dep else (fp[:2], tree, None))
+                dtrees.append(tree)
+        if read_dep:
+            print(byte_style('Acquiring PTB head info from Stanford CoreNLP ...', '3'), file = stderr)
+            start = time()
+            dep_root = StanfordDependencies(parpath(save_to_dir), print_func = lambda x: print(byte_style(x, dim = True), file = stderr)).convert_corpus(dtrees)
+            start = time() - start
+            print('  finished in ' + byte_style(f'{start:.0f}', 3) + ' sec. (' + byte_style(f'{len(corpus) / start:.2f}', '3')+ ' sents/sec.)', file = stderr)
+            for duet, dep in zip(corpus, dep_root):
+                duet.append(dep)
+        read_func = read_disco_penn if binary else TreeKeeper.from_disco_penn
+    elif corp_name == C_TGR:
+        from xml.etree import ElementTree
+        from data.cross.tiger2dep import get_tiger_heads
+        devel_set = strange_to(devel_set)
+        test_set  = strange_to(test_set)
+        non_train_set = devel_set + test_set
+        in_devel_set = lambda x: int(x[1:]) in devel_set
+        in_test_set  = lambda x: int(x[1:]) in test_set
+        if train_set == '__rest__':
+            in_corpus = lambda x: True
+            in_train_set = lambda x: int(x[1:]) not in non_train_set
+        else:
+            train_set = strange_to(train_set)
+            all_sets = train_set + non_train_set
+            in_corpus = lambda x: int(x[1:]) in all_sets
+            in_train_set = lambda x: int(x[1:]) in train_set
+        root = ElementTree.parse(corp_path).getroot()
+        if read_dep:
+            print(byte_style('Building Tiger head info with Tiger2Dep ...', '3'), file = stderr)
+            start = time()
+            dep_root = get_tiger_heads(corp_path)
+            start = time() - start
+            print('  finished in ' + byte_style(f'{start:.0f}', 3) + ' sec. (' + byte_style(f'{len(root[1]) / start:.2f}', '3')+ ' sents/sec.)', file = stderr)
+        corpus = []
+        for sent in root[1]:
+            sid = sent.get('id')
+            if in_corpus(sid):
+                corpus.append((sid, sent, dep_root.pop(sid) if read_dep else None))
+        read_func = read_tiger_graph if binary else TreeKeeper.from_tiger_graph
+    return corpus, in_train_set, in_devel_set, in_test_set, read_func
 
 from utils.file_io import join, remove, isfile, parpath, create_join
 from sys import stderr
@@ -32,17 +121,14 @@ def build(save_to_dir,
           devel_set,
           test_set,
           **kwargs):
-    from data.cross.binary import read_tiger_graph, read_disco_penn, zip_to_logit, zip_swaps
+    from data.cross.binary import zip_to_logit, zip_swaps
     from tqdm import tqdm
-    from xml.etree import ElementTree
-    from nltk.corpus import BracketParseCorpusReader
     from collections import Counter, defaultdict
-    from itertools import count, tee
+    from itertools import count
     from data.io import save_vocab, sort_count
-    from utils.str_ops import strange_to, histo_count
+    from utils.str_ops import histo_count
     from utils.pickle_io import pickle_dump
-    from utils.shell_io import byte_style
-    from data.io import SourcePool, distribute_jobs
+    from data.io import distribute_jobs
     from multiprocessing import Process, Queue
     from utils.types import E_ORIF5_HEAD, M_TRAIN, M_DEVEL, M_TEST, num_threads
     from contextlib import ExitStack
@@ -101,67 +187,8 @@ def build(save_to_dir,
             bundle = len(sents) - len(errors), errors, word_cnt, tag_cnt, label_cnts, xtype_cnts, phrase_gap_cnt, sent_gap_cnt
             q.put(bundle)
 
-    if corp_name == C_DPTB:
-        from data.cross.ptb2dep import StanfordDependencies
-        from utils.file_io import parpath
-        folder_pattern = lambda x: f'{x:02}'
-        reader = BracketParseCorpusReader(corp_path, r".*/wsj_.*\.mrg")
-        devel_set = strange_to(devel_set, folder_pattern)
-        test_set  = strange_to(test_set,  folder_pattern)
-        non_train_set = set(devel_set + test_set)
-        if train_set == '__rest__':
-            all_folders = reader.fileids()
-            all_sets = set(fp[:2] for fp in all_folders)
-            train_set = all_sets - non_train_set
-        else:
-            train_set = strange_to(train_set, folder_pattern)
-            all_sets = non_train_set | set(train_set)
-            all_folders = [fp for fp in reader.fileids() if fp[:2] in all_sets]
-        in_train_set = lambda fn: fn in train_set
-        in_devel_set = lambda fn: fn in devel_set
-        in_test_set  = lambda fn: fn in test_set
-
-        corpus = []
-        dtrees = []
-        for fp in all_folders:
-            for tree in reader.parsed_sents(fp):
-                corpus.append([fp[:2], tree])
-                dtrees.append(tree)
-        print(byte_style('Acquiring PTB head info from Stanford CoreNLP ...', '3'), file = stderr)
-        start = time()
-        dep_root = StanfordDependencies(parpath(save_to_dir), print_func = lambda x: print(byte_style(x, dim = True), file = stderr)).convert_corpus(dtrees)
-        start = time() - start
-        print('  finished in ' + byte_style(f'{start:.0f}', 3) + ' sec. (' + byte_style(f'{len(corpus) / start:.2f}', '3')+ ' sents/sec.)', file = stderr)
-        for duet, dep in zip(corpus, dep_root):
-            duet.append(dep)
-        read_func = read_disco_penn
-    elif corp_name == C_TGR:
-        from data.cross.tiger2dep import get_tiger_heads
-        devel_set = strange_to(devel_set)
-        test_set  = strange_to(test_set)
-        non_train_set = devel_set + test_set
-        in_devel_set = lambda x: int(x[1:]) in devel_set
-        in_test_set  = lambda x: int(x[1:]) in test_set
-        if train_set == '__rest__':
-            in_corpus = lambda x: True
-            in_train_set = lambda x: int(x[1:]) not in non_train_set
-        else:
-            train_set = strange_to(train_set)
-            all_sets = train_set + non_train_set
-            in_corpus = lambda x: int(x[1:]) in all_sets
-            in_train_set = lambda x: int(x[1:]) in train_set
-        root = ElementTree.parse(corp_path).getroot()
-        print(byte_style('Acquiring Tiger head info with Tiger2Dep ...', '3'), file = stderr)
-        start = time()
-        dep_root = get_tiger_heads(corp_path)
-        start = time() - start
-        print('  finished in ' + byte_style(f'{start:.0f}', 3) + ' sec. (' + byte_style(f'{len(root[1]) / start:.2f}', '3')+ ' sents/sec.)', file = stderr)
-        corpus = []
-        for sent in root[1]:
-            sid = sent.get('id')
-            if in_corpus(sid):
-                corpus.append((sid, sent, dep_root.pop(sid)))
-        read_func = read_tiger_graph
+    (corpus, in_train_set, in_devel_set, in_test_set,
+     read_func) = select_and_split_corpus(corp_name, corp_path, train_set, devel_set, test_set)
 
     num_threads = min(num_threads, len(corpus))
     workers = distribute_jobs(corpus, num_threads)

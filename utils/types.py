@@ -167,6 +167,7 @@ binarization = {O_LFT: frac_7,
                 O_MOT: frac_1}
 frac_close_0 = BaseType(0.0, frac_close)
 frac_close_2 = BaseType(0.2, frac_close)
+frac_close_1 = BaseType(1.0, frac_close)
 binarization_5_head = {o: frac_close_0 if o == O_HEAD else frac_close_2 for o in E_ORIF5_HEAD}
 S_ALL, S_EXH = 'all', 'except_head'
 swapper = BaseType(0, default_set = (None, S_ALL, S_EXH), as_index = True)

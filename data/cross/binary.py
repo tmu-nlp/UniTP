@@ -287,10 +287,10 @@ def cross_signals(bottom, node2tag, bottom_unary, top_down, factor,
         layers_of_direc.append(direc_layer)
         layers_of_swaps.append(swappable_locations)
 
-    if top_down:
+    if top_down or len(node2tag) == len(bottom) == 1:
         layers_of_right.append([factor > 0.5])
         layers_of_direc.append([False])
-        layers_of_label.append([top_down[bottom.pop()].label])
+        layers_of_label.append([top_down[bottom.pop()].label if top_down else node2tag[bottom.pop()]])
     return layers_of_label, layers_of_right, layers_of_joint, layers_of_direc, layers_of_swaps
 
 from utils.types import E_ORIF5, O_RGT, O_HEAD
@@ -396,7 +396,7 @@ def targets(right_layer, joint_layer):
                     targets[r0id + 2] += 1
     return targets
 
-from data.cross import E_SHP, E_CMB, defaultdict, _combine
+from data.cross import E_SHP, E_CMB, defaultdict, _combine, bottom_trees
 def disco_tree(word, bottom_tag, 
                layers_of_label,
                layers_of_right,
@@ -404,29 +404,10 @@ def disco_tree(word, bottom_tag,
                layers_of_direc,
                fall_back_root_label = None,
                perserve_sub         = False):
-    track_nodes = []
-    terminals = []
-    non_terminals = {}
-    top_down = defaultdict(set)
-    track_fall_back = isinstance(fall_back_root_label, str)
-    error_layer_id = None
-    NTS = 500
-    for tid, wd_tg in enumerate(zip(word, bottom_tag)):
-        terminals.append((tid,) + wd_tg)
-        if perserve_sub or layers_of_label[0][tid][0] in '#_':
-            track_nodes.append(tid)
-        else:
-            bottom_unary = layers_of_label[0][tid].split('+')
-            last_node = tid
-            while bottom_unary:
-                non_terminals[NTS] = bottom_unary.pop()
-                top_down[NTS] = set({last_node})
-                last_node = NTS
-                NTS += 1
-            track_nodes.append(NTS - 1)
-            
-    bottom_len = tid + 1
-    non_terminal_start = NTS
+
+    (NTS, bottom_len, track_nodes, terminals, non_terminals, top_down, track_fall_back,
+     error_layer_id) = bottom_trees(word, bottom_tag, layers_of_label, fall_back_root_label, perserve_sub)
+    non_terminal_end = NTS
 
     for lid, (lr, lj, ld) in enumerate(zip(layers_of_right, layers_of_joint, layers_of_direc)):
         # if not (len(lr) == len(ld) == len(lj) + 1 == len(track_nodes)):
@@ -458,15 +439,15 @@ def disco_tree(word, bottom_tag,
                         break
                     labels = layers_of_label[lid + 1][lhs_nid]
                     labels = [labels] if perserve_sub or labels[0] in '#_' else labels.split('+')
-                    non_terminals[non_terminal_start] = labels.pop()
-                    _combine(NTS, non_terminal_start, lhs_node, non_terminals, top_down, perserve_sub) # TODO: safe_label validate
-                    _combine(NTS, non_terminal_start, rhs_node, non_terminals, top_down, perserve_sub)
+                    non_terminals[non_terminal_end] = labels.pop()
+                    _combine(NTS, non_terminal_end, lhs_node, non_terminals, top_down, perserve_sub) # TODO: safe_label validate
+                    _combine(NTS, non_terminal_end, rhs_node, non_terminals, top_down, perserve_sub)
                     while labels: # unary
-                        non_terminal_start += 1
-                        non_terminals[non_terminal_start] = labels.pop()
-                        top_down[non_terminal_start] = set({non_terminal_start - 1})
-                    track_nodes.insert(lhs_nid, non_terminal_start)
-                    non_terminal_start += 1
+                        non_terminal_end += 1
+                        non_terminals[non_terminal_end] = labels.pop()
+                        top_down[non_terminal_end] = set({non_terminal_end - 1})
+                    track_nodes.insert(lhs_nid, non_terminal_end)
+                    non_terminal_end += 1
                     offset += 1
             elif last_right and not right and (last_direc or direc): # cross (swap)
                 # 1: >[<≤]
@@ -489,17 +470,17 @@ def disco_tree(word, bottom_tag,
             for pid in track_nodes:
                 if pid in non_terminals and non_terminals[pid][0] in '_#':
                     non_terminals.pop(pid)
-                    top_down[non_terminal_start].update(top_down.pop(pid))
+                    top_down[non_terminal_end].update(top_down.pop(pid))
                 else:
-                    top_down[non_terminal_start].add(pid)
-            non_terminals[non_terminal_start] = fall_back_root_label
-            non_terminal_start += 1
+                    top_down[non_terminal_end].add(pid)
+            non_terminals[non_terminal_end] = fall_back_root_label
+            non_terminal_end += 1
             break
 
     for nid, label in non_terminals.items():
         top_down[nid] = TopDown(label, top_down.pop(nid))
 
-    return terminals, top_down, non_terminal_start - 1, error_layer_id
+    return terminals, top_down, non_terminal_end - 1, error_layer_id
 
 from data.delta import get_logits
 def xlogit_gen(label_layer, right_layer, direc_layer, joint_layer, current_joints, next_joints):

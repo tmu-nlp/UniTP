@@ -37,6 +37,15 @@ def bit_fanout(bits):
         prev = bits
     return result
 
+from itertools import count
+def location_gen(bits):
+    for i in count():
+        bit = 1 << i
+        if bit > bits:
+            break
+        if bit & bits:
+            yield i
+
 def inv_sigmoid(y):
     return - log(1 / y - 1)
 

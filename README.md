@@ -10,9 +10,10 @@ Unified Tokenization and Parsing framework in PyTorch
   - [Huggingface transformers](https://github.com/huggingface/transformers) and [Discontinuous DOP](https://github.com/andreasvc/disco-dop) are optional.
 
 ## Models
-- NCCP: Neural Combinatory Constituency Parsing (continuous)
-  - ACCP: Attentional Combinatory Constituency Parsing (currently continuous)
-- DCCP: Discontinuous Combinatory Constituency Parsing
+- NCCP: Neural Combinatory Constituency Parsing (continuous and binary)
+  - ACCP: Attentional Combinatory Constituency Parsing (continuous and multi-branching)
+- DCCP: Discontinuous Combinatory Constituency Parsing (binary)
+  - XCCP: discontinuous X multi-branching Combinatory Constituency Parsing
 
 ## Usage
 
@@ -42,9 +43,8 @@ If you want a new work folder, try `mkdir Oh-My-Folder; ./manager.py Oh-My-Folde
 - Use `./manager.py Oh-My-Folder` to check the status and available experiments.
 - Use `./manager.py Oh-My-Folder -s lstm_nccp/ptb:Oh-My-Model` to train a continuous model on PTB.
   - Add `-x [fv=fine evaluation start:[early stop count:[fine eval count]]],[max=max epoch count],[! test along with evaluation]` to change training settings.
-- Use `-s [lstm_nccp/[ptb/ctb/ktb]|xlnet_nccp]` to choose a continuous binary parsing experiment.
-- Use `-s [lstm_accp/[ptb/ctb/ktb]|xlnet_accp]` to choose a continuous multi-branching parsing experiment.
-- Use `-s [lstm_dccp|xbert_dccp]/[dptb/tiger]` to choose a discontinuous parsing experiment.
+- Use `-s [[lstm_nccp|lstm_accp|xlnet_nccp|xlnet_accp]/[ptb|ctb|ktb]]` to choose a continuous parsing experiment.
+- Use `-s [lstm_dccp|lstm_xccp|xbert_dccp]/[dptb/tiger]` to choose a discontinuous parsing experiment.
 - Use `-s [lstm_sentiment|xlnet_sentiment]` to run a joint task with [Stanford Sentiment Treebank](https://nlp.stanford.edu/sentiment/treebank.html). Set `task/lstm_sentiment/model/hidden_dim: null` as so to turn off the joint task. You can also check the SST tensors with `Oh-My-Folder/lstm_sentiment/0.Oh-My-Model/stan_devel` in a remote/local folder or similar test folders.
 - Use `-s [lstm_tokenization]/[ptb/ctb/ktb]` run a BPE-style neural tokenization. Also please try visualization:)
 

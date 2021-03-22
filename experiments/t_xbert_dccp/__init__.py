@@ -1,5 +1,5 @@
 from data.disco import DiscoReader
-from data.disco_types import C_ABSTRACT, disco_config
+from data.disco_types import C_ABSTRACT, dccp_data_config
 from utils.types import M_TRAIN
 from utils.param_ops import HParams, get_sole_key
 
@@ -14,7 +14,7 @@ def get_any_disco(dptb = None, tiger = None):
 
 def get_configs(recorder = None):
     if recorder is None:
-        return {C_ABSTRACT: disco_config}, model_type, train_type
+        return {C_ABSTRACT: dccp_data_config}, model_type, train_type
 
     data_config, model_config, train_config, _ = recorder.task_specs()
     disco, DatasetHelper, Leaves = get_any_disco(**data_config)
