@@ -51,6 +51,14 @@ def extend_fence_idx(unpacked_fence_idx):
         layers.append(full_layer)
     return torch.cat(layers, dim = 1)
 
+def unpack_fence_vote(fence_vote, batch_size, segment):
+    layers = []
+    start = 0
+    for size in segment:
+        end = start + (size + 1) * size
+        layers.append(fence_vote[:, start:end].reshape(batch_size, size + 1, size))
+        start = end
+    return layers
 
 class MultiOperator(PennOperator):
     def __init__(self, model, get_datasets, recorder, i2vs, evalb, train_config):
@@ -68,7 +76,7 @@ class MultiOperator(PennOperator):
 
         batch_time = time()
         (batch_size, batch_len, static, top3_label_logits,
-         existences, embeddings, weights, fence_logits, fence_idx, tag_logits, label_logits,
+         existences, embeddings, weights, fence_logits, fence_idx, fence_vote, tag_logits, label_logits,
          segment, seg_length) = self._model(batch['token'], self._tune_pre_trained, **supervised_signals)
         batch_time = time() - batch_time
 
@@ -122,6 +130,8 @@ class MultiOperator(PennOperator):
             labels = self._model.get_decision(label_logits).type(torch.uint8).cpu().numpy()
             fences = fence_idx.type(torch.int16).cpu().numpy()
             seg_length = seg_length.type(torch.int16).cpu().numpy()
+            if fence_vote is not None:
+                fence_vote = fence_vote.type(torch.float16).cpu().numpy()
             if serial:
                 b_size = (batch_len,)
                 b_head = tuple((batch[x].type(torch.uint8) if x in ('tag', 'label', 'fence') else batch[x]).cpu().numpy() for x in 'token tag label fence'.split())
@@ -129,7 +139,7 @@ class MultiOperator(PennOperator):
                 # batch_len, length, token, tag, label, fence, segment, seg_length
 
                 weight = mean_stdev(weights).cpu().numpy()
-                b_data = (tags, labels, fences, weight, segment, seg_length)
+                b_data = (tags, labels, fences, fence_vote, weight, segment, seg_length)
             else:
                 b_size = (batch_size,)
                 b_head = (batch['token'].cpu().numpy(),)
@@ -246,16 +256,18 @@ from utils.param_ops import HParams
 from utils.shell_io import parseval, rpt_summary
 from data.multib import get_tree_from_signals, draw_str_lines
 from visualization import tee_trees
-from itertools import count
+from sys import stderr
 
-def batch_trees(b_word, b_tag, b_label, b_fence, b_segment, b_seg_length, i2vs, fb_label, b_weight = None):
-    for sid, word, tag, label, fence, seg_length in zip(count(), b_word, b_tag, b_label, b_fence, b_seg_length):
+def batch_trees(b_word, b_tag, b_label, b_fence, b_segment, b_seg_length, i2vs, fb_label, b_weight = None, b_fence_vote = None):
+    for sid, (word, tag, label, fence, seg_length) in enumerate(zip(b_word, b_tag, b_label, b_fence, b_seg_length)):
         layers_of_label = []
         layers_of_fence = []
         layers_of_weight = None if b_weight is None else []
+        layers_of_fence_vote = None if b_fence_vote is None else []
         label_start = 0
         fence_start = 0
-        for l_cnt, l_size, l_len in zip(count(), b_segment, seg_length):
+        fence_vote_start = 0
+        for l_cnt, (l_size, l_len) in enumerate(zip(b_segment, seg_length)):
             label_layer = tuple(i2vs.label[i] for i in label[label_start: label_start + l_len])
             layers_of_label.append(label_layer)
             if l_cnt:
@@ -267,10 +279,17 @@ def batch_trees(b_word, b_tag, b_label, b_fence, b_segment, b_seg_length, i2vs, 
                 break
             if b_weight is not None:
                 layers_of_weight.append(b_weight[sid, label_start: label_start + l_len])
+            if b_fence_vote is not None:
+                fence_vote_end = fence_vote_start + (l_size + 1) * l_size
+                fence_vote_layer = b_fence_vote[sid, fence_vote_start: fence_vote_end]
+                if fence_vote_layer.size: # for erroneous outputs
+                    fence_vote_layer = fence_vote_layer.reshape(l_size + 1, l_size)[:l_len + 1, :l_len]
+                    layers_of_fence_vote.append(fence_vote_layer)
+                    fence_vote_start = fence_vote_end
             label_start += l_size
         wd = [i2vs.token[i] for i in word[:ln]]
         tg = [i2vs.tag  [i] for i in  tag[:ln]]
-        yield get_tree_from_signals(wd, tg, layers_of_label, layers_of_fence, fb_label, layers_of_weight)
+        yield get_tree_from_signals(wd, tg, layers_of_label, layers_of_fence, fb_label, layers_of_weight, layers_of_fence_vote)
 
 
 class MultiVis(BaseVis):
@@ -303,9 +322,10 @@ class MultiVis(BaseVis):
 
     def _process(self, batch):
         (batch_len, h_token, h_tag, h_label, h_fence, h_segment, h_seg_length,
-         d_tag, d_label, d_fence, d_weight, d_segment, d_seg_length) = batch
+         d_tag, d_label, d_fence, d_fence_vote, d_weight, d_segment, d_seg_length) = batch
 
         if self._is_anew:
+            if float(self.epoch) == 1: d_fence_vote = None
             trees = batch_trees(h_token, h_tag, h_label, h_fence, h_segment, h_seg_length, self._i2vs, None)
             trees = [' '.join(str(x).split()) for x in trees]
             self.length_bins |= tee_trees(self._join_fn, 'head', h_seg_length[:, 0], trees, None, 10)
@@ -324,12 +344,13 @@ class MultiVis(BaseVis):
         else:
             bin_size = None if self.length_bins is None else 10
             with open(self._draw_file, 'a+') as fw:
-                for tree, safe in batch_trees(h_token, d_tag, d_label, d_fence, d_segment, d_seg_length, self._i2vs, 'S', d_weight):
+                for tree, safe in batch_trees(h_token, d_tag, d_label, d_fence, d_segment, d_seg_length, self._i2vs, 'S', d_weight, d_fence_vote):
                     if not safe:
                         fw.write('\n[FORCING TREE WITH ROOT = S]\n')
                     try:
-                        fw.write('\n'.join(draw_str_lines(tree)) + '\n\n')
-                    except:
+                        fw.write('\n'.join(draw_str_lines(tree, 2)) + '\n\n')
+                    except Exception as err:
+                        print('FAILING DRAWING:', err, file = stderr)
                         fw.write('FAILING DRAWING\n\n')
         tee_trees(self._join_fn, f'data.{self.epoch}', d_seg_length[:, 0], trees, None, bin_size)
 

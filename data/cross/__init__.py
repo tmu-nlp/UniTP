@@ -626,7 +626,7 @@ class SpanTale:
         return blocks
 
 from utils.str_ops import len_ea
-def draw_str_lines(bottom, top_down, reverse = True, root_stamp = ''):
+def draw_str_lines(bottom, top_down, reverse = True, root_stamp = '', wrap_len = 1):
     if reverse:
         LC, MC, RC, MP = '┌┬┐┴'
     else:
@@ -637,14 +637,19 @@ def draw_str_lines(bottom, top_down, reverse = True, root_stamp = ''):
             bottom_up[cid] = pid
     while pid in bottom_up:
         pid = bottom_up[pid]
-    root_id = pid
+    if bottom_up:
+        root_id = pid
+    else:
+        assert len(bottom) == 1
+        root_id = bottom[0][0]
     str_lines = []
     word_line = ''
     tag_line = ''
     start_bars = set()
     next_top_down = defaultdict(list)
+    wl = wrap_len << 1
     for bid, word, tag in bottom:
-        unit_len = max(len_ea(word), len(tag)) + 2
+        unit_len = max(len_ea(word), len(tag)) + wl
         word_line += word.center(unit_len)
         tag_line  +=  tag.center(unit_len)
         mid_pos = len(word_line) - round(unit_len // 2)

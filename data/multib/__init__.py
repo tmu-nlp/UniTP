@@ -153,7 +153,60 @@ def flatten_children_with_weights(bottom, start, weights):
         children.append(Tree(f'{mean:.0f}%', sub_tree))
     return children
 
-def get_tree_from_signals(word, tag, layers_of_labels, layers_of_splits, fall_back_root = None, layers_of_weights = None):
+def width_ratio(x):
+    assert 0 <= x <= 1
+    return '▏▎▍▌▋▊▉'[int(7 * x - 1e-8)]
+
+def height_ratio(x):
+    assert 0 <= x <= 1
+    return '▁▂▃▄▅▆▇▉'[int(8 * x - 1e-8)]
+
+def coord_vote(units, fence_location):
+    if units.sum() > 0:
+        pro_num_ratio = (units > 0).sum() / units.size
+        unit_location = units.argmax()
+    else:
+        pro_num_ratio = (units <= 0).sum() / units.size
+        unit_location = units.argmin()
+    if fence_location > unit_location:
+        return f'«{fence_location - unit_location}{height_ratio(pro_num_ratio)}'
+    return f'{height_ratio(pro_num_ratio)}{unit_location + 1 - fence_location}»'
+
+def flatten_children_with_fence_vote(bottom, start, fence_vote, start_is_bol, bar = '│'):
+    children = []
+    for nid, sub_tree in enumerate(bottom):
+        sub_tree = [sub_tree] if isinstance(sub_tree, Tree) else flatten_children(sub_tree)
+        if start_is_bol and nid == 0:
+            lhs, rhs = fence_vote[start + nid: start + nid + 2]
+            lhs = coord_vote(lhs, start + nid)
+            rhs = coord_vote(rhs, start + nid + 1)
+            lhs_len = len(lhs)
+            rhs_len = len(rhs)
+            if lhs_len > rhs_len:
+                label = lhs + bar + rhs + ' ' * (lhs_len - rhs_len)
+            elif lhs_len < rhs_len:
+                label = lhs + ' ' * (rhs_len - lhs_len) + bar + rhs
+            else:
+                label = lhs + bar + rhs 
+        else:
+            rhs = fence_vote[start + nid + 1]
+            rhs = coord_vote(rhs, start + nid + 1)
+            lhs = ' ' * len(rhs)
+            label = lhs + bar + rhs
+        children.append(Tree(label, sub_tree))
+    return children
+
+def unary_label_match(tree, label):
+    while tree.height() > 2:
+        if tree.label() == label:
+            return True
+        if len(tree) == 1:
+            tree = tree[0]
+        else:
+            return False
+    return False
+
+def get_tree_from_signals(word, tag, layers_of_labels, layers_of_splits, fall_back_root = None, layers_of_weights = None, layers_of_fence_vote = None):
     bottom = []
     for w, t, label in zip(word, tag, layers_of_labels[0]):
         if w == '(':
@@ -165,6 +218,8 @@ def get_tree_from_signals(word, tag, layers_of_labels, layers_of_splits, fall_ba
         leave = Tree(t, [w])
         if label[0] not in '#_':
             leave = Tree(label, [leave])
+        elif layers_of_fence_vote is not None:
+            leave = Tree('│', [leave])
         bottom.append(leave)
 
     # quit_on_error = False
@@ -173,24 +228,53 @@ def get_tree_from_signals(word, tag, layers_of_labels, layers_of_splits, fall_ba
     for lid, (split_layer, label_layer) in enumerate(zip(layers_of_splits, layers_of_labels[1:])):
         new_bottom = []
         # leave_cnt = 0
-        for label, start, end in zip(label_layer, split_layer, split_layer[1:]):
+        if layers_of_fence_vote is not None:
+            fence_sub_more = any(x[0] not in '#_' for x in label_layer)
+            exc_fence_vote = layers_of_fence_vote is not None and lid < len(layers_of_fence_vote)
+        else:
+            exc_fence_vote = False
+        exc_weight = layers_of_weights is not None and lid < len(layers_of_weights)
+
+        for nid, (label, start, end) in enumerate(zip(label_layer, split_layer, split_layer[1:])):
 
             if end - start == 1:
-                if label[0] in '#_' or bottom[start].label() == label:
-                    sub_tree = bottom[start]
+                if label[0] in '#_' or ((bottom[start].label() == label) if layers_of_fence_vote is None else unary_label_match(bottom[start], label)):
+                    if exc_fence_vote:
+                        sub_tree = flatten_children_with_fence_vote(bottom[start:start + 1], start, layers_of_fence_vote[lid], nid == 0)
+                        # assert len(sub_tree) == 1
+                        sub_tree = Tree('│', sub_tree) # weight == 1
+                        if fence_sub_more:
+                            sub_tree = Tree('│', [sub_tree])
+                    else:
+                        sub_tree = bottom[start]
                 else:
-                    sub_tree = Tree(label, flatten_children(bottom[start:end]))
+                    children = bottom[start:end]
+                    if exc_fence_vote:
+                        children = flatten_children_with_fence_vote(children, start, layers_of_fence_vote[lid], nid == 0)
+                    else:
+                        children = flatten_children(children)
+                    sub_tree = Tree(label, children)
                 # leave_cnt += len(sub_tree.leaves())
             elif label[0] == '#':
                 assert fall_back_root is not None
-                sub_tree = flatten_children(bottom[start:end])
+                children = bottom[start:end]
+                if exc_fence_vote:
+                    sub_tree = flatten_children_with_fence_vote(children, start, layers_of_fence_vote[lid], nid == 0)
+                else:
+                    sub_tree = flatten_children(children)
                 # leave_cnt += sum(len(x.leaves()) for x in sub_tree)
             else:
-                if layers_of_weights is not None and lid < len(layers_of_weights):
-                    children = flatten_children_with_weights(bottom[start:end], start, layers_of_weights[lid])
-                    sub_tree = Tree(label, children) if label != '_SUB' else children
+                children = bottom[start:end]
+                if exc_weight:
+                    if exc_fence_vote:
+                        children = flatten_children_with_fence_vote(children, start, layers_of_fence_vote[lid], nid == 0)
+                    children = flatten_children_with_weights(children, start, layers_of_weights[lid])
+                    sub_tree = Tree(label, children) if label != '_SUB' else (children if layers_of_fence_vote is None else Tree('│', children))
                 else:
-                    children = flatten_children(bottom[start:end])
+                    if exc_fence_vote:
+                        children = flatten_children_with_fence_vote(children, start, layers_of_fence_vote[lid], nid == 0)
+                    else:
+                        children = flatten_children(children)
                     sub_tree = Tree(label, children) if label[0] != '_' else children
                 # leave_cnt += len(sub_tree.leaves())
             # print(str(sub_tree))
@@ -221,9 +305,9 @@ def get_tree_from_signals(word, tag, layers_of_labels, layers_of_splits, fall_ba
         return tree
     return tree, not bottom # and not quit_on_error
 
-def draw_str_lines(tree):
+def draw_str_lines(tree, wrap_len = 1):
     bottom_info, top_down, _ = _read_dpenn(tree)
-    return _draw_str_lines(bottom_info, top_down)
+    return _draw_str_lines(bottom_info, top_down, wrap_len = wrap_len)
 
 class MAryX:
     def __init__(self, tree, word_trace = False):

@@ -159,23 +159,24 @@ class DiscoMultiOperator(DiscoOperator):
             head_trees = test_head_batchess
             if final_test:
                 folder = ds_name + '_test'
-                save_tensors = True
+                draw_trees = True
             else:
                 folder = ds_name + '_test_with_devel'
-                save_tensors = is_bin_times(int(float(epoch)) - 1)
+                draw_trees = is_bin_times(int(float(epoch)) - 1)
         else:
             head_trees = devel_head_batchess
             folder = ds_name + '_devel'
-            save_tensors = is_bin_times(int(float(epoch)) - 1)
+            draw_trees = is_bin_times(int(float(epoch)) - 1)
         if self._optuna_mode:
-            save_tensors = False
+            draw_trees = False
         vis = DiscoMultiVis(epoch,
                             self.recorder.create_join(folder),
                             self.i2vs,
                             head_trees,
                             self.recorder.log,
                             self._evalb_lcfrs_kwargs,
-                            self._discodop_prm)
+                            self._discodop_prm,
+                            draw_trees)
         pending_heads = vis._pending_heads
         vis = VisRunner(vis, async_ = False) # wrapper
         vis.before()
@@ -214,8 +215,9 @@ def batch_trees(b_word, b_tag, b_label, b_space, b_segment, b_seg_length, i2vs, 
 
 from data.cross.evalb_lcfrs import DiscoEvalb, ExportWriter, read_param
 class DiscoMultiVis(DiscoVis):
-    def __init__(self, epoch, work_dir, i2vs, head_trees, logger, evalb_lcfrs_kwargs, discodop_prm):
+    def __init__(self, epoch, work_dir, i2vs, head_trees, logger, evalb_lcfrs_kwargs, discodop_prm, draw_trees):
         super().__init__(epoch, work_dir, i2vs, head_trees, logger, evalb_lcfrs_kwargs, discodop_prm, None, False)
+        self._draw_trees = self._dtv.join(f'tree.{epoch}.art') if draw_trees else None
 
     def _process(self, batch_id, batch):
         bid_offset, _ = self._evalb.total_missing
@@ -224,29 +226,47 @@ class DiscoMultiVis(DiscoVis):
         if self._pending_heads:
             (batch_len, h_token, h_tag, h_label, h_space, h_segment, h_seg_length,
              d_tag, d_label, d_space, d_weight, d_segment, d_seg_length) = batch
+            head_lines = []
             head_trees_for_scores = []
             for btm, td, rt, error in batch_trees(h_token, h_tag, h_label, h_space, h_segment, h_seg_length, i2vs):
                 assert not error
+                head_lines.append('\n'.join(draw_str_lines(btm, td, root_stamp = ' (Gold)')))
                 head_trees_for_scores.append(inner_score(btm, td, rt, self._xh_writer, **self._evalb_lcfrs_kwargs))
-            self._head_batches.append(head_trees_for_scores)
+            self._head_batches.append((head_trees_for_scores, head_lines))
         else:
             (batch_len, h_token, d_tag, d_label, d_space, d_segment, d_seg_length) = batch
-            head_trees_for_scores = self._head_batches[self._data_batch_cnt]
+            head_trees_for_scores, head_lines = self._head_batches[self._data_batch_cnt]
             self._data_batch_cnt += 1
         
         # data_errors = []
-        data_trees_for_scores = []
-        for sid, (btm, td, rt, error) in enumerate(batch_trees(h_token, d_tag, d_label, d_space, d_segment, d_seg_length, i2vs, 'VROOT')):
-            # data_errors.append(error)
-            try:
-                data_trees_for_scores.append(inner_score(btm, td, rt, self._xd_writer, **self._evalb_lcfrs_kwargs))
-            except:
-                import pdb; pdb.set_trace()
-                for _ in batch_trees(h_token[sid:sid+1], d_tag[sid:sid+1], d_label[sid:sid+1], d_space[sid:sid+1], d_segment, d_seg_length[sid:sid+1], i2vs, 'VROOT'):
-                    pass
-                inner_score(btm, td, rt, self._xd_writer, **self._evalb_lcfrs_kwargs)
-            if error: self._v_errors[bid_offset + sid] = error
-            
+        lines = ''
         self._evalb.add_batch_line(batch_id)
-        for gold, prediction in zip(head_trees_for_scores, data_trees_for_scores):
-            self._evalb.add(*prediction, *gold)
+        for sid, (btm, td, rt, error) in enumerate(batch_trees(h_token, d_tag, d_label, d_space, d_segment, d_seg_length, i2vs, 'VROOT')):
+            pred_gold = inner_score(btm, td, rt, self._xd_writer, **self._evalb_lcfrs_kwargs) + head_trees_for_scores[sid]
+            bracket_match, p_num_brackets, g_num_brackets, dbm, pdbc, gdbc, tag_match, g_tag_count = self._evalb.add(*pred_gold)
+            if error: self._v_errors[bid_offset + sid] = error
+            if self._draw_trees:
+                lines += f'Batch #{batch_id} ───────────────────────────────────────────\n'
+                lines += f'  Sent #{sid} | #{bid_offset + sid}: '
+                tag_line = 'Exact Tagging Match' if tag_match == g_tag_count else f'Tagging: {tag_match}/{g_tag_count}'
+                if pdbc or gdbc:
+                    tag_line += ' | DISC.'
+                    if not dbm and gdbc:
+                        tag_line += ' failed'
+                    if not gdbc and pdbc:
+                        tag_line += ' overdone'
+                if bracket_match == g_num_brackets:
+                    if tag_match == g_tag_count:
+                        lines += 'Exact Match\n\n'
+                    else:
+                        lines += 'Exact Bracketing Match | ' + tag_line + '\n\n'
+                    lines += head_lines[sid]
+                else:
+                    lines += f'Bracketing {p_num_brackets} > {bracket_match} < {g_num_brackets} | '
+                    lines += tag_line + '\n\n'
+                    lines += head_lines[sid] + '\n\n'
+                    lines += '\n'.join(draw_str_lines(btm, td, root_stamp = ' (Predicted)'))
+                lines += '\n\n\n'
+        if self._draw_trees:
+            with open(self._draw_trees, 'a+') as fw:
+                fw.write(lines)

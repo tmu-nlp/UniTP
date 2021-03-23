@@ -1,5 +1,6 @@
 from models.accp import torch, nn, MultiStem
 from models.utils import condense_helper, condense_left, blocky_softmax, blocky_max, batch_insert
+from sys import stderr
 
 def predict_disco_hint(dis_batch, bbt_zeros, bbt_ones, batch_dim, existence, seq_len, seq_idx, discontinuous, fence_logits, disco_hidden):
     continuous = existence & ~discontinuous
@@ -35,19 +36,29 @@ def predict_disco_hint(dis_batch, bbt_zeros, bbt_ones, batch_dim, existence, seq
     # 001132324 (sup)
     return fence_logits, dis_exist, dis_indice, dis_unit_emb
 
-def predict_disco_sections(bbt_zeros, disco_2d, layer_fence, dis_batch, dis_exist, dis_indice, seq_idx):
-    dis_u, dis_d, dis_v = torch.svd_lowrank(disco_2d) # [b, x, y], [b, x]
-    dis_batch_size, dis_max_len = dis_d.shape
+def predict_disco_sections(disco_2d, layer_fence, dis_batch, dis_exist, dis_indice, seq_idx):
+    _, dis_max_len, _ = disco_2d.shape
     dis_max_comp = dis_max_len >> 1 # 23:1 45:2 67:3 89:4
+    if dis_max_comp > 20:
+        dis_max_comp = 8
+    elif dis_max_comp > 10:
+        dis_max_comp = 6
+    # TODO - Q: How many components statistically are? Q: density of disco signals (layerwisely)
+    # CharLSTM; VisVote; map_ vmap?
+
+    dis_u, dis_d, dis_v = torch.svd_lowrank(disco_2d, dis_max_comp + 1) # [b, x, y], [b, x]
+    fb_comps = torch.ones(1, dis_max_len, dtype = torch.bool, device = dis_batch.device)
+    fb_comp_idx = torch.zeros(dis_max_len, dtype = dis_batch.dtype, device = dis_batch.device)
+
     dis_d_diff = dis_d[:, :dis_max_comp] - dis_d[:, 1:dis_max_comp + 1] # 1>0:1-1:2 2>0:2-1:3
     dis_d_diff_argmax = dis_d_diff.argmax(dim = 1, keepdim = True)
-    dis_seq_idx = seq_idx[:, :dis_max_len]
-    dis_d[torch.where(dis_d_diff_argmax < dis_seq_idx)] = 0
+    dis_d[dis_d_diff_argmax < seq_idx[:, :dis_max_comp + 1]] = 0
     clear_3d = torch.bmm(dis_d.unsqueeze(dim = 1) * dis_u, dis_v.transpose(1, 2))
     # comp_dim = torch.arange(dis_max_comp, device = disco_2d.device)
-    
+
     dis_comps = []
     for bid, clear_2d, indice, dis_len in zip(dis_batch, clear_3d, dis_indice, dis_exist.sum(dim = 1)):
+        #                                       final      first     final      first
         # 4578
         # 1010 (7); 0101 (5) | *****1*1*
         # (32) -> 3030; 0202 -> 3232
@@ -57,9 +68,16 @@ def predict_disco_sections(bbt_zeros, disco_2d, layer_fence, dis_batch, dis_exis
         b_clear_2d = clear_2d > 0.5 # clear_2d.mean() # mean ? softer? bad for ones; CPU or GPU?  inclusion matrix for comp
         in_deg  = b_clear_2d.sum(dim = 0)
         out_deg = b_clear_2d.sum(dim = 1)
+        # import pdb; pdb.set_trace()
         if (in_deg != out_deg).any() or (in_deg <= 1).any() or (out_deg <= 1).any():
-            b_clear_2d = torch.ones_like(b_clear_2d)
-        comps, comp_idx = b_clear_2d.unique(dim = 0, return_inverse = True) # no way: map_fn
+            comps = fb_comps[:, :dis_len]
+            comp_idx = fb_comp_idx[:dis_len]
+        else:
+            comps, comp_idx = b_clear_2d.unique(dim = 0, return_inverse = True) # no way: map_fn
+            if not (comps.sum(dim = 0) == 1).all():
+                comps = fb_comps[:, :dis_len]
+                comp_idx = fb_comp_idx[:dis_len]
+
         # num_comps, _ = comps.shape
         # comp_idx = (comp_dim[:num_comps, None] * comps).sum(dim = 0) # 0101 (or 1010)
         dis_b_max = blocky_max(comp_idx, clear_2d.sum(dim = 0), False) # 0110 (for 57)
@@ -199,7 +217,8 @@ class DiscoMultiStem(MultiStem):
             else:
                 discontinuous = disco_1d_logits > 0
                 if discontinuous.shape != existence.shape:
-                    import pdb; pdb.set_trace()
+                    print(f'WARNING: Invalid sections caused unmatched existence {l_cnt}', file = stderr, end = '')
+                    break
                 discontinuous &= existence
                 dis_unique = discontinuous.sum(dim = 1, keepdim = True) == 1
                 # if dis_unique.any():
@@ -254,7 +273,7 @@ class DiscoMultiStem(MultiStem):
                     #0010__1__1 v (result: layer_fence)
                     #000011011_ ^
                     layer_fence &= discontinuous.logical_not()
-                    sections = predict_disco_sections(bbt_zeros, disco_2d, layer_fence, dis_batch, dis_exist, dis_indice, seq_idx)
+                    sections = predict_disco_sections(disco_2d, layer_fence, dis_batch, dis_exist, dis_indice, seq_idx)
                 sections = torch.where(seq_idx < layer_len, sections, torch.zeros_like(sections))
                 layers_of_space.append(sections)
                 

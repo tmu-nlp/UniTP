@@ -72,13 +72,15 @@ class Operator:
 
                 # display
                 qbar.update(num_samples)
-                qbar.desc = f'[{epoch_cnt}] {train_icon}{100*wander_ratio:.0f}% {ds_icon}:{num_samples}×{seq_len}'
+                from_start = timedelta(seconds = int(time() - self._epoch_start))
+                qbar.desc = f'[{epoch_cnt}] {100*wander_ratio:.0f}% {train_icon} {from_start} {ds_icon}:{num_samples}×{seq_len}'
                 ds_freqs[ds_name] -= num_samples
                 self._global_step += 1
 
                 updated_wander_ratio = yield qbar.n / qbar.total
                 if updated_wander_ratio is not None:
                     wander_ratio = updated_wander_ratio
+            qbar.desc = f'[{epoch_cnt}] {100*wander_ratio:.0f}% {train_icon}'
         # next epoch
 
     def validate_betterment(self, epoch, falling):
@@ -121,23 +123,23 @@ class Operator:
         ds_scores = {}
         self._model.eval() # stack
         epoch_stamp = timestamp(epoch, '')
-        count = 0
         with tqdm(total = ds_total, desc = f'#{icon}{epoch_stamp}') as qbar:
             for ds_name, ds_iter in zip(ds_names, ds_iters):
                 self._before_validation(ds_name, f'{epoch:08.2f}', mode == M_TEST, final_test)
                 start, cnt = time(), 0
                 for batch_id, batch in enumerate(ds_iter):
                     with no_grad():
-                        num_samples, _ = self._step(mode, ds_name, batch, batch_id = batch_id)
+                        num_samples, seq_len = self._step(mode, ds_name, batch, batch_id = batch_id)
                     cnt += num_samples
+                    qbar.desc = f'#{icon}{epoch_stamp} {num_samples}×{seq_len}'
                     qbar.update(num_samples)
                 scores, desc, logg = self._after_validation(ds_name, cnt, time() - start) # evalb time is excluded
                 ds_desc  .append(desc)
                 ds_logg  .append(logg)
                 ds_scores[ds_name] = scores
-            qbar.total = None
             from_start = timedelta(seconds = int(time() - self._epoch_start))
-            qbar.desc = f'[{epoch_stamp}] {icon} {from_start} ' + ' '.join(ds_desc)
+            qbar.total = None
+            qbar.desc = f'[{epoch_stamp}] {icon} ' + ' '.join(ds_desc)
             ds_logg = '\n'.join(ds_logg)
         self._model.train() # restore
         scores = self.combine_scores_and_decide_key(epoch, ds_scores)

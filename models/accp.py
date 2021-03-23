@@ -136,7 +136,8 @@ class MultiStem(nn.Module):
         vote = torch.bmm(fence, unit.transpose(1, 2)) # [b, s+1, s]
         third_dim = torch.arange(unit.shape[1], device = hidden.device)
         third_dim = third_dim[None, None] < seq_len[:, None, None]
-        return torch.where(third_dim, vote, torch.zeros_like(vote)).sum(dim = 2)
+        third_dim = torch.where(third_dim, vote, torch.zeros_like(vote))
+        return third_dim, third_dim.sum(dim = 2)
     
     def forward(self, unit_emb, existence,
                 supervised_fence = None,
@@ -148,6 +149,11 @@ class MultiStem(nn.Module):
         teacher_forcing = isinstance(supervised_fence, list)
         segment, seg_length = [], []
         batch_dim = torch.arange(batch_size, device = unit_emb.device)
+
+        if self._fence_vote is None:
+            layers_of_vote = None
+        else:
+            layers_of_vote = []
         
         layers_of_u_emb = []
         layers_of_fence = []
@@ -179,9 +185,11 @@ class MultiStem(nn.Module):
             if self._fence_vote is None:
                 fence_logits = self.predict_fence(fw, bw)
             elif self._fence_vote == 'unit':
-                fence_logits = self.predict_fence_2d(fw, bw, unit_emb, seq_len)
+                votes, fence_logits = self.predict_fence_2d(fw, bw, unit_emb, seq_len)
+                layers_of_vote.append(votes.reshape(batch_size, -1)) # [b, s+1, s]
             else:
-                fence_logits = self.predict_fence_2d(fw, bw, fence_hidden, seq_len)
+                votes, fence_logits = self.predict_fence_2d(fw, bw, fence_hidden, seq_len)
+                layers_of_vote.append(votes.reshape(batch_size, -1)) # [b, s+1, s]
             longer_seq_idx = torch.arange(seg_len + 1, device = unit_emb.device)[None, :]
             
             if teacher_forcing:
@@ -236,13 +244,20 @@ class MultiStem(nn.Module):
         fence      = torch.cat(layers_of_fence, dim = 1)
         existence  = torch.cat(layers_of_existence, dim = 1)
         if teacher_forcing:
-            weight = None
+            weight     = None
+            fence_vote = None
         else:
             weight     = torch.cat(layers_of_weight,    dim = 1)
             fence_idx  = torch.cat(layers_of_fence_idx, dim = 1)
             seg_length = torch.stack(seg_length, dim = 1)
+            if self._fence_vote is None:
+                fence_vote = None
+            elif layers_of_vote:
+                fence_vote = torch.cat(layers_of_vote, dim = 1)
+            else:
+                fence_vote = torch.zeros(batch_size, 0, dtype = unit_emb.shape, device = unit_emb.device)
 
-        return existence, embeddings, weight, fence, fence_idx, segment, seg_length
+        return existence, embeddings, weight, fence, fence_idx, fence_vote, segment, seg_length
     
 
 multi_class = dict(hidden_dim = hidden_dim,
@@ -287,7 +302,7 @@ class BaseRnnTree(MultiStem):
                 bottom_existence,
                 ingore_logits = False,
                 **kw_args):
-        (existence, embeddings, weight, fence, fence_idx, segment,
+        (existence, embeddings, weight, fence, fence_idx, fence_vote, segment,
          seg_length) = super().forward(base_inputs, bottom_existence, **kw_args)
 
         if self._hidden_dim:
@@ -309,7 +324,7 @@ class BaseRnnTree(MultiStem):
         else:
             layers_of_hidden = tags = labels = None
 
-        return existence, embeddings, weight, fence, fence_idx, tags, labels, segment, seg_length
+        return existence, embeddings, weight, fence, fence_idx, fence_vote, tags, labels, segment, seg_length
 
     @property
     def model_dim(self):
