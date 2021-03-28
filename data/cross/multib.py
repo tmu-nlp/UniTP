@@ -366,7 +366,7 @@ class TreeKeeper:
     def word_tag(self):
         return self._word_tag
     
-    def stratify(self, factor, balancing = False):
+    def stratify(self, factor = F_RANDOM, balancing = False):
         bottom, node2tag, bottom_unary, top_down, l2i, root_id, dep = self._materials
         if balancing:
             if self._balanced_top_down is None:

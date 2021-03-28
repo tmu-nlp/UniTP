@@ -325,7 +325,7 @@ class MultiVis(BaseVis):
          d_tag, d_label, d_fence, d_fence_vote, d_weight, d_segment, d_seg_length) = batch
 
         if self._is_anew:
-            if float(self.epoch) == 1: d_fence_vote = None
+            if float(self.epoch) < 20: d_fence_vote = None
             trees = batch_trees(h_token, h_tag, h_label, h_fence, h_segment, h_seg_length, self._i2vs, None)
             trees = [' '.join(str(x).split()) for x in trees]
             self.length_bins |= tee_trees(self._join_fn, 'head', h_seg_length[:, 0], trees, None, 10)

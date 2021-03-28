@@ -10,7 +10,7 @@ from utils.param_ops import HParams
 from random import random
 from sys import stderr
 
-fence_vote = BaseType(0, as_index = True, default_set = (None, 'state', 'unit'))
+fence_vote = BaseType(0, as_index = True, default_set = (None, 'state.dot', 'unit.dot', 'state.cat', 'unit.cat'))
 
 from models.types import rnn_module_type, continuous_attention_hint, activation_type, logit_type
 from models.combine import get_combinator, get_components, valid_trans_compound
@@ -66,15 +66,31 @@ class MultiStem(nn.Module):
         self._pad = nn.Parameter(torch.empty(1, 1, single_size), requires_grad = True)
         init.uniform_(self._pad, -bound, bound)
         self._stem_dp = nn.Dropout(drop_out)
-        self._fence_l1 = nn.Linear(fence_dim, linear_dim)
-        self._fence_vote = fence_vote
         self._fence_act = activation()
-        if fence_vote == 'unit':
-            self._fence_l2 = nn.Linear(model_dim, linear_dim)
-        elif fence_vote == 'state':
-            self._fence_l2 = nn.Linear(fence_dim, linear_dim)
-        else:
+        if fence_vote is None:
+            self._fence_vote = None
+            self._fence_l1 = nn.Linear(fence_dim, linear_dim)
             self._fence_l2 = nn.Linear(linear_dim, 1)
+        else:
+            from_unit, method = fence_vote.split('.')
+            from_unit = from_unit == 'unit'
+            if method == 'dot':
+                self._fence_l1 = nn.Linear(fence_dim, linear_dim)
+                if from_unit:
+                    self._fence_l2 = nn.Linear(model_dim, linear_dim)
+                else:
+                    self._fence_l2 = nn.Linear(fence_dim, linear_dim)
+                method = self.predict_fence_2d_dot
+            elif method == 'cat':
+                if from_unit:
+                    self._fence_l1 = nn.Linear(fence_dim + model_dim, linear_dim)
+                else:
+                    self._fence_l1 = nn.Linear(fence_dim << 1, linear_dim)
+                self._fence_l2 = nn.Linear(linear_dim, 1)
+                method = self.predict_fence_2d_cat
+            else:
+                raise ValueError('Unknown method: ' + method)
+            self._fence_vote = from_unit, method
         # fence_p: f->hidden [b, s+1, h]
         # fence_c: u->hidden [b, s, h]
         # pxc: v->vote [b, s+1, s]
@@ -127,7 +143,7 @@ class MultiStem(nn.Module):
         fence = self._fence_act(fence)
         return self._fence_l2(fence).squeeze(dim = 2)
 
-    def predict_fence_2d(self, fw, bw, hidden, seq_len):
+    def predict_fence_2d_dot(self, fw, bw, hidden, seq_len): # TODO not act for unit
         fence = torch.cat([fw, bw], dim = 2)
         fence = self._fence_l1(fence)
         fence = self._fence_act(self._stem_dp(fence))
@@ -139,6 +155,22 @@ class MultiStem(nn.Module):
         third_dim = torch.where(third_dim, vote, torch.zeros_like(vote))
         return third_dim, third_dim.sum(dim = 2)
     
+    def predict_fence_2d_cat(self, fw, bw, hidden, seq_len):
+        fence = torch.cat([fw, bw], dim = 2)
+        _, fence_len, fence_dim = fence.shape
+        batch_size, seg_len, hidden_dim = hidden.shape
+        fence = fence[:, :, None].expand(batch_size, fence_len, seg_len, fence_dim)
+        hidden = hidden[:, None].expand(batch_size, fence_len, seg_len, hidden_dim)
+        vote = torch.cat([fence, hidden], dim = 3) # [b, s+1, s, e]
+        vote = self._fence_l1(vote)
+        vote = self._stem_dp(vote)
+        vote = self._fence_act(vote)
+        vote = self._fence_l2(vote).squeeze(dim = 3)
+        third_dim = torch.arange(seg_len, device = hidden.device)
+        third_dim = third_dim[None, None] < seq_len[:, None, None]
+        third_dim = torch.where(third_dim, vote, torch.zeros_like(vote))
+        return third_dim, third_dim.sum(dim = 2)
+
     def forward(self, unit_emb, existence,
                 supervised_fence = None,
                 keep_low_attention_rate = 1,
@@ -184,11 +216,9 @@ class MultiStem(nn.Module):
             fw, bw = self.pad_fwbw_hidden(fence_hidden, seq_len)
             if self._fence_vote is None:
                 fence_logits = self.predict_fence(fw, bw)
-            elif self._fence_vote == 'unit':
-                votes, fence_logits = self.predict_fence_2d(fw, bw, unit_emb, seq_len)
-                layers_of_vote.append(votes.reshape(batch_size, -1)) # [b, s+1, s]
             else:
-                votes, fence_logits = self.predict_fence_2d(fw, bw, fence_hidden, seq_len)
+                from_unit, method = self._fence_vote
+                votes, fence_logits = method(fw, bw, unit_emb if from_unit else fence_hidden, seq_len)
                 layers_of_vote.append(votes.reshape(batch_size, -1)) # [b, s+1, s]
             longer_seq_idx = torch.arange(seg_len + 1, device = unit_emb.device)[None, :]
             
