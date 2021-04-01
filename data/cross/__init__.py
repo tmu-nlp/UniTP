@@ -626,7 +626,7 @@ class SpanTale:
         return blocks
 
 from utils.str_ops import len_ea
-def draw_str_lines(bottom, top_down, reverse = True, root_stamp = '', wrap_len = 1):
+def draw_str_lines(bottom, top_down, reverse = True, root_stamp = '', wrap_len = 1, line_start = ''):
     if reverse:
         LC, MC, RC, MP = '┌┬┐┴'
     else:
@@ -643,8 +643,8 @@ def draw_str_lines(bottom, top_down, reverse = True, root_stamp = '', wrap_len =
         assert len(bottom) == 1
         root_id = bottom[0][0]
     str_lines = []
-    word_line = ''
-    tag_line = ''
+    word_line = line_start
+    tag_line = line_start
     start_bars = set()
     next_top_down = defaultdict(list)
     wl = wrap_len << 1
@@ -655,14 +655,17 @@ def draw_str_lines(bottom, top_down, reverse = True, root_stamp = '', wrap_len =
         mid_pos = len(word_line) - round(unit_len // 2)
         start_bars.add(mid_pos)
         next_top_down[bottom_up[bid]].append((bid, mid_pos))
+    line_end = ' ' * len(line_start)
+    word_line += line_end
+    tag_line += line_end
     pic_width = len(word_line)
     str_lines.append(word_line)
     str_lines.append(tag_line)
     # print(word_line)
     # print(tag_line)
     while next_top_down:
-        cons_line = ''
-        line_line = ''
+        cons_line = line_start
+        line_line = line_start
         future_top_down = defaultdict(list)
         end_bars = []
         span_tale = SpanTale()
@@ -735,8 +738,8 @@ def draw_str_lines(bottom, top_down, reverse = True, root_stamp = '', wrap_len =
         if len_cons < pic_width:
             cons_line += (pic_width - len_cons) * ' '
         if start_bars:
-            new_line = ''
-            new_cons = ''
+            new_line = line_start
+            new_cons = line_start
             last_pos = 0
             for pos in sorted(start_bars):
                 new_line += line_line[last_pos:pos] + '│'

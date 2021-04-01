@@ -12,7 +12,7 @@ build_params = {C_PTB: split_dict('2-21',             '22',      '23'    ),
 ft_bin = {C_PTB: 'en', C_CTB: 'zh', C_KTB: 'ja'}
 call_fasttext = make_call_fasttext(ft_bin)
 
-from utils.types import none_type, false_type, true_type, binarization, NIL, frac_close_0
+from utils.types import none_type, false_type, true_type, binarization, NIL
 from utils.types import train_batch_size, train_max_len, train_bucket_len, vocab_size, trapezoid_height
 nccp_data_config = dict(vocab_size       = vocab_size,
                         binarization     = binarization,
@@ -27,7 +27,6 @@ nccp_data_config = dict(vocab_size       = vocab_size,
 
 accp_data_config = dict(vocab_size       = vocab_size,
                         batch_size       = train_batch_size,
-                        balanced       = frac_close_0,
                         max_len          = train_max_len,
                         bucket_len       = train_bucket_len,
                         unify_sub        = true_type,
@@ -45,13 +44,12 @@ from collections import Counter, defaultdict
 from nltk.tree import Tree
 from tempfile import TemporaryDirectory
 from data.io import SourcePool, distribute_jobs
-from random import seed
 
 class CorpusReader:
     def __init__(self, path):
         self._path = path
 
-    def break_corpus(self, shuffle_size = 100, rand_seed = 31415926):
+    def break_corpus(self, shuffle_size = 100):
         fpath = TemporaryDirectory()
         with ExitStack() as stack:
             files = []
@@ -59,13 +57,11 @@ class CorpusReader:
                 fw = open(join(fpath.name, f'{i:04}'), 'w')
                 fw = stack.enter_context(fw)
                 files.append(fw)
-            seed(rand_seed)
             pool = SourcePool(files, True)
             for ori_file in tqdm(self.fileids(), desc = f'break ktb into {shuffle_size} files in {fpath.name}'):
                 for string in self.parsed_sents(ori_file, True):
                     fw = pool()
                     fw.write(string)
-            seed(None)
         self._path = fpath
 
     def fileids(self):

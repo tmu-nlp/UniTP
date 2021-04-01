@@ -1,11 +1,9 @@
 import torch
 from torch import nn
-from models.utils import Bias, math, init
-from models.self_att import SelfAttention
+from models.utils import Bias
 
 from utils.types import orient_dim, hidden_dim, num_ori_layer, BaseWrapper, BaseType
 from utils.types import frac_2, frac_4, frac_5, true_type, false_type
-from utils.math_ops import inv_sigmoid
 from utils.param_ops import HParams
 from random import random
 from sys import stderr
@@ -26,9 +24,10 @@ stem_config = dict(fence_dim      = orient_dim,
                    trainable_initials = true_type)
 from models.loss import cross_entropy, hinge_loss, binary_cross_entropy
 from models.utils import hinge_score as hinge_score_
-from models.utils import blocky_max, blocky_softmax, birnn_fwbw, fencepost, condense_helper, condense_left
+from models.utils import blocky_max, blocky_softmax, fencepost, condense_helper, condense_left
+from models.backend import PadRNN
 
-class MultiStem(nn.Module):
+class MultiStem(PadRNN):
     def __init__(self,
                  model_dim,
                  fence_dim,
@@ -41,30 +40,12 @@ class MultiStem(nn.Module):
                  drop_out,
                  rnn_drop_out,
                  trainable_initials):
-        super().__init__()
-        single_size = fence_dim // 2
-        self._fence_emb = fence_module(model_dim, single_size,
-                                       num_layers    = num_layers,
-                                       bidirectional = True,
-                                       batch_first   = True,
-                                       dropout = rnn_drop_out if num_layers > 1 else 0)
-        self._tanh = nn.Tanh()
-        bound = 1 / math.sqrt(single_size)
-        if trainable_initials:
-            c0 = torch.empty(num_layers * 2, 1, single_size)
-            h0 = torch.empty(num_layers * 2, 1, single_size)
-            self._c0 = nn.Parameter(c0, requires_grad = True)
-            self._h0 = nn.Parameter(h0, requires_grad = True)
-            init.uniform_(self._c0, -bound, bound)
-            init.uniform_(self._h0, -bound, bound)
-            self._initial_size = single_size
-        else:
-            self.register_parameter('_h0', None)
-            self.register_parameter('_c0', None)
-            self._initial_size = None
-
-        self._pad = nn.Parameter(torch.empty(1, 1, single_size), requires_grad = True)
-        init.uniform_(self._pad, -bound, bound)
+        super().__init__(fence_module,
+                         model_dim,
+                         fence_dim,
+                         num_layers,
+                         rnn_drop_out,
+                         trainable_initials)
         self._stem_dp = nn.Dropout(drop_out)
         self._fence_act = activation()
         if fence_vote is None:
@@ -100,6 +81,7 @@ class MultiStem(nn.Module):
         self._domain = nn.Linear(fence_dim, model_dim, bias = False) if attention_hint.get('boundary') else None
         self._subject_unit  = nn.Linear(model_dim, model_dim, bias = False) if attention_hint.unit else None
         self._subject_state = nn.Linear(fence_dim, model_dim, bias = False) if attention_hint.state else None
+        single_size = fence_dim // 2
         if attention_hint.before:
             self._subject_fw_b = nn.Linear(single_size, model_dim, bias = False)
             self._subject_bw_b = nn.Linear(single_size, model_dim, bias = False)
@@ -122,19 +104,6 @@ class MultiStem(nn.Module):
         self._sigmoid = nn.Sigmoid()
         finfo = torch.finfo(torch.get_default_dtype())
         self._fminmax = finfo.min, finfo.max
-
-    def get_h0c0(self, batch_size):
-        if self._initial_size:
-            c0 = self._c0.expand(2, batch_size, self._initial_size).contiguous()
-            h0 = self._h0.expand(2, batch_size, self._initial_size).contiguous()
-            h0 = self._tanh(h0)
-            h0c0 = h0, c0
-        else:
-            h0c0 = None
-        return h0c0
-
-    def pad_fwbw_hidden(self, fence_hidden, seq_len):
-        return birnn_fwbw(fence_hidden, self._tanh(self._pad), seq_len)
 
     def predict_fence(self, fw, bw):
         fence = torch.cat([fw, bw], dim = 2)
@@ -212,8 +181,10 @@ class MultiStem(nn.Module):
                     break
 
             fence_hidden, _ = self._fence_emb(unit_emb, h0c0)
-            fence_hidden = self._stem_dp(fence_hidden)
             fw, bw = self.pad_fwbw_hidden(fence_hidden, seq_len)
+            fence_hidden = self._stem_dp(fence_hidden)
+            fw = self._stem_dp(fw)
+            bw = self._stem_dp(bw)
             if self._fence_vote is None:
                 fence_logits = self.predict_fence(fw, bw)
             else:

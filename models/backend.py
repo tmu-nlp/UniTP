@@ -217,15 +217,16 @@ class InputLeaves(nn.Module):
 
         main_extra_bound = 0
         main_emb_layer = extra_emb_layer = None
+        padding_kwarg = dict(padding_idx = 0 if nil_as_pad else None)
         if pre_trained:
             if num_special_tokens > 0: # unk | bos + eos | no <nil>
                 main_extra_bound = initial_weight.shape[0]
                 main_emb_layer  = nn.Embedding.from_pretrained(torch.as_tensor(initial_weight), freeze = False)
                 extra_emb_layer = nn.Embedding(num_special_tokens, fixed_dim)
             else: # <nil> ... |
-                main_emb_layer = nn.Embedding.from_pretrained(torch.as_tensor(initial_weight), freeze = False)
+                main_emb_layer = nn.Embedding.from_pretrained(torch.as_tensor(initial_weight), freeze = False, **padding_kwarg)
         else: # nil ... unk | ... unk bos eos
-            main_emb_layer = nn.Embedding(num_tokens, fixed_dim)
+            main_emb_layer = nn.Embedding(num_tokens, fixed_dim, **padding_kwarg)
         static_pca = fixed_dim == model_dim
 
         if activation is None:
@@ -284,9 +285,9 @@ class InputLeaves(nn.Module):
         if nil_as_pad:
             bottom_existence = word_idx > 0
             bottom_existence.unsqueeze_(dim = 2)
-            static_emb = static_emb * bottom_existence
+            # static_emb = static_emb * bottom_existence: done by padding_idx = 0
         else:
-            bottom_existence = torch.ones_like(word_idx, dtype = torch.bool)
+            bottom_existence = torch.ones_like(word_idx, dtype = torch.bool) # obsolete (only for nccp)
             bottom_existence.unsqueeze_(dim = 2)
         self._main_emb_tuned = self.training and tune_pre_trained
 
@@ -370,3 +371,62 @@ class Contextual(nn.Module):
             top_3 = self._state_to_top3(final_state).reshape(batch_size, 3, hidden_dim)
 
         return dynamic_emb, top_3
+
+from models.utils import math, init, birnn_fwbw
+class PadRNN(nn.Module):
+    def __init__(self, module, input_dim, out_dim, num_layers, module_drop_out, trainable_initials, *char_size_dp):
+        super().__init__()
+        single_size = out_dim // 2
+        self._fence_emb = module(input_dim, single_size,
+                                 num_layers    = num_layers,
+                                 bidirectional = True,
+                                 batch_first   = True,
+                                 dropout = module_drop_out if num_layers > 1 else 0)
+        self._tanh = nn.Tanh()
+        bound = 1 / math.sqrt(single_size)
+        if trainable_initials:
+            c0 = torch.empty(num_layers * 2, 1, single_size)
+            h0 = torch.empty(num_layers * 2, 1, single_size)
+            self._c0 = nn.Parameter(c0, requires_grad = True)
+            self._h0 = nn.Parameter(h0, requires_grad = True)
+            init.uniform_(self._c0, -bound, bound)
+            init.uniform_(self._h0, -bound, bound)
+            self._initial_size = single_size
+        else:
+            self.register_parameter('_h0', None)
+            self.register_parameter('_c0', None)
+            self._initial_size = None
+
+        self._pad = nn.Parameter(torch.empty(1, 1, single_size), requires_grad = True)
+        init.uniform_(self._pad, -bound, bound)
+
+        if char_size_dp:
+            num_chars, dropout = char_size_dp
+            self._char_emb = nn.Embedding(num_chars, input_dim)
+            self._char_dp = nn.Dropout(dropout)
+
+    def get_h0c0(self, batch_size):
+        if self._initial_size:
+            c0 = self._c0.expand(2, batch_size, self._initial_size).contiguous()
+            h0 = self._h0.expand(2, batch_size, self._initial_size).contiguous()
+            h0 = self._tanh(h0)
+            h0c0 = h0, c0
+        else:
+            h0c0 = None
+        return h0c0
+
+    def pad_fwbw_hidden(self, fence_hidden, seq_len):
+        return birnn_fwbw(fence_hidden, self._tanh(self._pad), seq_len)
+
+    def forward(self, char_idx, fence): # concat fence vectors
+        batch_size, char_len = char_idx.shape
+        char_emb = self._char_emb(char_idx)
+        char_emb = self._char_dp(char_emb)
+        fence_hidden, _ = self._fence_emb(char_emb, self.get_h0c0(batch_size))
+        seq_len = (char_idx > 0).sum(dim = 1)
+        fw, bw = birnn_fwbw(fence_hidden, self._tanh(self._pad), seq_len)
+        helper = condense_helper(fence, True)
+        fw = condense_left(fw, helper)
+        bw = condense_left(bw, helper)
+        return torch.cat([fw[:, 1:] - fw[:, :-1], bw[:, :-1] - bw[:, 1:]], dim = 2)
+        # select & concat: fw[:*-1] - fw[*1:] & bw...

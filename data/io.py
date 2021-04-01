@@ -71,7 +71,7 @@ def check_fasttext(path):
         else:
             print(f'not match', wlen, vlen)
     else:
-        print('\'word.vec\' does not exist')
+        print('wvfiles not exist')
     return False
 
 def get_fasttext(fname):

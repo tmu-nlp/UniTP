@@ -310,6 +310,7 @@ class MultiVis(BaseVis):
         self.register_property('length_bins',  length_bins)
         self._draw_file = join(work_dir, f'data.{epoch}.art') if draw_weights else None
         self._error_idx = 0, []
+        self._headedness_stat = join(work_dir, f'data.{epoch}.headedness'), {}
 
     def _before(self):
         if self._is_anew:
@@ -343,8 +344,17 @@ class MultiVis(BaseVis):
             bin_size = None
         else:
             bin_size = None if self.length_bins is None else 10
+            _, head_stat = self._headedness_stat
             with open(self._draw_file, 'a+') as fw:
-                for tree, safe in batch_trees(h_token, d_tag, d_label, d_fence, d_segment, d_seg_length, self._i2vs, 'S', d_weight, d_fence_vote):
+                for tree, safe, stat in batch_trees(h_token, d_tag, d_label, d_fence, d_segment, d_seg_length, self._i2vs, 'S', d_weight, d_fence_vote):
+                    for lb, (lbc, hc) in stat.items():
+                        if lb in head_stat:
+                            label_cnt, head_cnts = head_stat[lb]
+                            for h, c in hc.items():
+                                head_cnts[h] += c
+                            head_stat[lb] = lbc + label_cnt, head_cnts
+                        else:
+                            head_stat[lb] = lbc, hc
                     if not safe:
                         fw.write('\n[FORCING TREE WITH ROOT = S]\n')
                     try:
@@ -389,6 +399,14 @@ class MultiVis(BaseVis):
                     proc = parseval(self._evalb, fhead, fdata)
                     smy = rpt_summary(proc.stdout.decode(), False, True)
                     fw.write(f"{wbin},{smy['N']},{smy['LP']},{smy['LR']},{smy['F1']},{smy['TA']}\n")
+
+        fname, head_stat = self._headedness_stat
+        with open(fname, 'w') as fw:
+            for label, (label_cnt, head_cnts) in sorted(head_stat.items(), key = lambda x: x[1][0], reverse = True):
+                line = f'{label}({label_cnt})'.ljust(15)
+                for h, c in sorted(head_cnts.items(), key = lambda x: x[1], reverse = True):
+                    line += f'{h}({c}); '
+                fw.write(line[:-2] + '\n')
 
         desc = f'Evalb({scores["LP"]:.2f}/{scores["LR"]:.2f}/'
         key_score = f'{scores["F1"]:.2f}'

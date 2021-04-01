@@ -394,3 +394,14 @@ def batch_insert(base, indice, subject = None):
     subj_inc = subj_inc + indice # 224 -> 236
     subj_inc.unsqueeze_(dim = 2)
     return new_base.scatter_add(1, subj_inc.expand_as(subject), subject)
+
+def bool_start_end(continuous):
+    batch_size, batch_len = continuous.shape
+    seq_idx = torch.arange(batch_len, device = continuous.device)
+    seq_idx = continuous * seq_idx
+    max_idx = seq_idx.argmax(dim = 1)
+    seq_idx[continuous.logical_not()] = batch_len
+    min_idx = seq_idx.argmin(dim = 1)
+    continuity = continuous.any(dim = 1)
+    batch_dim = torch.arange(batch_size, device = continuous.device)
+    return batch_dim[continuity], min_idx[continuity], max_idx[continuity]

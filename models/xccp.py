@@ -1,9 +1,9 @@
 from models.accp import torch, nn, MultiStem
-from models.utils import condense_helper, condense_left, blocky_softmax, blocky_max, batch_insert
+from models.utils import condense_helper, condense_left, blocky_softmax, blocky_max, bool_start_end
 from sys import stderr
 from time import time
 
-def predict_disco_hint(dis_batch, bbt_zeros, bbt_ones, batch_dim, existence, seq_len, seq_idx, discontinuous, fence_logits):
+def predict_disco_hint(dis_batch, bbt_zeros, existence, seq_idx, discontinuous, fence_logits):
     continuous = existence & ~discontinuous
     # 012345678
     # 001132432
@@ -15,14 +15,19 @@ def predict_disco_hint(dis_batch, bbt_zeros, bbt_ones, batch_dim, existence, seq
     # 1111100100
     #     ^cz
     # 1111001001
-
-    con_left = torch.cat([continuous, bbt_zeros], dim = 1)
-    con_right = torch.cat([bbt_ones, continuous], dim = 1)
-    con_left[batch_dim, seq_len] = True
+    batch_dim, con_min, con_max = bool_start_end(continuous)
+    con_left = torch.cat([bbt_zeros, continuous], dim = 1)
+    con_right = torch.cat([continuous, bbt_zeros], dim = 1)
+    con_left[batch_dim, con_min] = True
+    con_right[batch_dim, con_max + 1] = True
 
     fl_left = condense_left(fence_logits, condense_helper(con_left, as_existence = True))
     fl_right = condense_left(fence_logits, condense_helper(con_right, as_existence = True))
-    fence_logits = fl_left + fl_right
+    fence_logits = torch.where(fl_left * fl_right > 0,
+                               torch.where(fl_left > 0, # same sign
+                                           torch.where(fl_left < fl_right, fl_left, fl_right),
+                                           torch.where(fl_left > fl_right, fl_left, fl_right)),
+                               fl_left + fl_right) # oppo sign
 
     dis_exist = discontinuous[dis_batch]
     dis_helper = condense_helper(dis_exist, as_existence = True)
@@ -303,9 +308,11 @@ class DiscoMultiStem(MultiStem):
                     import pdb; pdb.set_trace()
 
             disco_hidden, _ = self._fence_emb(unit_emb, h0c0)
-            disco_hidden = self._stem_dp(disco_hidden) # the order should be kept
-            disco_1d_logits = self.predict_1d_disco(disco_hidden)
             fw, bw = self.pad_fwbw_hidden(disco_hidden, seq_len)
+            disco_hidden = self._stem_dp(disco_hidden) # the order should be kept
+            fw = self._stem_dp(fw)
+            bw = self._stem_dp(bw)
+            disco_1d_logits = self.predict_1d_disco(disco_hidden)
             fence_logits = self.predict_fence(fw, bw) # local fw & bw for continuous
             layer_fence_logits = fence_logits # save for the next function
 
@@ -339,8 +346,8 @@ class DiscoMultiStem(MultiStem):
                 dis_batch, = torch.where(dis_batch)
                 dis_batch_size, = dis_batch.shape
                 (fence_logits, dis_length, dis_indice,
-                 get_dis_emb) = predict_disco_hint(dis_batch, bbt_zeros, bbt_ones, batch_dim,
-                                                   existence, seq_len, seq_idx.repeat(dis_batch_size, 1),
+                 get_dis_emb) = predict_disco_hint(dis_batch, bbt_zeros,
+                                                   existence, seq_idx.repeat(dis_batch_size, 1),
                                                    discontinuous, fence_logits)
                 disco_2d_logits = self.predict_2d_disco(*self._select(get_dis_emb, disco_hidden, unit_emb))
             else:
