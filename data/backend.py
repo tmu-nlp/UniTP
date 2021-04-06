@@ -6,8 +6,14 @@ from collections import defaultdict, namedtuple
 from utils.param_ops import HParams
 from utils.file_io import parpath
 from utils.types import NIL, UNK, BOS, EOS, M_TRAIN
+import torch
 
 BatchSpec = namedtuple('BatchSpec', 'size, iter')
+
+def simple_plural(word):
+    if word[-1] in 'sx' or word[-2:] in ['sh', 'ch']:
+        return word + 'es'
+    return word + 's'
 
 class _BaseReader:
     def __init__(self,
@@ -42,7 +48,7 @@ class _BaseReader:
             self._to_model = to_model
         else:
             to_model = self._to_model
-        to_model.update({f'num_{k}s':v[0] for k,v in v2is.items()})
+        to_model.update({'num_' + simple_plural(k) :v[0] for k,v in v2is.items()})
 
     def update_to_model(self, **kw_args):
         self._to_model.update(kw_args)
@@ -192,7 +198,6 @@ class SequenceBaseReader(_BaseReader):
                  i2vs):
         super().__init__(vocab_dir, i2vs, {}, {})
 
-import torch
 from torch.utils.data import Dataset, DataLoader
 import numpy as np
 from collections import defaultdict
@@ -225,7 +230,7 @@ class LengthOrderedDataset(Dataset):
         self._lengths = lengths
         self._mode = None
         self._extra_text_helper = extra_text_helper
-        if factors:
+        if isinstance(factors, dict):
             factors = tuple(factors.items())
             if len(factors) > 1:
                 factors = tuple(zip(*factors))
@@ -426,3 +431,69 @@ def before_to_seq(vocabs):
         else:
             label_vocab = lambda x: f'{x * 100:.2f}%' if x > 0 else NIL
     return vocabs['token'], i2t, label_vocab
+
+class TextHelper:
+    def __init__(self, cache, device):
+        self._cache = cache
+        self._buffer  = []
+        self._max_len  = 0
+        self._drop_cache = {}
+        self._device = device
+
+    def buffer(self, idx, drop_words = None):
+        wi, ws = self._cache[idx]
+        if drop_words:
+            wi, ws = self.drop_word(wi, ws, drop_words)
+        self._buffer.append((wi, ws))
+
+        wlen = len(wi)
+        if wlen > self._max_len:
+            self._max_len = wlen
+
+    def gen_from_buffer(self):
+        for wi, ws in self._buffer:
+            yield wi, ws, self._max_len - len(wi)
+
+        self._buffer = []
+        self._max_len = 0
+
+    def get(self):
+        raise NotImplementedError('TextHelper.get')
+
+    @staticmethod
+    def drop_word(wi, ws, indices):
+        # wi: 0123456789
+        # ws:0   4 67 9X
+        # si:0     23
+        # wi: 459
+        # ws:0 23
+        new_wi = []
+        new_ws = [0]
+        for sid, (start, end) in enumerate(zip(ws, ws[1:])):
+            if sid in indices:
+                new_wi.extend(wi[start:end])
+                new_ws.append(end - start)
+        return new_wi, new_ws
+
+class CharTextHelper(TextHelper):
+    def __init__(self, text, device, alphabet_fn):
+        cache = []
+        for words in text:
+            segment = [0]
+            char_seq = []
+            for word in words:
+                wl = len(word)
+                segment.append(wl + segment[-1]) # cumu
+                char_seq.extend(alphabet_fn(x) for x in word)
+            cache.append((char_seq, segment))
+        super().__init__(cache, device)
+        
+    def get(self):
+        char_idx, word_fence = [], []
+        ws_range = range(self._max_len + 1)
+        for wi, ws, len_diff in self.gen_from_buffer():
+            char_idx  .append(wi + [0] * len_diff)
+            word_fence.append([i in ws for i in ws_range])
+        char_idx   = torch.tensor(char_idx,   device = self._device)
+        word_fence = torch.tensor(word_fence, device = self._device)
+        return dict(sub_idx = char_idx, sub_fence = word_fence)

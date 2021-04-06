@@ -342,19 +342,18 @@ def blocky_max(sections, values, has_batch_dim = True):
     mask &= any_mask
     return mask.any(m_dim)
 
-def birnn_fwbw(embeddings, pad = None, seq_len = None):
+def birnn_fwbw(embeddings, pad = None, existence = None):
     bs, sl, ed = embeddings.shape
     half_dim = ed >> 1
     if pad is None:
         pad = torch.ones(bs, 1, half_dim, dtype = embeddings.dtype, device = embeddings.device)
     else:
-        pad = pad.repeat(bs, 1, 1)
+        pad = pad.repeat(bs, 1, 1) # not efficient as expand
     embeddings = embeddings.view(bs, sl, 2, half_dim)
     fw = embeddings[:, :, 0]
     bw = embeddings[:, :, 1]
-    if seq_len is not None:
-        seq_idx = torch.arange(sl, dtype = embeddings.dtype, device = embeddings.device)
-        within_seq = seq_idx[None, :, None] < seq_len[:, None, None]
+    if existence is not None:
+        within_seq = existence.unsqueeze(dim = 2)
         fw = torch.where(within_seq, fw, pad)
         bw = torch.where(within_seq, bw, pad)
     fw = torch.cat([pad, fw], dim = 1)

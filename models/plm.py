@@ -166,20 +166,19 @@ _penn_to_xlnet = {'``': '"', "''": '"'}
 from tqdm import tqdm
 from unidecode import unidecode
 from multiprocessing import Pool
-class PreDatasetHelper(object):
-    def __init__(self, text, device):
-        self._indices  = []
-        self._max_len  = 0
-        self._device = device
+from data.backend import TextHelper
+class PreDatasetHelper(TextHelper):
+    def __init__(self, text, device, *args):
         with Pool() as p:
-            self._cache = p.map(self._append, text)
+            cache = p.map(self._append, text)
+        super().__init__(cache, device)
         # self._cache = cache =  []
         # for penn_words in tqdm(text, desc = self.tknz_name):
         #     cache.append(self._append(penn_words))
 
     @classmethod
     def _append(cls, penn_words, check = True):
-        text = cls._text(penn_words)
+        text = cls._adapt_text_for_tokenizer(penn_words)
         xlnt_words  = cls.tokenizer.tokenize(text)
         word_idx    = cls.tokenizer.encode(text)
         # import pdb; pdb.set_trace()
@@ -191,32 +190,20 @@ class PreDatasetHelper(object):
             if len(penn_words) != sum(xlnt_starts):
                 import pdb; pdb.set_trace()
         return word_idx, xlnt_starts
-
-    def buffer(self, idx):
-        self._indices.append(idx)
-        wlen = len(self._cache[idx][0])
-        if wlen > self._max_len:
-            self._max_len = wlen
         
     def get(self):
         plm_idx, plm_start = [], []
         start, end, pad_token_id = self.start_end
-        for idx in self._indices:
-            wi, ws = self._cache[idx]
-            len_diff = self._max_len - len(wi)
+        for wi, ws, len_diff in self.gen_from_buffer():
             plm_idx  .append(wi + [pad_token_id] * len_diff)
             plm_start.append(start + ws + [True] + [False] * (len_diff + end)) # TODO check!
-
-        self._indices = []
-        self._max_len = 0
-
         plm_idx   = torch.tensor(plm_idx,   device = self._device)
         plm_start = torch.tensor(plm_start, device = self._device)
         return dict(plm_idx = plm_idx, plm_start = plm_start)
 
     @staticmethod
-    def _text(penn_words):
-        raise NotImplementedError('PreDatasetHelper._text')
+    def _adapt_text_for_tokenizer(penn_words):
+        raise NotImplementedError('PreDatasetHelper._adapt_text_for_tokenizer')
 
     @staticmethod
     def _start(penn_words, xlnt_words):
@@ -248,7 +235,7 @@ class XLNetDatasetHelper(PreDatasetHelper):
     #     return cls(*args, **kwargs)
 
     @staticmethod
-    def _text(penn_words):
+    def _adapt_text_for_tokenizer(penn_words):
         text = None
         for pw in penn_words:
             pw = _penn_to_xlnet.get(pw, pw)
@@ -299,7 +286,7 @@ class GBertDatasetHelper(PreDatasetHelper):
         return object.__new__(cls)
 
     @classmethod
-    def _text(cls, penn_words):
+    def _adapt_text_for_tokenizer(cls, penn_words):
         text = None
         unk_token_id = cls.tokenizer.unk_token_id
         encode_func  = cls.tokenizer.encode

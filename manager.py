@@ -37,7 +37,8 @@ def _new_status():
                                 ft_bin = dict(en = fill_placeholder + 'wiki.en.bin',
                                               zh = fill_placeholder + 'cc.zh.300.bin',
                                               ja = fill_placeholder + 'cc.ja.300.bin',
-                                              de = fill_placeholder + 'cc.de.300.bin'),
+                                              de = fill_placeholder + 'cc.de.300.bin',
+                                              id = fill_placeholder + 'cc.id.300.bin'),
                                 ft_lower = False),
                 evalb = dict(path = fill_placeholder + 'evalb',
                              prm  = fill_placeholder + 'default.prm'),
@@ -327,7 +328,7 @@ class Manager:
 
         def diff_recorder(config_dict_or_instance):
             task_dir = create_join(self._work_dir, task)
-            if task.endswith('_nccp') or task.endswith('_accp') or task.endswith('_sentiment'):
+            if task.endswith('_nccp') or task.endswith('_accp') or task.endswith('_sentiment') or task.endswith('_ner'):
                 evalb = status['tool']['evalb']
                 evalb = abspath(evalb['path']), '-p', abspath(evalb['prm'])
             elif task.endswith('_dccp') or task.endswith('_xccp'):
@@ -358,7 +359,9 @@ class Manager:
                     data_config[dc] = dict(data_path = ready_paths[dc])
                 else:
                     dc['data_path'] = ready_paths[dn]
-                    if dc.get('trapezoid_height', None) is not None or task.endswith('_accp') or task.endswith('_xccp'): # a trigger for source corpus
+                    if dc.get('trapezoid_height', None) is not None \
+                        or task.endswith('_accp') or task.endswith('_xccp') \
+                        or task.endswith('_ner'): # a trigger for source corpus
                         corp_status = status['data'][dn]
                         dc['source_path'] = corp_status['source_path']
                         dc['data_splits'] = corp_status['build_params']

@@ -6,6 +6,7 @@ from utils.yaml_io import load_yaml, save_yaml
 from utils.param_ops import zip_nt_params, dict_print, change_key, unzip_nt_params
 from sys import stderr
 from itertools import count
+from math import isnan
 import torch
 
 _rt_file = 'register_and_tests.yaml'
@@ -294,6 +295,8 @@ class Recorder:
         return epoch, fine_validation, global_step
 
     def check_betterment(self, epoch, falling, global_step, model, optimizer, key):
+        if isnan(key):
+            key = float('-inf')
         specs = load_yaml(*self._sv_file_lock, wait_lock = False)
         betterment = (self._key is None or self._key < key)
         in_top_k = any(old_key < key for old_key in specs['results'].values())
@@ -367,7 +370,7 @@ class Recorder:
                 new_folder = f'{_instance}.{exp_name}' if exp_name else _instance
                 new_fpath = join(task_path, new_folder)
                 change_key(instance_status, instance, _instance)
-                rename_list.append(fpath, new_fpath)
+                rename_list.append((fpath, new_fpath))
                 fpath = new_fpath + '\t<- ' + folder
                 instance = _instance
                 modifed = True

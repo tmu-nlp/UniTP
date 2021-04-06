@@ -2,7 +2,7 @@ import torch
 from torch import nn, Tensor
 from utils.math_ops import s_index
 from utils.types import BaseType, true_type, frac_4, frac_2, BaseWrapper
-from utils.types import orient_dim, num_ori_layer
+from utils.types import orient_dim, num_ori_layer, false_type
 
 from models.combine import get_combinator, get_components, combine_type, valid_trans_compound
 stem_config = dict(orient_dim   = orient_dim,
@@ -372,16 +372,31 @@ class Contextual(nn.Module):
 
         return dynamic_emb, top_3
 
-from models.utils import math, init, birnn_fwbw
+from models.utils import math, init, birnn_fwbw, fencepost, Bias
 class PadRNN(nn.Module):
-    def __init__(self, module, input_dim, out_dim, num_layers, module_drop_out, trainable_initials, *char_size_dp):
+    def __init__(self,
+                 num_chars,
+                 attention_hint, # dims
+                 linear_dim, # 01+ fence_vote, activation
+                 embed_dim,
+                 fence_dim,
+                 drop_out,
+                 num_layers,
+                 module, # num_layers, rnn_drop_out
+                 rnn_drop_out,
+                 trainable_initials,
+                 fence_vote = None,
+                 activation = None):
         super().__init__()
-        single_size = out_dim // 2
-        self._fence_emb = module(input_dim, single_size,
-                                 num_layers    = num_layers,
-                                 bidirectional = True,
-                                 batch_first   = True,
-                                 dropout = module_drop_out if num_layers > 1 else 0)
+        single_size = fence_dim // 2
+        if num_layers:
+            self._fence_emb = module(embed_dim, single_size,
+                                     num_layers    = num_layers,
+                                     bidirectional = True,
+                                     batch_first   = True,
+                                     dropout = rnn_drop_out if num_layers > 1 else 0)
+        else:
+            self._fence_emb = None
         self._tanh = nn.Tanh()
         bound = 1 / math.sqrt(single_size)
         if trainable_initials:
@@ -399,11 +414,72 @@ class PadRNN(nn.Module):
 
         self._pad = nn.Parameter(torch.empty(1, 1, single_size), requires_grad = True)
         init.uniform_(self._pad, -bound, bound)
+        self._stem_dp = nn.Dropout(drop_out)
 
-        if char_size_dp:
-            num_chars, dropout = char_size_dp
-            self._char_emb = nn.Embedding(num_chars, input_dim)
-            self._char_dp = nn.Dropout(dropout)
+        if num_chars: # forward is open
+            self._char_emb = nn.Embedding(num_chars, embed_dim)
+            self._char_dp = nn.Dropout(drop_out)
+
+        if attention_hint: # domain_and_subject is open
+            if not isinstance(attention_hint, HParams): attention_hint = HParams(attention_hint)
+            self._domain = nn.Linear(fence_dim, embed_dim, bias = False) if attention_hint.get('boundary') else None
+            self._subject_unit  = nn.Linear(embed_dim, embed_dim, bias = False) if attention_hint.unit else None
+            self._subject_state = nn.Linear(fence_dim, embed_dim, bias = False) if attention_hint.state else None
+            single_size = fence_dim // 2
+            if attention_hint.before:
+                self._subject_fw_b = nn.Linear(single_size, embed_dim, bias = False)
+                self._subject_bw_b = nn.Linear(single_size, embed_dim, bias = False)
+            else:
+                self._subject_fw_b = None
+                self._subject_bw_b = None
+            if attention_hint.after:
+                self._subject_fw_a = nn.Linear(single_size, embed_dim, bias = False)
+                self._subject_bw_a = nn.Linear(single_size, embed_dim, bias = False)
+            else:
+                self._subject_fw_a = None
+                self._subject_bw_a = None
+            if attention_hint.difference:
+                self._subject_fw_d = nn.Linear(single_size, embed_dim, bias = False)
+                self._subject_bw_d = nn.Linear(single_size, embed_dim, bias = False)
+            else:
+                self._subject_fw_d = None
+                self._subject_bw_d = None
+            self._subject_bias = Bias(embed_dim)
+
+        if linear_dim:
+            if fence_vote is None:
+                self._fence_vote = None
+                self._fence_l1 = nn.Linear(fence_dim, linear_dim)
+                if linear_dim == 1:
+                    self._fence_l2 = self._fence_act = lambda x: x
+                else:
+                    self._fence_act = activation()
+                    self._fence_l2 = nn.Linear(linear_dim, 1)
+            else:
+                self._fence_act = activation()
+                from_unit, method = fence_vote.split('.')
+                from_unit = from_unit == 'unit'
+                if method == 'dot':
+                    self._fence_l1 = nn.Linear(fence_dim, linear_dim)
+                    if from_unit:
+                        self._fence_l2 = nn.Linear(model_dim, linear_dim)
+                    else:
+                        self._fence_l2 = nn.Linear(fence_dim, linear_dim)
+                    method = self.predict_fence_2d_dot
+                elif method == 'cat':
+                    if from_unit:
+                        self._fence_l1 = nn.Linear(fence_dim + model_dim, linear_dim)
+                    else:
+                        self._fence_l1 = nn.Linear(fence_dim << 1, linear_dim)
+                    self._fence_l2 = nn.Linear(linear_dim, 1)
+                    method = self.predict_fence_2d_cat
+                else:
+                    raise ValueError('Unknown method: ' + method)
+                self._fence_vote = from_unit, method
+        # fence_p: f->hidden [b, s+1, h]
+        # fence_c: u->hidden [b, s, h]
+        # pxc: v->vote [b, s+1, s]
+        # fence: s->score [b, s+1] .sum() > 0
 
     def get_h0c0(self, batch_size):
         if self._initial_size:
@@ -415,18 +491,71 @@ class PadRNN(nn.Module):
             h0c0 = None
         return h0c0
 
-    def pad_fwbw_hidden(self, fence_hidden, seq_len):
-        return birnn_fwbw(fence_hidden, self._tanh(self._pad), seq_len)
+    def pad_fwbw_hidden(self, fence_hidden, existence):
+        pad = self._stem_dp(self._pad)
+        pad = self._tanh(pad)
+        return birnn_fwbw(fence_hidden, pad, existence)
+
+    def domain_and_subject(self, fw, bw, fence_idx, unit_emb, fence_hidden):
+        if self._domain:
+            dom_emb = self._domain(fencepost(fw, bw, fence_idx))
+            dom_emb = self._stem_dp(dom_emb)
+        else:
+            dom_emb = None
+        sub_emb = self._stem_dp(self._subject_bias())
+        if self._subject_unit:  sub_emb = sub_emb + self._stem_dp(self._subject_unit(unit_emb))
+        if self._subject_state: sub_emb = sub_emb + self._stem_dp(self._subject_state(fence_hidden))
+        if self._subject_fw_a:  sub_emb = sub_emb + self._stem_dp(self._subject_fw_a(fw[:, 1:]))
+        if self._subject_bw_a:  sub_emb = sub_emb + self._stem_dp(self._subject_bw_a(bw[:, :-1]))
+        if self._subject_fw_b:  sub_emb = sub_emb + self._stem_dp(self._subject_fw_b(fw[:, :-1]))
+        if self._subject_bw_b:  sub_emb = sub_emb + self._stem_dp(self._subject_bw_b(bw[:, 1:]))
+        if self._subject_fw_d:  sub_emb = sub_emb + self._stem_dp(self._subject_fw_d(fw[:, 1:] - fw[:, :-1]))
+        if self._subject_bw_d:  sub_emb = sub_emb + self._stem_dp(self._subject_bw_d(bw[:, :-1] - bw[:, 1:]))
+        return dom_emb, sub_emb
 
     def forward(self, char_idx, fence): # concat fence vectors
         batch_size, char_len = char_idx.shape
         char_emb = self._char_emb(char_idx)
-        char_emb = self._char_dp(char_emb)
+        char_emb = self._stem_dp(char_emb)
         fence_hidden, _ = self._fence_emb(char_emb, self.get_h0c0(batch_size))
-        seq_len = (char_idx > 0).sum(dim = 1)
-        fw, bw = birnn_fwbw(fence_hidden, self._tanh(self._pad), seq_len)
+        fw, bw = birnn_fwbw(fence_hidden, self._tanh(self._pad), char_idx > 0)
         helper = condense_helper(fence, True)
         fw = condense_left(fw, helper)
         bw = condense_left(bw, helper)
         return torch.cat([fw[:, 1:] - fw[:, :-1], bw[:, :-1] - bw[:, 1:]], dim = 2)
         # select & concat: fw[:*-1] - fw[*1:] & bw...
+
+    def predict_fence(self, fw, bw):
+        fence = torch.cat([fw, bw], dim = 2)
+        fence = self._fence_l1(fence)
+        fence = self._stem_dp(fence)
+        fence = self._fence_act(fence)
+        return self._fence_l2(fence).squeeze(dim = 2)
+
+    def predict_fence_2d_dot(self, fw, bw, hidden, seq_len): # TODO not act for unit
+        fence = torch.cat([fw, bw], dim = 2)
+        fence = self._fence_l1(fence)
+        fence = self._fence_act(self._stem_dp(fence))
+        unit = self._fence_l2(hidden)
+        unit = self._fence_act(self._stem_dp(unit))
+        vote = torch.bmm(fence, unit.transpose(1, 2)) # [b, s+1, s]
+        third_dim = torch.arange(unit.shape[1], device = hidden.device)
+        third_dim = third_dim[None, None] < seq_len[:, None, None]
+        third_dim = torch.where(third_dim, vote, torch.zeros_like(vote))
+        return third_dim, third_dim.sum(dim = 2)
+    
+    def predict_fence_2d_cat(self, fw, bw, hidden, seq_len):
+        fence = torch.cat([fw, bw], dim = 2)
+        _, fence_len, fence_dim = fence.shape
+        batch_size, seg_len, hidden_dim = hidden.shape
+        fence = fence[:, :, None].expand(batch_size, fence_len, seg_len, fence_dim)
+        hidden = hidden[:, None].expand(batch_size, fence_len, seg_len, hidden_dim)
+        vote = torch.cat([fence, hidden], dim = 3) # [b, s+1, s, e]
+        vote = self._fence_l1(vote)
+        vote = self._stem_dp(vote)
+        vote = self._fence_act(vote)
+        vote = self._fence_l2(vote).squeeze(dim = 3)
+        third_dim = torch.arange(seg_len, device = hidden.device)
+        third_dim = third_dim[None, None] < seq_len[:, None, None]
+        third_dim = torch.where(third_dim, vote, torch.zeros_like(vote))
+        return third_dim, third_dim.sum(dim = 2)

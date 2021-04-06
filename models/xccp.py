@@ -162,7 +162,7 @@ def predict_disco_sections(disco_2d, layer_fence, dis_batch, dis_length, dis_ind
     return sections
 
 
-from models.types import rnn_module_type, discontinuous_attention_hint, activation_type, logit_type
+from models.types import rnn_module_type, discontinuous_attention_hint, activation_type, logit_type, fmin, fmax
 from models.combine import get_combinator, get_components, valid_trans_compound
 from utils.types import orient_dim, hidden_dim, frac_2, frac_4, frac_5, num_ori_layer, true_type, false_type, BaseType
 disco_2d_from = BaseType(2, as_index = True, default_set = ('state.dot', 'unit.dot', 'state_unit.dot', 'unit_state.dot'
@@ -308,7 +308,7 @@ class DiscoMultiStem(MultiStem):
                     import pdb; pdb.set_trace()
 
             disco_hidden, _ = self._fence_emb(unit_emb, h0c0)
-            fw, bw = self.pad_fwbw_hidden(disco_hidden, seq_len)
+            fw, bw = self.pad_fwbw_hidden(disco_hidden, existence)
             disco_hidden = self._stem_dp(disco_hidden) # the order should be kept
             fw = self._stem_dp(fw)
             bw = self._stem_dp(bw)
@@ -359,7 +359,6 @@ class DiscoMultiStem(MultiStem):
                     layers_of_disco_2d.append(disco_2d_logits.reshape(-1))
                 layers_of_fence.append(fence_logits)
             else:
-                fmin, fmax = self._fminmax
                 layer_len = seq_len[:, None]
                 layer_fence_logits[:, 0] = fmax
                 layer_fence_logits[batch_dim, seq_len] = fmax

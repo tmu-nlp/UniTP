@@ -1,3 +1,4 @@
+import torch
 from torch import nn
 from utils.types import BaseWrapper, BaseType, true_type, false_type
 
@@ -34,6 +35,7 @@ continuous_attention_hint = dict(unit       = false_type,
 discontinuous_attention_hint = continuous_attention_hint.copy()
 discontinuous_attention_hint.pop('boundary')
 
+fence_vote = BaseType(0, as_index = True, default_set = (None, 'state.dot', 'unit.dot', 'state.cat', 'unit.cat'))
 
 hinge_bias = lambda x: x - 0.5
 
@@ -61,3 +63,7 @@ class LSA(nn.Module):
         return self._a2(self._sa(self._a1(self._fi(base)), seq_len))
 
 orient_module = BaseType(0, as_index = True, as_exception = True, default_set = BaseWrapper.from_gen((nn.LSTM, nn.GRU, SAL, LSA), to_name))
+
+finfo = torch.finfo(torch.get_default_dtype())
+fmin = finfo.min
+fmax = finfo.max

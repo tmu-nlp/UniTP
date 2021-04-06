@@ -24,7 +24,7 @@ def check_instances_operation(instance):
 def check_train(train_str):
     # fv=4:30:4,max=100,!
     train = dict(test_with_validation = False,
-                 fine_validation_at_nth_wander = 5,
+                 fine_validation_at_nth_wander = 10,
                  stop_at_nth_wander = 100,
                  fine_validation_each_nth_epoch = 4,
                  update_every_n_batch = 1,

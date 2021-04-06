@@ -1,6 +1,5 @@
 import torch
 from torch import nn
-from models.utils import Bias
 
 from utils.types import orient_dim, hidden_dim, num_ori_layer, BaseWrapper, BaseType
 from utils.types import frac_2, frac_4, frac_5, true_type, false_type
@@ -8,9 +7,7 @@ from utils.param_ops import HParams
 from random import random
 from sys import stderr
 
-fence_vote = BaseType(0, as_index = True, default_set = (None, 'state.dot', 'unit.dot', 'state.cat', 'unit.cat'))
-
-from models.types import rnn_module_type, continuous_attention_hint, activation_type, logit_type
+from models.types import rnn_module_type, continuous_attention_hint, activation_type, logit_type, fmin, fmax, fence_vote
 from models.combine import get_combinator, get_components, valid_trans_compound
 stem_config = dict(fence_dim      = orient_dim,
                    fence_module   = rnn_module_type,
@@ -24,7 +21,7 @@ stem_config = dict(fence_dim      = orient_dim,
                    trainable_initials = true_type)
 from models.loss import cross_entropy, hinge_loss, binary_cross_entropy
 from models.utils import hinge_score as hinge_score_
-from models.utils import blocky_max, blocky_softmax, fencepost, condense_helper, condense_left
+from models.utils import blocky_max, blocky_softmax, condense_helper, condense_left
 from models.backend import PadRNN
 
 class MultiStem(PadRNN):
@@ -40,105 +37,19 @@ class MultiStem(PadRNN):
                  drop_out,
                  rnn_drop_out,
                  trainable_initials):
-        super().__init__(fence_module,
+        super().__init__(None,
+                         attention_hint,
+                         linear_dim,
                          model_dim,
                          fence_dim,
+                         drop_out,
                          num_layers,
+                         fence_module,
                          rnn_drop_out,
-                         trainable_initials)
-        self._stem_dp = nn.Dropout(drop_out)
-        self._fence_act = activation()
-        if fence_vote is None:
-            self._fence_vote = None
-            self._fence_l1 = nn.Linear(fence_dim, linear_dim)
-            self._fence_l2 = nn.Linear(linear_dim, 1)
-        else:
-            from_unit, method = fence_vote.split('.')
-            from_unit = from_unit == 'unit'
-            if method == 'dot':
-                self._fence_l1 = nn.Linear(fence_dim, linear_dim)
-                if from_unit:
-                    self._fence_l2 = nn.Linear(model_dim, linear_dim)
-                else:
-                    self._fence_l2 = nn.Linear(fence_dim, linear_dim)
-                method = self.predict_fence_2d_dot
-            elif method == 'cat':
-                if from_unit:
-                    self._fence_l1 = nn.Linear(fence_dim + model_dim, linear_dim)
-                else:
-                    self._fence_l1 = nn.Linear(fence_dim << 1, linear_dim)
-                self._fence_l2 = nn.Linear(linear_dim, 1)
-                method = self.predict_fence_2d_cat
-            else:
-                raise ValueError('Unknown method: ' + method)
-            self._fence_vote = from_unit, method
-        # fence_p: f->hidden [b, s+1, h]
-        # fence_c: u->hidden [b, s, h]
-        # pxc: v->vote [b, s+1, s]
-        # fence: s->score [b, s+1] .sum() > 0
-
-        attention_hint = HParams(attention_hint)
-        self._domain = nn.Linear(fence_dim, model_dim, bias = False) if attention_hint.get('boundary') else None
-        self._subject_unit  = nn.Linear(model_dim, model_dim, bias = False) if attention_hint.unit else None
-        self._subject_state = nn.Linear(fence_dim, model_dim, bias = False) if attention_hint.state else None
-        single_size = fence_dim // 2
-        if attention_hint.before:
-            self._subject_fw_b = nn.Linear(single_size, model_dim, bias = False)
-            self._subject_bw_b = nn.Linear(single_size, model_dim, bias = False)
-        else:
-            self._subject_fw_b = None
-            self._subject_bw_b = None
-        if attention_hint.after:
-            self._subject_fw_a = nn.Linear(single_size, model_dim, bias = False)
-            self._subject_bw_a = nn.Linear(single_size, model_dim, bias = False)
-        else:
-            self._subject_fw_a = None
-            self._subject_bw_a = None
-        if attention_hint.difference:
-            self._subject_fw_d = nn.Linear(single_size, model_dim, bias = False)
-            self._subject_bw_d = nn.Linear(single_size, model_dim, bias = False)
-        else:
-            self._subject_fw_d = None
-            self._subject_bw_d = None
-        self._subject_bias = Bias(model_dim)
+                         trainable_initials,
+                         fence_vote,
+                         activation)
         self._sigmoid = nn.Sigmoid()
-        finfo = torch.finfo(torch.get_default_dtype())
-        self._fminmax = finfo.min, finfo.max
-
-    def predict_fence(self, fw, bw):
-        fence = torch.cat([fw, bw], dim = 2)
-        fence = self._fence_l1(fence)
-        fence = self._stem_dp(fence)
-        fence = self._fence_act(fence)
-        return self._fence_l2(fence).squeeze(dim = 2)
-
-    def predict_fence_2d_dot(self, fw, bw, hidden, seq_len): # TODO not act for unit
-        fence = torch.cat([fw, bw], dim = 2)
-        fence = self._fence_l1(fence)
-        fence = self._fence_act(self._stem_dp(fence))
-        unit = self._fence_l2(hidden)
-        unit = self._fence_act(self._stem_dp(unit))
-        vote = torch.bmm(fence, unit.transpose(1, 2)) # [b, s+1, s]
-        third_dim = torch.arange(unit.shape[1], device = hidden.device)
-        third_dim = third_dim[None, None] < seq_len[:, None, None]
-        third_dim = torch.where(third_dim, vote, torch.zeros_like(vote))
-        return third_dim, third_dim.sum(dim = 2)
-    
-    def predict_fence_2d_cat(self, fw, bw, hidden, seq_len):
-        fence = torch.cat([fw, bw], dim = 2)
-        _, fence_len, fence_dim = fence.shape
-        batch_size, seg_len, hidden_dim = hidden.shape
-        fence = fence[:, :, None].expand(batch_size, fence_len, seg_len, fence_dim)
-        hidden = hidden[:, None].expand(batch_size, fence_len, seg_len, hidden_dim)
-        vote = torch.cat([fence, hidden], dim = 3) # [b, s+1, s, e]
-        vote = self._fence_l1(vote)
-        vote = self._stem_dp(vote)
-        vote = self._fence_act(vote)
-        vote = self._fence_l2(vote).squeeze(dim = 3)
-        third_dim = torch.arange(seg_len, device = hidden.device)
-        third_dim = third_dim[None, None] < seq_len[:, None, None]
-        third_dim = torch.where(third_dim, vote, torch.zeros_like(vote))
-        return third_dim, third_dim.sum(dim = 2)
 
     def forward(self, unit_emb, existence,
                 supervised_fence = None,
@@ -181,7 +92,7 @@ class MultiStem(PadRNN):
                     break
 
             fence_hidden, _ = self._fence_emb(unit_emb, h0c0)
-            fw, bw = self.pad_fwbw_hidden(fence_hidden, seq_len)
+            fw, bw = self.pad_fwbw_hidden(fence_hidden, existence)
             fence_hidden = self._stem_dp(fence_hidden)
             fw = self._stem_dp(fw)
             bw = self._stem_dp(bw)
@@ -200,7 +111,6 @@ class MultiStem(PadRNN):
                 sections[batch_dim[:, None], fence_idx] = True
                 sections = sections.cumsum(dim = 1)
             else:
-                fmin, fmax = self._fminmax
                 fence_logits[:, 0] = fmax
                 fence_logits[batch_dim, seq_len] = fmax
                 fence_logits[longer_seq_idx > seq_len[:, None]] = fmin
@@ -211,21 +121,7 @@ class MultiStem(PadRNN):
                 layers_of_fence_idx.append(fence_idx)
 
                 sections = fence.cumsum(dim = 1)
-            
-            if self._domain:
-                dom_emb = self._domain(fencepost(fw, bw, fence_idx))
-                dom_emb = self._stem_dp(dom_emb)
-            else:
-                dom_emb = None
-            sub_emb = self._stem_dp(self._subject_bias())
-            if self._subject_unit:  sub_emb = sub_emb + self._stem_dp(self._subject_unit(unit_emb))
-            if self._subject_state: sub_emb = sub_emb + self._stem_dp(self._subject_state(fence_hidden))
-            if self._subject_fw_a:  sub_emb = sub_emb + self._stem_dp(self._subject_fw_a(fw[:, 1:]))
-            if self._subject_bw_a:  sub_emb = sub_emb + self._stem_dp(self._subject_bw_a(bw[:, :-1]))
-            if self._subject_fw_b:  sub_emb = sub_emb + self._stem_dp(self._subject_fw_b(fw[:, :-1]))
-            if self._subject_bw_b:  sub_emb = sub_emb + self._stem_dp(self._subject_bw_b(bw[:, 1:]))
-            if self._subject_fw_d:  sub_emb = sub_emb + self._stem_dp(self._subject_fw_d(fw[:, 1:] - fw[:, :-1]))
-            if self._subject_bw_d:  sub_emb = sub_emb + self._stem_dp(self._subject_bw_d(bw[:, :-1] - bw[:, 1:]))
+            dom_emb, sub_emb = self.domain_and_subject(fw, bw, fence_idx, unit_emb, fence_hidden)
             sections = torch.where(longer_seq_idx < seq_len[:, None], sections, torch.zeros_like(sections))[:, :-1]
 
             #* self._sigmoid(self._subject_static(unit_emb)) #* 20
@@ -266,7 +162,7 @@ multi_class = dict(hidden_dim = hidden_dim,
                    logit_type = logit_type,
                    drop_out   = frac_4)
 
-model_type = dict(fence_layer    = stem_config,
+model_type = dict(fence_layer     = stem_config,
                   tag_label_layer = multi_class)
 from models.utils import get_logit_layer
 from models.loss import get_decision, get_decision_with_value, get_loss
@@ -279,8 +175,6 @@ class BaseRnnTree(MultiStem):
                  fence_layer,
                  tag_label_layer,
                  **kw_args):
-        # (**kw_args)self._stem_layer = 
-
         super().__init__(model_dim, **fence_layer)
 
         hidden_dim = tag_label_layer['hidden_dim']

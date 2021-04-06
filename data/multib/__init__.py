@@ -152,8 +152,8 @@ def coord_vote(units, fence_location):
         pro_num_ratio = (units <= 0).sum() / units.size
         unit_location = units.argmin()
     if fence_location > unit_location:
-        return f'«{fence_location - unit_location}{height_ratio(pro_num_ratio)}'
-    return f'{height_ratio(pro_num_ratio)}{unit_location + 1 - fence_location}»'
+        return f'«{fence_location - unit_location - 1}{height_ratio(pro_num_ratio)}'
+    return f'{height_ratio(pro_num_ratio)}{unit_location - fence_location}»'
 
 def flatten_children(nodes):
     children = []
@@ -167,7 +167,7 @@ def flatten_children(nodes):
 func_unary_char = '&'
 def flatten_children_with_weights(bottom, start, weights, bar = '│'):
     children = []
-    head_idx = 0
+    head_child = None
     max_weight = 0
     for nid, sub_tree in enumerate(bottom):
         mean, _ = weights[start + nid]
@@ -175,7 +175,7 @@ def flatten_children_with_weights(bottom, start, weights, bar = '│'):
         if isinstance(sub_tree, Tree):
             unary_label = sub_tree.label()
             if bar in unary_label:
-                sub_tree.set_label(' ' + label + func_unary_char + unary_label)
+                sub_tree.set_label(label + func_unary_char + unary_label)
             else:
                 sub_tree = Tree(label, [sub_tree])
         else:
@@ -183,8 +183,8 @@ def flatten_children_with_weights(bottom, start, weights, bar = '│'):
         children.append(sub_tree)
         if mean > max_weight:
             max_weight = mean
-            head_idx = nid
-    return children, bottom[head_idx]
+            head_child = sub_tree
+    return children, head_child
 
 def flatten_layer_with_fence_vote(bottom, fence_vote, bar = '│'):
     children = []
@@ -230,7 +230,7 @@ def unary_label_match(tree, label):
 def get_tree_from_signals(word, tag, layers_of_labels, layers_of_splits, fall_back_root = None, layers_of_weights = None, layers_of_fence_vote = None):
     bottom = []
     add_weight_base = layers_of_weights is not None
-    balancing_sub = add_weight_base and any(x[0] not in '#_' for x in layers_of_labels[0])
+    balancing_bottom_sub = add_weight_base and any(x[0] not in '#_' for x in layers_of_labels[0])
     add_fence_vote_base = layers_of_fence_vote is not None
     unary_chars = '│' + func_unary_char 
     for w, t, label in zip(word, tag, layers_of_labels[0]):
@@ -240,12 +240,12 @@ def get_tree_from_signals(word, tag, layers_of_labels, layers_of_splits, fall_ba
             w = '-RRB-'
         if t in ('LRB', 'RRB'):
             t = '-' + t + '-'
-        leave = Tree(t, [w])
+        leaf = Tree(t, [w])
         if label[0] not in '#_':
-            leave = Tree(label, [leave])
-        elif balancing_sub:
-            leave = Tree('│', [leave])
-        bottom.append(leave)
+            leaf = Tree(label, [leaf])
+        elif balancing_bottom_sub:
+            leaf = Tree('│', [leaf])
+        bottom.append(leaf)
 
     if add_weight_base:
         headedness_stat = {}
@@ -267,7 +267,11 @@ def get_tree_from_signals(word, tag, layers_of_labels, layers_of_splits, fall_ba
                 if label[0] in '#_' or (unary_label_match(sub_tree[0], label) if add_fence_vote else (sub_tree.label() == label)):
                     # relay sub
                     if balancing_sub:
-                        sub_tree.set_label(unary_chars + unary_chars + sub_tree.label())
+                        relay_label = sub_tree.label()
+                        if '│' in relay_label:
+                            sub_tree.set_label(unary_chars + unary_chars + relay_label)
+                        else:
+                            sub_tree = Tree(unary_chars + '│', [sub_tree])
                 else:
                     sub_tree = Tree(label, flatten_children(bottom[start:end]))
                 # leave_cnt += len(sub_tree.leaves())
@@ -282,9 +286,13 @@ def get_tree_from_signals(word, tag, layers_of_labels, layers_of_splits, fall_ba
                 if add_weight:
                     children, head_child = flatten_children_with_weights(children, start, layers_of_weights[lid])
                     sub_tree = Tree(label, children) # +2
-                    head_label = head_child[0].label()
-                    if label == 'NP' and not any(x[0].label() == 'DT' for x in children):
-                        head_label += '*'
+                    try:
+                        head_label = head_child[0].label()
+                        if label == 'NP' and not any(x[0].label() == 'DT' for x in children):
+                            head_label += '*'
+                    except:
+                        print(head_child[0])
+                        import pdb; pdb.set_trace()
                     if '│' in head_label or func_unary_char in head_label:
                         import pdb; pdb.set_trace()
                     if label in headedness_stat:
