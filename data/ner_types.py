@@ -144,56 +144,143 @@ def check_data(save_dir, valid_sizes):
     print(histo_count(ds_ner_cnts[M_TEST], bin_size = 3), file = stderr)
     return res
 
+from random import random
+def break_o(old_ner, old_fence, break_o_chunk, break_whole, o_idx):
+    # 0359 -> 012356789
+    #  OPO ->  OOOPOOOO
+    new_ner, new_fence = [], [0]
+    for ner, start, end in zip(old_ner, old_fence, old_fence[1:]):
+        if ner == o_idx and end - start > 1:
+            new_range = range(start + 1, end + 1)
+            if not break_whole:
+                new_range = [i for i in new_range if i == end or random() < break_o_chunk]
+            new_ner.extend(ner for _ in new_range)
+            new_fence.extend(new_range)
+        else:
+            new_ner.append(ner)
+            new_fence.append(end)
+    return new_ner, new_fence
+
+def insert_o(old_ner, old_fence, f_indices, o_idx):
+    # 01234567 -> 01_34567_9
+    # 0358 -> 02346X
+    #  OPO ->  OXOPOXO
+    # assert len(f_indices) == len(values)
+    assert all(x <= y for x, y in zip(f_indices, f_indices[1:]))
+    insersion = 0
+    new_ner, new_fence = [], [0]
+    for ner, start, end in zip(old_ner, old_fence, old_fence[1:]):
+        inserted = None
+        while insersion < len(f_indices) and (ptr := f_indices[insersion]) <= end: # py38
+            # print(ner, insersion, 'WHILE', new_fence, new_ner)
+            # import pdb; pdb.set_trace()
+            if (lhs := ptr + insersion) != new_fence[-1]:
+                new_fence.append(lhs)
+                if ptr != inserted:
+                    new_ner.append(ner)
+            insersion += 1
+            new_ner.append(o_idx)
+            if (rhs := lhs + 1) < end + insersion:
+                new_fence.append(rhs)
+            inserted = ptr
+        else:
+            # print(ner, insersion, 'ELSE', new_fence, end + insersion, new_ner)
+            # import pdb; pdb.set_trace()
+            if inserted != end:
+                new_ner.append(ner)
+            new_fence.append(end + insersion)
+    return new_ner, new_fence
+
+def delete_o(old_ner, old_fence, n_indices):
+    deletion = 0
+    new_ner, new_fence = [], [0]
+    assert all(x < y for x, y in zip(n_indices, n_indices[1:]))
+    for ner, start, end in zip(old_ner, old_fence, old_fence[1:]):
+        offset = 0
+        deleted = None
+        while (has_idx := deletion < len(n_indices)) and (next_ptr := n_indices[deletion]) == start + offset and next_ptr < end:
+            offset += 1
+            deleted = next_ptr
+            deletion += 1
+        if deleted is not None and deleted == end - 1: # deleted whole
+            continue
+        elif has_idx and next_ptr < end: # rhs
+            while next_ptr < end: # discontinuous chunks
+                if new_fence[-1] < next_ptr - deletion:
+                    new_ner.append(ner)
+                    new_fence.append(next_ptr - deletion)
+                deletion += 1
+                if deletion >= len(n_indices):
+                    break # else cannot catch this
+                next_ptr = n_indices[deletion]
+            if next_ptr < end - 1: # remaining
+                new_ner.append(ner)
+                new_fence.append(end - deletion)
+        else: # no next_ptr < end, no delete
+            new_ner.append(ner)
+            new_fence.append(end - deletion)
+    return new_ner, new_fence
+    
+def substitute_o(old_ner, old_fence, n_indices, o_idx):
+    substution = 0
+    new_ner, new_fence = [], [0]
+    for ner, start, end in zip(old_ner, old_fence, old_fence[1:]):
+        substituted = None
+        # import pdb; pdb.set_trace()
+        while substution < len(n_indices) and (lhs := n_indices[substution]) < end:
+            if new_fence[-1] < lhs:
+                new_ner.append(ner)
+                new_fence.append(lhs)
+            new_ner.append(o_idx)
+            if (rhs := lhs + 1) < end:
+                new_fence.append(rhs)
+            substution += 1
+            substituted = lhs
+        if substituted is None or substituted < end - 1:
+            new_ner.append(ner)
+        new_fence.append(end)
+    return new_ner, new_fence
+
 from nltk.tree import Tree
-def bio_to_tree(words, bio_tags, pos_tags = None, root_label = 'TOP'): # TODO perserve bio
+def bio_to_tree(words, bio_tags, pos_tags = None, show_internal = False, root_label = 'TOP'): # TODO perserve bio
     bottom = []
     last_ner = last_chunk = None
+    prefixes = ''
     for nid, (word, bio) in enumerate(zip(words, bio_tags)):
         leaf = Tree(f'#{nid+1}' if pos_tags is None else pos_tags[nid], [word])
-        if '-' in bio:
-            prefix, ner = bio.split('-')
-        else:
-            prefix = bio
-            ner = None
-        # import pdb; pdb.set_trace()
-        if last_ner == ner:
+        prefix, ner = bio.split('-') if '-' in bio else (bio, None)
+        if last_ner == ner and prefix != 'B':
             if ner is None:
                 bottom.append(leaf)
                 last_chunk = None
             else:
+                if show_internal: prefixes += prefix
                 last_chunk.append(leaf)
         else: # changed
             if last_chunk:
-                bottom.append(Tree(last_ner, last_chunk))
+                if show_internal: prefixes = '.' + prefixes
+                bottom.append(Tree(last_ner + prefixes, last_chunk))
             if ner is None:
                 bottom.append(leaf)
                 last_chunk = None
             else:
+                if show_internal: prefixes = prefix
                 last_chunk = [leaf]
             last_ner = ner
     if last_chunk:
         bottom.append(Tree(last_ner, last_chunk))
     return Tree(root_label, bottom)
 
-def ner_to_tree(words, ner_tags, fences, pos_tags = None, perserve_fence = False, weights = None, root_label = 'TOP'):
-    leaves = []
-    for nid, word in enumerate(words):
-        if pos_tags is None:
-            if weights is None:
-                label = f'#{nid+1}'
-            else:
-                label = f'{weights[nid] * 100:.0f}%'
-            leaf = Tree(label, [word])    
-        else:
-            leaf = Tree(pos_tags[nid], [word])
-            if weights is not None:
-                leaf = Tree(f'{weights[nid] * 100:.0f}%', [leaf])
-        leaves.append(leaf)
+def ner_to_tree(words, ner_tags, fences, pos_tags = None, show_internal = False, weights = None, root_label = 'TOP'):
+    leaves = [Tree(f'#{nid+1}' if pos_tags is None else pos_tags[nid], [word]) for nid, word in enumerate(words)]
     bottom = []
-    # import pdb; pdb.set_trace()
+    all_os = all(x == 'O' for x in ner_tags)
     for ner, start, end in zip(ner_tags, fences, fences[1:]):
-        if ner == 'O' and not perserve_fence:
-            bottom.extend(leaves[start: end])
+        children = leaves[start:end]
+        if end - start > 1 and weights is not None:
+            children = [Tree(f'{weight * 100:.0f}%', [leaf]) for leaf, weight in zip(children, weights[start:end])]
+        if ner == 'O' and (not show_internal or all_os or (end - start == 1)):
+            bottom.extend(children)
         else:
-            bottom.append(Tree(ner, leaves[start: end]))
+            bottom.append(Tree(ner, children))
     return Tree(root_label, bottom)

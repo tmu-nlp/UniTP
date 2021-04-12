@@ -127,7 +127,7 @@ class StaticCrossDataset(LengthOrderedDataset):
         self._columns = columns
         self._device = device
 
-    def at_idx(self, idx, factor, length):
+    def at_idx(self, idx, factor, length, helper_outputs):
         sample = {}
         for field, column in self._columns.items():
             if isinstance(field, tuple) and field[1] == factor:
@@ -306,7 +306,7 @@ class DynamicCrossDataset(LengthOrderedDataset):
         super().__init__(heads, lengths, factors, min_len, max_len, extra_text_helper)
         self._device = device
 
-    def at_idx(self, idx, factor, length):
+    def at_idx(self, idx, factor, length, helper_outputs):
         tree_keepers, heads = self._keepers_heads
         tk = tree_keepers[idx]
         if factor is None:

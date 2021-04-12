@@ -27,9 +27,8 @@ def get_configs(recorder = None):
     
     def get_datasets(mode):
         datasets = {}
-        if mode == M_TRAIN:
-            datasets[C_ABSTRACT] = reader.batch(M_TRAIN, ner.batch_size, ner.bucket_len,
-                                                ner.get('split_o', 0.5), ner.get('split_whole', False),
+        if mode == M_TRAIN: # TODO clean & noise; ft;
+            datasets[C_ABSTRACT] = reader.batch(M_TRAIN, ner.batch_size, ner.bucket_len, ner.ner_extension,
                                                 max_len = ner.max_len,
                                                 sort_by_length = ner.sort_by_length)
         else:

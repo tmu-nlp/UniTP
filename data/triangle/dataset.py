@@ -64,7 +64,7 @@ class TriangularDataset(LengthOrderedDataset):
         self._columns = columns
         self._paddings_device = paddings, device
 
-    def at_idx(self, idx, factor, length):
+    def at_idx(self, idx, factor, length, helper_outputs):
         sample = {}
         for field, column in self._columns.items():
             if isinstance(field, tuple) and field[1] == factor:

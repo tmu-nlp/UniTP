@@ -341,8 +341,12 @@ class LengthOrderedDataset(Dataset):
                 return False # end of the tape
         return True
             
-    def __len__(self):
+    def __len__(self): # pytorch need this
         return sum(len(s) for s in self._indices.values())
+
+    @property
+    def size(self): # for our data augmentation
+        return self.__len__()
         
     def __getitem__(self, idx):
 
@@ -361,15 +365,16 @@ class LengthOrderedDataset(Dataset):
             idx = self.__take_bkt_buffer(idx)
 
         length = self._lengths[idx]
-        sample = self.at_idx(idx, factor, length)
-        sample = tuple(sample[h] for h in self._heads)
+        helper_outputs = None
         if self._extra_text_helper is not None:
-            self._extra_text_helper.buffer(idx)
+            helper_outputs = self._extra_text_helper.buffer(idx)
+        sample = self.at_idx(idx, factor, length, helper_outputs)
+        sample = tuple(sample[h] for h in self._heads)
         
         return sample
 
 
-    def at_idx(self, idx, factor, length):
+    def at_idx(self, idx, factor, length, helper_outputs):
         raise NotImplementedError()
 
     def _collate_fn(self, batch):
@@ -408,7 +413,7 @@ def post_batch(mode, len_sort_ds, sort_by_length, bucket_length, batch_size):
         len_sort_ds.bucketed_mode(bucket_length)
     di = DataLoader(len_sort_ds, batch_size = batch_size, collate_fn = len_sort_ds.collate_fn, shuffle = mode == M_TRAIN)#, num_workers = 1) # no way to get more!
     # RuntimeError: Cannot re-initialize CUDA in forked subprocess. To use CUDA with multiprocessing, you must use the 'spawn' start method 
-    return BatchSpec(len(len_sort_ds), di)
+    return BatchSpec(len_sort_ds.size, di)
 
 
 def before_to_seq(vocabs):
@@ -432,6 +437,72 @@ def before_to_seq(vocabs):
             label_vocab = lambda x: f'{x * 100:.2f}%' if x > 0 else NIL
     return vocabs['token'], i2t, label_vocab
 
+def drop_word(wi, indices, ws = None):
+    new_wi = []
+    if ws is None:
+        for sid, idx in enumerate(wi):
+            if sid not in indices:
+                new_wi.append(idx)
+        return new_wi
+            
+    new_ws = [0]
+    for sid, (start, end) in enumerate(zip(ws, ws[1:])):
+        if sid not in indices:
+            new_wi.extend(wi[start:end])
+            new_ws.append(end - start + new_ws[-1])
+    return new_wi, new_ws
+
+def insert_word(wi, indices, values, ws = None):
+    new_wi = []
+    head_v = 0
+    if ws is None:
+        for start, idx in enumerate(wi):
+            if start in indices:
+                new_wi.append(values[head_v])
+                head_v += 1
+            new_wi.append(idx)
+        if start + 1 in indices:
+            new_wi.append(values[head_v])
+        return new_wi
+
+    new_ws = [0]
+    for sid, (start, end) in enumerate(zip(ws, ws[1:] + [None])):
+        if sid in indices:
+            wm = values[head_v]
+            new_wi.extend(wm)
+            new_ws.append(len(wm) + new_ws[-1])
+            head_v += 1
+        # original
+        if end:
+            new_wi.extend(wi[start:end])
+            new_ws.append(end - start + new_ws[-1])
+    # import pdb; pdb.set_trace()
+    return new_wi, new_ws
+
+def substitute_word(wi, indices, values, ws = None):
+    new_wi = []
+    head_v = 0
+    if ws is None:
+        for start, idx in enumerate(wi):
+            if start in indices:
+                new_wi.append(values[head_v])
+                head_v += 1
+            else:
+                new_wi.append(idx)
+        return new_wi
+
+    new_ws = [0]
+    for sid, (start, end) in enumerate(zip(ws, ws[1:])):
+        if sid in indices:
+            wm = values[head_v]
+            new_wi.extend(wm)
+            new_ws.append(len(wm) + new_ws[-1])
+            head_v += 1
+        else:
+            new_wi.extend(wi[start:end])
+            new_ws.append(end - start + new_ws[-1])
+    return new_wi, new_ws
+
 class TextHelper:
     def __init__(self, cache, device):
         self._cache = cache
@@ -440,15 +511,22 @@ class TextHelper:
         self._drop_cache = {}
         self._device = device
 
-    def buffer(self, idx, drop_words = None):
+    def buffer(self, idx):
         wi, ws = self._cache[idx]
-        if drop_words:
-            wi, ws = self.drop_word(wi, ws, drop_words)
         self._buffer.append((wi, ws))
 
         wlen = len(wi)
         if wlen > self._max_len:
             self._max_len = wlen
+        return wi, ws
+
+    def a_secrete_buffer(self, cache):
+        for wi, ws in cache:
+            self._buffer.append((wi, ws))
+
+            wlen = len(wi)
+            if wlen > self._max_len:
+                self._max_len = wlen
 
     def gen_from_buffer(self):
         for wi, ws in self._buffer:
@@ -459,21 +537,6 @@ class TextHelper:
 
     def get(self):
         raise NotImplementedError('TextHelper.get')
-
-    @staticmethod
-    def drop_word(wi, ws, indices):
-        # wi: 0123456789
-        # ws:0   4 67 9X
-        # si:0     23
-        # wi: 459
-        # ws:0 23
-        new_wi = []
-        new_ws = [0]
-        for sid, (start, end) in enumerate(zip(ws, ws[1:])):
-            if sid in indices:
-                new_wi.extend(wi[start:end])
-                new_ws.append(end - start)
-        return new_wi, new_ws
 
 class CharTextHelper(TextHelper):
     def __init__(self, text, device, alphabet_fn):

@@ -278,7 +278,7 @@ class TrapezoidDataset(LengthOrderedDataset):
         self._paddings_device_height = paddings, device, trapezoid_height
         self._keepers = tuple(keepers)
 
-    def at_idx(self, idx, factor, length):
+    def at_idx(self, idx, factor, length, helper_outputs):
         sample = self._keepers[idx]
         if factor is None:
             sample = sample.get() #?

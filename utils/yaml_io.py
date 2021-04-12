@@ -1,15 +1,22 @@
 import yaml
-from os.path import isfile
 from os import remove
+from os.path import isfile
 from datetime import datetime
-from time import sleep
+from utils.shell_io import byte_style
 
 def _wait(lfile):
-    while isfile(lfile):
+    if isfile(lfile):
+        msg = 'Wait for '
+        msg += byte_style(f"'{lfile}'", '3')
+        msg += '\n  (Locked at '
         with open(lfile) as fr:
-            s = fr.readlines()
-        print(f"'{lfile}' was locked at {s[0]}, waiting...")
-        sleep(2)
+            for line in fr:
+                msg += line.split('.')[0]
+        msg += ') Unlock? [Y or any key to exit] '
+        if input(msg) != 'Y':
+            # print('\nexited')
+            exit()
+        remove(lfile)
 
 def _block(lfile):
     with open(lfile, 'w') as fw:

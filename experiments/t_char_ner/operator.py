@@ -90,7 +90,9 @@ class NerOperator(Operator):
             b_head = [batch_id, batch['length'].cpu().numpy(), batch['token'].cpu().numpy()]
             if flush_heads:
                 for field in 'pos bio ner fence'.split():
-                    if field in batch:
+                    if field == 'pos' and pos_logits is None:
+                        b_head.append(None)
+                    elif field in batch:
                         value = batch[field]
                         if field != 'fence':
                             value = value.type(torch.uint8)
@@ -159,18 +161,20 @@ class NerOperator(Operator):
     @staticmethod
     def combine_scores_and_decide_key(epoch, ds_scores):
         scores = ds_scores[get_sole_key(ds_scores)]
+        if scores['TA'] == 100: scores.pop('TA')
         scores['key'] = scores.get('F1', 0)
         return scores
 
     def optuna_model(self):
         pass
 
-from data.ner_types import bio_to_tree, ner_to_tree
 import numpy as np
-def batch_trees(b_length, b_word, b_pos, b_bio, b_ner, b_fence, i2vs, b_weight = None, t2vs = None):
+from data.ner_types import bio_to_tree, ner_to_tree
+def batch_trees(b_length, b_word, b_pos, b_bio, b_ner, b_fence, i2vs, b_weight = None, t2vs = None, **kw_args):
     has_pos = b_pos is not None
     has_bio = b_bio is not None
-    if t2vs is None:
+    show_internal = t2vs is None
+    if show_internal:
         t2vs = i2vs.token
     for sid, (ln, word) in enumerate(zip(b_length, b_word)):
         wd = [t2vs    [i] for i in word [     :ln]]
@@ -178,24 +182,28 @@ def batch_trees(b_length, b_word, b_pos, b_bio, b_ner, b_fence, i2vs, b_weight =
         
         if has_bio:
             bi = [i2vs.bio[i] for i in b_bio[sid, :ln]]
-            yield bio_to_tree(wd, bi, ps)
+            yield bio_to_tree(wd, bi, ps, show_internal, **kw_args)
         else:
             nr = [i2vs.ner[i] for i in b_ner[sid, :b_fence[sid, 1:].sum()]]
             fence, = np.where(b_fence[sid]) #.nonzero() in another format
-            has_weight = b_weight is not None
-            weights = b_weight[sid, :ln] if has_weight else None
-            yield ner_to_tree(wd, nr, fence, ps, has_weight, weights)
+            weights = b_weight[sid, :ln] if show_internal and b_weight is not None else None
+            tree = ner_to_tree(wd, nr, fence, ps, show_internal, weights, **kw_args)
+            if len(tree) == 0:
+                import pdb; pdb.set_trace()
+            yield tree
 
 from utils.vis import BaseVis, VisRunner
 from data.multib import draw_str_lines
 from utils.file_io import join, isfile, remove
 from utils.shell_io import parseval, rpt_summary
+from nltk.tree import Tree
 class NerVis(BaseVis):
     def __init__(self, epoch, work_dir, evalb, i2vs, t2is, logger, flush_heads = False):
         super().__init__(epoch)
         self._evalb_i2vs_logger = evalb, i2vs, t2is, logger
         htree = join(work_dir, 'head.tree')
         dtree = join(work_dir, f'data.{epoch}.tree')
+        self._art_lines = []
         self._art = join(work_dir, f'data.{epoch}.art')
         self._err = join(work_dir, f'data.{epoch}.rpt')
         self._fnames = htree, dtree
@@ -207,7 +215,6 @@ class NerVis(BaseVis):
         if self._head_tree:
             self._head_tree = open(htree, 'w')
         self._data_tree = open(dtree, 'w')
-        if isfile(self._art): remove(self._art)
 
     def __del__(self):
         if self._head_tree: self._head_tree.close()
@@ -225,9 +232,8 @@ class NerVis(BaseVis):
              d_pos, d_bio, d_ner, d_fence, d_weight) = batch
         for tree in batch_trees(h_length, h_token, d_pos, d_bio, d_ner, d_fence, i2vs, t2vs = t2is):
             print(' '.join(str(tree).split()), file = self._data_tree)
-        with open(self._art, 'a+') as fw:
-            for tree in batch_trees(h_length, h_token, d_pos, d_bio, d_ner, d_fence, i2vs, d_weight):
-                fw.write('\n'.join(draw_str_lines(tree)) + '\n\n')
+        for tree in batch_trees(h_length, h_token, d_pos, d_bio, d_ner, d_fence, i2vs, d_weight, root_label = 'Prediction'):
+            self._art_lines.append('\n'.join(draw_str_lines(tree)))
 
     def _after(self): # TODO TODO TODO length or num_ners
         # call evalb to data.emm.rpt return the results, and time counted
@@ -238,7 +244,7 @@ class NerVis(BaseVis):
         evalb, _, _, logger = self._evalb_i2vs_logger
         proc = parseval(evalb, *self._fnames)
         report = proc.stdout.decode()
-        scores = rpt_summary(report, False, True)
+        s_rows, scores = rpt_summary(report, True, True)
         errors = proc.stderr.decode().split('\n')
         assert errors.pop() == ''
         num_errors = len(errors)
@@ -248,11 +254,28 @@ class NerVis(BaseVis):
                 logger(f'    {e}. ' + error)
             if num_errors > 10:
                 logger('     ....')
-            with open(self._err, 'w') as fw:
-                fw.write(report)
             logger(f'  Go check {self._err} for details.')
+        with open(self._err, 'w') as fw:
+            fw.write(report)
 
         self._head_tree = self._data_tree = None
+        with open(self._fnames[0]) as fr, open(self._art, 'w') as fw:
+            for gold_tree, pred_tree, s_row in zip(fr, self._art_lines, s_rows):
+                lines = f'Sent #{s_row[0]}:'
+                if s_row[3] == s_row[4] == 0 or s_row[3] == s_row[4] == 100:
+                    lines += ' EXACT MATCH\n' + pred_tree + '\n\n\n'
+                else:
+                    gold_tree = Tree.fromstring(gold_tree)
+                    gold_tree.set_label('Gold')
+                    lines += '\n' + '\n'.join(draw_str_lines(gold_tree))
+                    lines += '\n\n' + pred_tree + '\n\n\n'
+                fw.write(lines)
+                    
+        #  0     1      2    3     4        5      6   7       8    9      10     11
+        #  ID  Len.  Stat. Recal  Prec.  Bracket gold test Bracket Words  Tags Accracy
+        # ============================================================================
+        #    1    2    0  100.00  50.00     1      1    2      0      2     1    50.00
+
 
         # if self.length_bins is not None and self._scores_of_bins:
         #     with open(self._ctvis.join(f'{self.epoch}.scores'), 'w') as fw:

@@ -36,7 +36,7 @@ class CharDataset(LengthOrderedDataset):
         chars = lambda x: tuple(np.random.choice(char_ids) for _ in range(x)) # TODO make it numpy
         self._char_gens_specs = char_gen, chars, noise_specs, is_digit, words, v2i
 
-    def at_idx(self, idx, factor, length):
+    def at_idx(self, idx, factor, length, helper_outputs):
         sample = {}
         char_gen, chars, noise_specs, is_digit, words, v2i = self._char_gens_specs
         for field, column in self._columns.items():

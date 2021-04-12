@@ -126,7 +126,7 @@ class MAryDataset(LengthOrderedDataset):
         super().__init__(heads, lengths, factors, min_len, max_len, extra_text_helper)
         self._device = device
 
-    def at_idx(self, idx, factor, length):
+    def at_idx(self, idx, factor, length, helper_outputs):
         signals, heads = self._signals_heads
         signals = signals[idx]
         if factor is not None:
