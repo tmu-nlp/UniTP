@@ -105,6 +105,12 @@ class _BaseReader:
             sum_cnt = 1 / sum_cnt.log()
         return sum_cnt
 
+def add_char_from_word(i2vs):
+    chars = set()
+    for word in i2vs['word'][1:]:
+        chars.update(word)
+    i2vs['char'] = [NIL] + sorted(chars)
+
 from utils.param_ops import change_key
 class WordBaseReader(_BaseReader):
     def __init__(self,
@@ -166,7 +172,7 @@ class WordBaseReader(_BaseReader):
     def unk_id(self):
         return self._oovs.get('token')
 
-    def extend_vocab(self, extra_vocab, extra_weights):
+    def extend_vocab(self, extra_i2vs, extra_weights):
         i2vs = self._i2vs._nested
         token = list(i2vs.pop('token'))
         ext_token = []
@@ -175,7 +181,7 @@ class WordBaseReader(_BaseReader):
         # TODO: check diff vocab settings
         # checked: full+nil
         # import pdb; pdb.set_trace()
-        for tid, tok in enumerate(extra_vocab):
+        for tid, tok in enumerate(extra_i2vs.token):
             if tok not in token and tok not in (NIL, BOS, EOS, UNK):
                 ext_index.append(tid)
                 ext_token.append(tok)
@@ -183,6 +189,14 @@ class WordBaseReader(_BaseReader):
         sep = len(token)
         while token[sep - 1] in (UNK, EOS, UNK):
             sep -= 1
+
+        extra_char = extra_i2vs.get('char')
+        if extra_char:
+            char = list(i2vs.pop('char'))
+            for ch in extra_char:
+                if ch not in char and ch not in (NIL, BOS, EOS):
+                    char.append(ch)
+            i2vs['char'] = char
 
         i2vs['token'] = token[:sep] + ext_token + token[sep:]
         weights = self.get_to_model('initial_weights')

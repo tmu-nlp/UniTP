@@ -26,12 +26,16 @@ class StaticCrossDataset(LengthOrderedDataset):
 
         columns = {}
         factored_indices = {}
-        if 'label' in field_v2is:
+        has_char = 'char' in field_v2is
+        has_label = 'label' in field_v2is
+        if has_char or has_label:
             field_v2is = field_v2is.copy()
-            if train_indexing_cnn:
-                field_v2is.pop('tag')
-                field_v2is.pop('label')
-            field_v2is['xtype'] = (len(E_XDIM), int)
+            c2i = field_v2is.pop('char')[1] if has_char else None
+            if has_label:
+                if train_indexing_cnn:
+                    field_v2is.pop('tag')
+                    field_v2is.pop('label')
+                field_v2is['xtype'] = (len(E_XDIM), int)
 
         field_v2is = token_first(field_v2is)
         num_fields_left = -1
@@ -109,7 +113,7 @@ class StaticCrossDataset(LengthOrderedDataset):
         else:
             heads = 'token', 'tag', 'seq_len', 'label', 'right', 'direc', 'joint'
         if extra_text_helper:
-            extra_text_helper = extra_text_helper(text, device)
+            extra_text_helper = extra_text_helper(text, device, c2i)
         super().__init__(heads, lengths, factors, min_len, max_len, extra_text_helper)
 
         self._swap = {}
@@ -231,6 +235,7 @@ class StaticCrossDataset(LengthOrderedDataset):
                         layer_tensor[sid, group_idx] = group_ctn
             self._swap_cache = None # clear batch
             field_columns['swap'] = [torch.as_tensor(x, dtype = torch.long, device = self._device) for x in swappers]
+        field_columns['offset'] = pad_len
         return field_columns
 
 
@@ -246,6 +251,7 @@ class DynamicCrossDataset(LengthOrderedDataset):
                  max_len = None,
                  min_gap  = 0,
                  extra_text_helper = None,
+                 c2i = None,
                  num_threads = 0):
 
         text = []
@@ -302,7 +308,7 @@ class DynamicCrossDataset(LengthOrderedDataset):
             
         self._keepers_heads = tree_keepers, heads
         if extra_text_helper:
-            extra_text_helper = extra_text_helper(text, device)
+            extra_text_helper = extra_text_helper(text, device, c2i)
         super().__init__(heads, lengths, factors, min_len, max_len, extra_text_helper)
         self._device = device
 

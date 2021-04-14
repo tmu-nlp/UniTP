@@ -1,27 +1,41 @@
-from models.backend import torch, InputLeaves, Contextual, input_config, contextual_config, true_type
+from models.backend import torch, InputLeaves, Contextual, input_config, contextual_config, true_type, false_type, char_rnn_config, PadRNN
 from models.xccp import BaseRnnTree, model_type
 from utils.types import word_dim
 
 model_type = model_type.copy()
 model_type['model_dim']        = word_dim
-model_type['input_layer']      = input_config
+model_type['char_rnn']         = char_rnn_config
+model_type['word_emb']         = input_config
+model_type['use']              = dict(char_rnn = false_type, word_emb = true_type)
 model_type['contextual_layer'] = contextual_config
 model_type['residual_add']     = true_type
 
 class DiscoMultiRnnTree(BaseRnnTree):
     def __init__(self,
-                 num_tokens,
-                 initial_weights,
                  paddings,
                  model_dim,
-                 input_layer,
+                 use,
+                 word_emb,
+                 char_rnn,
                  contextual_layer,
                  residual_add,
+                 num_chars       = None,
+                 num_tokens      = None,
+                 initial_weights = None,
                  **base_config):
         super().__init__(model_dim, **base_config)
-        input_layer = InputLeaves(model_dim, num_tokens, initial_weights, not paddings, **input_layer)
-        self._input_layer = input_layer
-        input_dim = input_layer.input_dim
+        
+        if use['word_emb']:
+            self._word_emb = InputLeaves(model_dim, num_tokens, initial_weights, not paddings, **word_emb)
+            input_dim = self._word_emb.input_dim
+        else:
+            self._word_emb = None
+            input_dim = model_dim
+        if use['char_rnn']:
+            self._char_rnn = PadRNN(num_chars, None, None, fence_dim = model_dim, **char_rnn)
+        else:
+            self._char_rnn = None
+
         contextual_layer = Contextual(input_dim, model_dim, self.hidden_dim, **contextual_layer)
         diff = model_dim - input_dim
         if contextual_layer.is_useless:
@@ -33,9 +47,26 @@ class DiscoMultiRnnTree(BaseRnnTree):
         self._half_dim_diff = diff >> 1
         self._residual_add = residual_add
 
-    def forward(self, word_idx, tune_pre_trained, **kw_args):
+    def get_static_pca(self):
+        if self._word_emb and self._word_emb.has_static_pca:
+            return self._word_emb.pca
+        return None
+
+    def update_static_pca(self):
+        if self._word_emb and self._word_emb.has_static_pca:
+            self._word_emb.flush_pc_if_emb_is_tuned()
+
+    def forward(self, word_idx, tune_pre_trained,
+                sub_idx = None, sub_fence = None, offset = None, **kw_args):
         batch_size, batch_len  = word_idx.shape
-        static, bottom_existence = self._input_layer(word_idx, tune_pre_trained)
+        if self._word_emb:
+            static, bottom_existence = self._word_emb(word_idx, tune_pre_trained)
+            if self._char_rnn:
+                static = static + self._char_rnn(sub_idx, sub_fence, offset) * bottom_existence
+        else:
+            bottom_existence = word_idx > 0
+            bottom_existence.unsqueeze_(dim = 2)
+            static = self._char_rnn(sub_idx, sub_fence, offset) * bottom_existence
         if self._contextual_layer is None:
             base_inputs = static
             top3_hidden = None

@@ -10,19 +10,20 @@ split_files = {v:k + '.txt' for k, v in split_files.items()}
 augment_size = BaseType(2, validator = valid_size)
 augment = dict(a = rate_5, p = rate_5)
 
-data_config = dict(vocab_size     = vocab_size,
-                   batch_size     = train_batch_size,
-                   with_bi_prefix = true_type,
-                   with_pos_tag   = false_type,
-                   max_len        = train_max_len,
-                   bucket_len     = train_bucket_len,
-                   sort_by_length = false_type,
-                   ner_extension  = dict(break_o_chunk = rate_5,
-                                         break_whole = false_type,
-                                         delete = augment,
-                                         insert = augment,
-                                         substitute = augment))
+data_type = dict(vocab_size     = vocab_size,
+                 batch_size     = train_batch_size,
+                 with_bi_prefix = true_type,
+                 with_pos_tag   = false_type,
+                 max_len        = train_max_len,
+                 bucket_len     = train_bucket_len,
+                 sort_by_length = false_type,
+                 ner_extension  = dict(break_o_chunk = rate_5,
+                                       break_whole   = false_type,
+                                       delete        = augment,
+                                       insert        = augment,
+                                       substitute    = augment))
 
+from data.backend import CharTextHelper
 class NerReader(WordBaseReader):
     def __init__(self,
                  vocab_dir,
@@ -40,9 +41,8 @@ class NerReader(WordBaseReader):
             vocabs += ' pos'
         i2vs = load_i2vs(vocab_dir, vocabs.split())
         super().__init__(vocab_dir, vocab_size, True, i2vs, {})
-        if extra_text_helper is None:
-            char_vocab = None
-        else:
+        char_vocab = None
+        if extra_text_helper is CharTextHelper:
             char_vocab = {}
             _, t2is = self.v2is['token']
             _, c2is = self.v2is['char']
@@ -248,10 +248,12 @@ class NerDataset(LengthOrderedDataset):
 
     def _collate_fn(self, batch):
         field_columns = {}
-        augment, cache, sub_cache = self._augment_cache
-        batch += cache
-        if sub_cache and self._extra_text_helper:
-            self._extra_text_helper.a_secrete_buffer(sub_cache)
+        if 'fence' in self.heads:
+            augment, cache, sub_cache = self._augment_cache
+            batch += cache
+            self._augment_cache = augment, [], []
+            if sub_cache and self._extra_text_helper:
+                self._extra_text_helper.a_secrete_buffer(sub_cache)
         for field, column in zip(self.heads, zip(*batch)):
             if field == 'length':
                 batch_size = len(column)
@@ -274,5 +276,4 @@ class NerDataset(LengthOrderedDataset):
                     tensor[i, indices] = True
             dtype = torch.bool if field == 'fence' else torch.long
             field_columns[field] = torch.as_tensor(tensor, dtype = dtype, device = self._device)
-        self._augment_cache = augment, [], []
         return field_columns

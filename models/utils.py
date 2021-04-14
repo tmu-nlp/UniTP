@@ -192,7 +192,10 @@ def condense_helper(existence_or_start,
     seq_idx = torch.cumsum(existence_or_start, 1)
 
     if offset is not None:
-        seq_idx += offset[:, None]
+        if isinstance(offset, int):
+            seq_idx += offset
+        else:
+            seq_idx += offset[:, None]
 
     # 0 used as a dump
     if get_rid_of_last_k:

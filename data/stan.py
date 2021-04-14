@@ -1,6 +1,6 @@
 from data.io import load_i2vs
 from utils.types import fill_placeholder, M_TRAIN, M_DEVEL, M_TEST, NIL
-from data.backend import WordBaseReader, post_batch
+from data.backend import WordBaseReader, post_batch, CharTextHelper, add_char_from_word
 from data.stan_types import split_files
 split_files = {v:k for k,v in split_files.items()}
 
@@ -13,6 +13,8 @@ class StanReader(WordBaseReader):
                  trapezoid_specs   = None,
                  extra_text_helper = None):
         i2vs = load_i2vs(vocab_dir, 'word polar'.split())
+        if extra_text_helper is CharTextHelper:
+            add_char_from_word(i2vs)
         oovs = {}
         if nil_is_neutral:
             polar = i2vs['polar']

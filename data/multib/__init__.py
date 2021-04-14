@@ -227,7 +227,11 @@ def unary_label_match(tree, label):
             return False
     return False
 
-def get_tree_from_signals(word, tag, layers_of_labels, layers_of_splits, fall_back_root = None, layers_of_weights = None, layers_of_fence_vote = None):
+def get_tree_from_signals(word, tag, layers_of_labels, layers_of_splits, 
+                          fall_back_root           = None,
+                          layers_of_weights        = None,
+                          layers_of_fence_vote     = None,
+                          mark_np_without_dt_child = False):
     bottom = []
     add_weight_base = layers_of_weights is not None
     balancing_bottom_sub = add_weight_base and any(x[0] not in '#_' for x in layers_of_labels[0])
@@ -277,9 +281,15 @@ def get_tree_from_signals(word, tag, layers_of_labels, layers_of_splits, fall_ba
                 # leave_cnt += len(sub_tree.leaves())
             elif label[0] == '#':
                 assert fall_back_root is not None
-                sub_tree = flatten_children(bottom[start:end])
                 if balancing_sub:
-                    sub_tree = Tree(unary_chars + '│', [sub_tree])
+                    children = flatten_children(bottom[start:end])
+                    if add_weight:
+                        children, head_child = flatten_children_with_weights(children, start, layers_of_weights[lid])
+                        sub_tree = Tree(label, children)
+                    else:
+                        sub_tree = Tree(unary_chars + '│', sub_tree)
+                else:
+                    sub_tree = flatten_children(bottom[start:end])
                 # leave_cnt += sum(len(x.leaves()) for x in sub_tree)
             else:
                 children = bottom[start:end]
@@ -288,7 +298,7 @@ def get_tree_from_signals(word, tag, layers_of_labels, layers_of_splits, fall_ba
                     sub_tree = Tree(label, children) # +2
                     try:
                         head_label = head_child[0].label()
-                        if label == 'NP' and not any(x[0].label() == 'DT' for x in children):
+                        if mark_np_without_dt_child and label == 'NP' and not any(x[0].label() == 'DT' for x in children):
                             head_label += '*'
                     except:
                         print(head_child[0])

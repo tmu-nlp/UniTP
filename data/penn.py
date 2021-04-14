@@ -1,7 +1,6 @@
 from utils.types import fill_placeholder, M_TRAIN, M_DEVEL, M_TEST, NIL
+from data.backend import WordBaseReader, post_batch, CharTextHelper, add_char_from_word
 from data.io import load_i2vs
-
-from data.backend import WordBaseReader, post_batch
 
 class PennReader(WordBaseReader):
     def __init__(self,
@@ -20,6 +19,8 @@ class PennReader(WordBaseReader):
             if load_ftags:
                 vocabs += ' ftag'
         i2vs = load_i2vs(vocab_dir, vocabs.split())
+        if extra_text_helper is CharTextHelper:
+            add_char_from_word(i2vs)
         oovs = {}
         if load_label and unify_sub:
             labels = [t for t in i2vs['label'] if t[0] not in '#_']
@@ -88,6 +89,8 @@ class MultiReader(WordBaseReader):
             samples[mode] = m_samples
         self._load_options = samples, word_trace, extra_text_helper
         i2vs = load_i2vs(vocab_dir, 'word tag label'.split())
+        if extra_text_helper is CharTextHelper:
+            add_char_from_word(i2vs)
         oovs = {}
         labels = i2vs['label']
         if has_greedy_sub:
@@ -99,7 +102,6 @@ class MultiReader(WordBaseReader):
             i2vs['label'] = labels
         elif not has_greedy_sub: # MAry does not have binarization
             i2vs['label'] = [t for t in labels if t[0] != '_']
-            
         super(MultiReader, self).__init__(vocab_dir, vocab_size, True, i2vs, oovs)
 
     def batch(self,

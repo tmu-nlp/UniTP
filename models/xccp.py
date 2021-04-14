@@ -18,16 +18,19 @@ def predict_disco_hint(dis_batch, bbt_zeros, existence, seq_idx, discontinuous, 
     batch_dim, con_min, con_max = bool_start_end(continuous)
     con_left = torch.cat([bbt_zeros, continuous], dim = 1)
     con_right = torch.cat([continuous, bbt_zeros], dim = 1)
-    con_left[batch_dim, con_min] = True
-    con_right[batch_dim, con_max + 1] = True
+    if True:
+        con_left[batch_dim, con_min] = True
+        con_right[batch_dim, con_max + 1] = True
 
-    fl_left = condense_left(fence_logits, condense_helper(con_left, as_existence = True))
-    fl_right = condense_left(fence_logits, condense_helper(con_right, as_existence = True))
-    fence_logits = torch.where(fl_left * fl_right > 0,
-                               torch.where(fl_left > 0, # same sign
-                                           torch.where(fl_left < fl_right, fl_left, fl_right),
-                                           torch.where(fl_left > fl_right, fl_left, fl_right)),
-                               fl_left + fl_right) # oppo sign
+        fl_left  = condense_left(fence_logits, condense_helper(con_left,  as_existence = True))
+        fl_right = condense_left(fence_logits, condense_helper(con_right, as_existence = True))
+        fence_logits = torch.where(fl_left * fl_right > 0,
+                                   torch.where(fl_left > 0, # same sign
+                                               torch.where(fl_left < fl_right, fl_left, fl_right),
+                                               torch.where(fl_left > fl_right, fl_left, fl_right)),
+                                   fl_left + fl_right) # oppo sign
+    else:
+        fence_logits = condense_left(fence_logits, condense_helper(con_left|con_right, as_existence = True))
 
     dis_exist = discontinuous[dis_batch]
     dis_helper = condense_helper(dis_exist, as_existence = True)

@@ -3,6 +3,7 @@ from data.penn_types import C_ABSTRACT, C_KTB, nccp_data_config, select_and_spli
 from utils.types import M_TRAIN, M_DEVEL, M_TEST
 from utils.param_ops import HParams, get_sole_key
 from utils.shell_io import byte_style
+from data.backend import CharTextHelper
 
 from experiments.t_lstm_nccp.model import ContinuousRnnTree, model_type
 from experiments.t_lstm_nccp.operator import PennOperator, train_type
@@ -16,39 +17,47 @@ def get_configs(recorder = None):
     penn = HParams(get_any_penn(**data_config), fallback_to_none = True)
     train_cnf     = penn.binarization._nested
     non_train_cnf = {max(train_cnf, key = lambda x: train_cnf[x]): 1}
+    corp_name = get_sole_key(data_config)
 
     if penn.trapezoid_height:
-        specs = select_and_split_corpus(get_sole_key(data_config), 
+        specs = select_and_split_corpus(corp_name,
                                         penn.source_path,
                                         penn.data_splits.train_set,
                                         penn.data_splits.devel_set,
                                         penn.data_splits.test_set)
         data_splits = {k:v for k,v in zip((M_TRAIN, M_DEVEL, M_TEST), specs[-1])}
         trapezoid_specs = specs[:-1] + (data_splits, penn.trapezoid_height, get_sole_key(data_config) == C_KTB)
-        prompt = f'Use trapezoidal data ({penn.trapezoid_height})', '2'
+        prompt = f'Use trapezoidal data (stratifying height: {penn.trapezoid_height})', '2'
     else:
         trapezoid_specs = None
-        prompt = f'Use triangular data', '3'
+        prompt = f'Use triangular data (stratifying height: +inf)', '3'
     print(byte_style(*prompt))
 
+    model = HParams(model_config)
     reader = PennReader(penn.data_path,
                         penn.vocab_size,
                         True, # load_label
                         penn.unify_sub,
                         penn.with_ftags,
                         penn.nil_as_pads,
-                        trapezoid_specs)
+                        trapezoid_specs,
+                        CharTextHelper if model.use.char_rnn else None)
     
     def get_datasets(mode):
         datasets = {}
         if mode == M_TRAIN:
-            datasets[C_ABSTRACT] = reader.batch(M_TRAIN, penn.batch_size, penn.bucket_len, train_cnf,
+            datasets[corp_name] = reader.batch(M_TRAIN, penn.batch_size, penn.bucket_len, train_cnf,
                                                 max_len = penn.max_len, sort_by_length = penn.sort_by_length)
         else:
-            datasets[C_ABSTRACT] = reader.batch(mode, penn.batch_size << 1, 0, non_train_cnf)
+            datasets[corp_name] = reader.batch(mode, penn.batch_size << 1, 0, non_train_cnf)
         return datasets
 
-    task_params = {pname: reader.get_to_model(pname) for pname in ('initial_weights', 'num_tokens', 'num_tags', 'num_labels', 'paddings')}
+    task_params = ['num_tags', 'num_labels', 'paddings']
+    if model.use.word_emb:
+        task_params += ['initial_weights', 'num_tokens']
+    if model.use.char_rnn:
+        task_params.append('num_chars')
+    task_params = {pname: reader.get_to_model(pname) for pname in task_params}
 
     model = ContinuousRnnTree(**model_config, **task_params)
     model.to(reader.device)

@@ -207,7 +207,7 @@ def calc_stan_accuracy(hfname, dfname, error_prefix, on_error):
     sents = []
     with open(hfname) as fh,\
          open(dfname) as fd:
-        for i, head, data in zip(count(), fh, fd):
+        for sid, (head, data) in enumerate(zip(fh, fd)):
 
             warnings = []
             _numerators   = [0,0,0,0,0,0]
@@ -222,7 +222,7 @@ def calc_stan_accuracy(hfname, dfname, error_prefix, on_error):
                     warnings.append(f'shapes do not match at {ith}-th leaf')
                     break
             if warnings:
-                on_error(error_prefix + f'.{i} len={seq_len}', warnings[-1])
+                on_error(error_prefix + f'.{sid} len={seq_len}', warnings[-1])
 
             neg_pos(head, data, _numerators, _denominators, 0)
             for gt, pt in zip(head.subtrees(), data.subtrees()):

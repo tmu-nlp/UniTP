@@ -8,18 +8,20 @@ from utils.types import M_TRAIN, BaseType, frac_open_0, true_type, false_type, t
 from models.utils import PCA, fraction, hinge_score, mean_stdev
 from models.loss import binary_cross_entropy, hinge_loss
 from experiments.t_lstm_nccp.operator import PennOperator
+from data.penn_types import C_PTB
 from utils.shell_io import byte_style
+
 
 train_type = dict(loss_weight = dict(tag   = BaseType(0.2, validator = frac_open_0),
                                      label = BaseType(0.3, validator = frac_open_0),
                                      fence = BaseType(0.5, validator = frac_open_0)),
-                  keep_low_attention_rate = BaseType(1.0, validator = frac_close),
+                  fence_hinge_loss = true_type,
                   learning_rate = BaseType(0.001, validator = frac_open_0),
-                  tune_pre_trained_from_nth_epoch = tune_epoch_type,
                   label_freq_as_loss_weight = false_type,
-                  lr_factor_for_tuning = frac_06,
                   multiprocessing_decode = false_type,
-                  fence_hinge_loss = true_type)
+                  tune_pre_trained = dict(from_nth_epoch = tune_epoch_type,
+                                          lr_factor = frac_06))
+                #   keep_low_attention_rate = BaseType(1.0, validator = frac_close),
 
 
 def unpack_label_like(seq, segment):
@@ -69,8 +71,11 @@ class MultiOperator(PennOperator):
         supervised_signals = {}
         if mode == M_TRAIN:
             supervised_signals['supervised_fence'] = gold_fences = unpack_fence(batch['fence'], batch['segment'], True)
-            supervised_signals['keep_low_attention_rate'] = self._train_config.keep_low_attention_rate
-        if 'plm_idx' in batch:
+            # supervised_signals['keep_low_attention_rate'] = self._train_config.keep_low_attention_rate
+        if 'sub_idx' in batch:
+            for x in ('sub_idx', 'sub_fence'):
+                supervised_signals[x] = batch[x]
+        elif 'plm_idx' in batch:
             for x in ('plm_idx', 'plm_start'):
                 supervised_signals[x] = batch[x]
 
@@ -124,13 +129,13 @@ class MultiOperator(PennOperator):
                 batch_kwargs['Height'] = batch['segment'].shape[0]
             self.recorder.tensorboard(self.global_step, 'Batch/%s', **batch_kwargs)
         else:
-            vis, _, _, serial = self._vis_mode
+            vis, _, _, serial, draw_weights = self._vis_mode
 
             tags   = self._model.get_decision(tag_logits  ).type(torch.uint8).cpu().numpy()
             labels = self._model.get_decision(label_logits).type(torch.uint8).cpu().numpy()
             fences = fence_idx.type(torch.int16).cpu().numpy()
             seg_length = seg_length.type(torch.int16).cpu().numpy()
-            if fence_vote is not None:
+            if fence_vote is not None and draw_weights:
                 fence_vote = fence_vote.type(torch.float16).cpu().numpy()
             if serial:
                 b_size = (batch_len,)
@@ -138,7 +143,7 @@ class MultiOperator(PennOperator):
                 b_head = b_head + (batch['segment'].cpu().numpy(), batch['seg_length'].cpu().numpy())
                 # batch_len, length, token, tag, label, fence, segment, seg_length
 
-                weight = mean_stdev(weights).cpu().numpy()
+                weight = mean_stdev(weights).cpu().numpy() if draw_weights else None
                 b_data = (tags, labels, fences, fence_vote, weight, segment, seg_length)
             else:
                 b_size = (batch_size,)
@@ -157,10 +162,10 @@ class MultiOperator(PennOperator):
         epoch_major, epoch_minor = epoch.split('.')
         if use_test_set:
             if final_test:
-                folder = 'penn_test'
+                folder = ds_name + '_test'
                 draw_weights = True
             else:
-                folder = 'penn_test_with_devel'
+                folder = ds_name + '_test_with_devel'
                 if int(epoch_minor) == 0:
                     draw_weights = is_bin_times(int(epoch_major))
                 else:
@@ -169,7 +174,7 @@ class MultiOperator(PennOperator):
             flush_heads = test_init
             self._initial_run = devel_init, False
         else:
-            folder = 'penn_devel'
+            folder = ds_name + '_devel'
             length_bins = devel_bins
             if int(epoch_minor) == 0:
                 draw_weights = is_bin_times(int(epoch_major))
@@ -179,8 +184,6 @@ class MultiOperator(PennOperator):
             self._initial_run = False, test_init
 
         work_dir = self.recorder.create_join(folder)
-        # if self._model._input_layer.has_static_pca:
-        #     self._model._input_layer.flush_pc_if_emb_is_tuned()
         serial = draw_weights or flush_heads or not self._mp_decode
         if serial:
             async_ = True
@@ -189,6 +192,7 @@ class MultiOperator(PennOperator):
                           self._evalb,
                           self.i2vs,
                           self.recorder.log,
+                          ds_name == C_PTB,
                           draw_weights,
                           length_bins,
                           flush_heads)
@@ -197,10 +201,10 @@ class MultiOperator(PennOperator):
             vis = ParallelVis(epoch, work_dir, self._evalb, self.i2vs, self.recorder.log, self._dm)
         vis = VisRunner(vis, async_ = async_) # wrapper
         vis.before()
-        self._vis_mode = vis, use_test_set, final_test, serial
+        self._vis_mode = vis, use_test_set, final_test, serial, draw_weights
 
     def _after_validation(self, ds_name, count, seconds):
-        vis, use_test_set, final_test, serial = self._vis_mode
+        vis, use_test_set, final_test, serial, _ = self._vis_mode
         scores, desc, logg, length_bins_dm = vis.after()
         devel_bins, test_bins = self._mode_length_bins
         if serial:
@@ -258,7 +262,7 @@ from data.multib import get_tree_from_signals, draw_str_lines
 from visualization import tee_trees
 from sys import stderr
 
-def batch_trees(b_word, b_tag, b_label, b_fence, b_segment, b_seg_length, i2vs, fb_label, b_weight = None, b_fence_vote = None):
+def batch_trees(b_word, b_tag, b_label, b_fence, b_segment, b_seg_length, i2vs, fb_label, b_weight = None, b_fence_vote = None, mark_np_without_dt = False):
     for sid, (word, tag, label, fence, seg_length) in enumerate(zip(b_word, b_tag, b_label, b_fence, b_seg_length)):
         layers_of_label = []
         layers_of_fence = []
@@ -275,7 +279,7 @@ def batch_trees(b_word, b_tag, b_label, b_fence, b_segment, b_seg_length, i2vs, 
                 fence_start += l_size + 1
             else:
                 ln = l_len
-            if l_len == 1:
+            if l_len == 1:# or l_cnt > 1 and layers_of_label[-1] == layers_of_label[-2]:
                 break
             if b_weight is not None:
                 layers_of_weight.append(b_weight[sid, label_start: label_start + l_len])
@@ -289,11 +293,12 @@ def batch_trees(b_word, b_tag, b_label, b_fence, b_segment, b_seg_length, i2vs, 
             label_start += l_size
         wd = [i2vs.token[i] for i in word[:ln]]
         tg = [i2vs.tag  [i] for i in  tag[:ln]]
-        yield get_tree_from_signals(wd, tg, layers_of_label, layers_of_fence, fb_label, layers_of_weight, layers_of_fence_vote)
+        yield get_tree_from_signals(wd, tg, layers_of_label, layers_of_fence, fb_label, layers_of_weight, layers_of_fence_vote, mark_np_without_dt)
 
 
 class MultiVis(BaseVis):
     def __init__(self, epoch, work_dir, evalb, i2vs, logger,
+                 mark_np_without_dt,
                  draw_weights   = False,
                  length_bins    = None,
                  flush_heads    = False):
@@ -311,6 +316,7 @@ class MultiVis(BaseVis):
         self._draw_file = join(work_dir, f'data.{epoch}.art') if draw_weights else None
         self._error_idx = 0, []
         self._headedness_stat = join(work_dir, f'data.{epoch}.headedness'), {}
+        self._mark_np_without_dt = mark_np_without_dt
 
     def _before(self):
         if self._is_anew:
@@ -326,7 +332,7 @@ class MultiVis(BaseVis):
          d_tag, d_label, d_fence, d_fence_vote, d_weight, d_segment, d_seg_length) = batch
 
         if self._is_anew:
-            if float(self.epoch) < 20: d_fence_vote = None
+            # if float(self.epoch) < 20: d_fence_vote = None
             trees = batch_trees(h_token, h_tag, h_label, h_fence, h_segment, h_seg_length, self._i2vs, None)
             trees = [' '.join(str(x).split()) for x in trees]
             self.length_bins |= tee_trees(self._join_fn, 'head', h_seg_length[:, 0], trees, None, 10)
@@ -346,7 +352,8 @@ class MultiVis(BaseVis):
             bin_size = None if self.length_bins is None else 10
             _, head_stat = self._headedness_stat
             with open(self._draw_file, 'a+') as fw:
-                for tree, safe, stat in batch_trees(h_token, d_tag, d_label, d_fence, d_segment, d_seg_length, self._i2vs, 'S', d_weight, d_fence_vote):
+                for tree, safe, stat in batch_trees(h_token, d_tag, d_label, d_fence, d_segment, d_seg_length, self._i2vs, 'S', 
+                                                    d_weight, d_fence_vote, self._mark_np_without_dt):
                     for lb, (lbc, hc) in stat.items():
                         if lb in head_stat:
                             label_cnt, head_cnts = head_stat[lb]

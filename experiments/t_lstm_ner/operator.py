@@ -4,7 +4,7 @@ from utils.operator import Operator
 from utils.param_ops import get_sole_key
 from time import time
 from utils.math_ops import is_bin_times
-from utils.types import M_TRAIN, BaseType, frac_open_0, true_type, false_type
+from utils.types import M_TRAIN, BaseType, frac_open_0, true_type, false_type, tune_epoch_type, frac_06
 from models.utils import fraction
 from models.loss import cross_entropy, binary_cross_entropy, hinge_loss
 from experiments.helper import WarmOptimHelper
@@ -14,8 +14,10 @@ train_type = dict(loss_weight = dict(pos = BaseType(0.5, validator = frac_open_0
                                      bio = BaseType(0.5, validator = frac_open_0),
                                      ner = BaseType(0.5, validator = frac_open_0),
                                      fence = BaseType(0.5, validator = frac_open_0)),
+                  fence_hinge_loss = true_type,
                   learning_rate = BaseType(0.001, validator = frac_open_0),
-                  fence_hinge_loss = true_type)
+                  tune_pre_trained = dict(from_nth_epoch = tune_epoch_type,
+                                          lr_factor = frac_06))
 
 class NerOperator(Operator):
     def __init__(self, model, get_datasets, recorder, i2vs, train_config):
@@ -23,6 +25,7 @@ class NerOperator(Operator):
         self._sigmoid = nn.Sigmoid()
         self._initial_run = True, True
         self._train_config = train_config
+        self._tune_pre_trained = False
         t2is = []
         for tok in i2vs.token:
             new_tok = ''
@@ -43,8 +46,11 @@ class NerOperator(Operator):
         return optim
 
     def _schedule(self, epoch, wander_ratio):
-        self.recorder.tensorboard(self.global_step, 'Batch/%s', Epoch = epoch,
-                                  Learning_Rate = self._schedule_lr(epoch, wander_ratio))
+        tune = self._train_config.tune_pre_trained.from_nth_epoch
+        self._tune_pre_trained = tune = tune is not None and tune < epoch
+        lr_factor = self._train_config.tune_pre_trained.lr_factor if tune else 1
+        learning_rate = self._schedule_lr(epoch, wander_ratio, lr_factor)
+        self.recorder.tensorboard(self.global_step, 'Batch/%s', Epoch = epoch, Learning_Rate = learning_rate)
 
     def _step(self, mode, ds_name, batch, batch_id = None):
 
@@ -54,7 +60,7 @@ class NerOperator(Operator):
 
         batch_time = time()
         (batch_size, batch_len, existence, pos_logits, bio_logits, ner_logits, fence_logits, fences,
-         weights) = self._model(**batch)
+         weights) = self._model(batch['token'], self._tune_pre_trained, **batch)
         batch_time = time() - batch_time
 
         if mode == M_TRAIN:

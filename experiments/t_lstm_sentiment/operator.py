@@ -62,24 +62,22 @@ class StanOperator(PennOperator):
                 total_loss = self._train_config.loss_weight.sentiment_label * polar_loss
                 total_loss = self._train_config.loss_weight.sentiment_orient * orient_loss + total_loss
                 total_loss.backward()
+
                 gs = self.global_step
-                self._writer.add_scalar('Accuracy/Polar',       1 - fraction(polar_mis,  polar_weight), gs)
-                self._writer.add_scalar('Accuracy/PolarOrient',  fraction(orient_match, orient_weight), gs)
-                self._writer.add_scalar('Loss/Polar',        polar_loss,  gs)
-                self._writer.add_scalar('Loss/PolarOrient',  orient_loss, gs)
-                self._writer.add_scalar('Loss/PolarTotal',   total_loss,  gs)
-                self._writer.add_scalar('Batch/PolarSamplePerSec', batch_len / batch_time,  gs)
-                self._writer.add_scalar('Batch/PolarLength', batch_len,   gs)
+                self.recorder.tensorboard(gs, 'Accuracy/%s',
+                                          Polar = 1 - fraction(polar_mis,  polar_weight),
+                                          PolarOrient = fraction(orient_match, orient_weight))
+
+                self.recorder.tensorboard(gs, 'Loss/%s', Polar = polar_loss, PolarOrient = orient_loss, PolarTotal = total_loss)
+                batch_kwargs = dict(PolarLength = batch_len, PolarSamplePerSec = batch_len / batch_time)
                 if 'segment' in batch:
-                    self._writer.add_scalar('Batch/PolarHeight', len(batch['segment']), gs)
+                    batch_kwargs['PolarHeight'] = len(batch['segment'])
+                self.recorder.tensorboard(self.global_step, 'Batch/%s', **batch_kwargs)
             else:
                 vis, _, _ = self._vis_mode
                 if vis.save_tensors:
-                    if self._model._input_layer.has_static_pca:
-                        mpc_token = self._model._input_layer.pca(static)
-                        mpc_label = self._model._input_layer.pca(layers_of_base)
-                        b_mpcs = (mpc_token.type(torch.float16), mpc_label.type(torch.float16))
-                    else:
+                    pca = self._model.get_static_pca()
+                    if pca is None:
                         try:
                             pca = PCA(layers_of_base.reshape(-1, layers_of_base.shape[2]))
                             mpc_token = pca(static)
@@ -92,6 +90,10 @@ class StanOperator(PennOperator):
                             b_mpcs += 'Visualization is disabled, while (bad) results keep generating.'
                             print(byte_style(b_mpcs, '1'), file = stderr)
                             b_mpcs = (None, None)
+                    else:
+                        mpc_token = pca(static)
+                        mpc_label = pca(layers_of_base)
+                        b_mpcs = (mpc_token.type(torch.float16), mpc_label.type(torch.float16))
 
                     polar_scores, polars = self._model.get_polar_decisions_with_values(polar_logits)
                     if self._train_config.orient_hinge_loss: # otherwise with sigmoid
@@ -127,18 +129,19 @@ class StanOperator(PennOperator):
         devel_bins, test_bins = self._mode_length_bins
         if use_test_set:
             if final_test:
-                folder = C_SSTB + '_test'
+                folder = ds_name + '_test'
             else:
-                folder = C_SSTB + '_test_with_devel'
+                folder = ds_name + '_test_with_devel'
             save_tensors = True
             length_bins = test_bins
             scores_of_bins = True
         else:
-            folder = C_SSTB + '_devel'
+            folder = ds_name + '_devel'
             length_bins = devel_bins
             save_tensors = is_bin_times(int(float(epoch)) - 1)
             scores_of_bins = False
             
+        self._model.update_static_pca()
         vis = StanVis(epoch,
                       self.recorder.create_join(folder),
                       self._stan_i2vs,
@@ -168,11 +171,9 @@ class StanOperator(PennOperator):
         else:
             rate = vis.proc_time / (seconds - vis.proc_time)
         logg += f' @{speed}sps. (sym:nn {rate:.2f})'
-        scores['speed'] = speed
         if not final_test:
-            mode = 'TestSet' if use_test_set else 'DevelSet'
-            self._writer.add_scalar(f'{mode}/F1', scores.get('F1', 0), self.global_step)
-            self._writer.add_scalar(f'{mode}/SamplePerSec', speed,     self.global_step)
+            self.recorder.tensorboard(self.global_step, 'TestSet/%s' if use_test_set else 'DevelSet/%s', **scores)
+        scores['speed'] = speed
         self._vis_mode = None
         return scores, desc, logg
 
@@ -189,7 +190,7 @@ from utils.vis import BaseVis, VisRunner
 from utils.file_io import join, isfile, listdir, remove, isdir
 from utils.pickle_io import pickle_dump
 from utils.param_ops import HParams
-from utils.shell_io import parseval, rpt_summary
+from utils.shell_io import parseval, rpt_summary, byte_style
 from visualization import ContinuousTensorVis
 from data.stan_types import calc_stan_accuracy
 class StanVis(BaseVis):
@@ -274,6 +275,8 @@ class StanVis(BaseVis):
         else:
             fn, fd = self._final_dn
         scores = {d: float(f'{f * 100:.2f}') for f, d in zip(fn / fd, ('532QTB'))}
-        desc = f'☺︎({scores["Q"]:.0f}\'{scores["T"]:.0f}\'{scores["B"]:.0f}|'
-        desc += f'{scores["5"]:.0f}\'{scores["3"]:.0f}\'{scores["2"]:.0f})'
-        return scores, desc, desc
+        desc_0 = f'☺︎({scores["B"]:.0f}\'{scores["T"]:.0f}\'{scores["Q"]:.0f}|'
+        desc_1 = f'{scores["2"]:.0f}\'{scores["3"]:.0f}\'{scores["5"]:.0f}'
+        logg = desc_0 + desc_1 + ')'
+        desc = desc_0 + byte_style(desc_1, underlined = True) + ')'
+        return scores, desc, logg

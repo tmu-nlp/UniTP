@@ -372,6 +372,12 @@ class Contextual(nn.Module):
 
         return dynamic_emb, top_3
 
+char_rnn_config = dict(embed_dim    = hidden_dim,
+                       drop_out     = frac_4,
+                       rnn_drop_out = frac_2,
+                       module       = rnn_module_type,
+                       num_layers   = num_ori_layer,
+                       trainable_initials = false_type)
 from models.utils import math, init, birnn_fwbw, fencepost, Bias
 class PadRNN(nn.Module):
     def __init__(self,
@@ -417,7 +423,7 @@ class PadRNN(nn.Module):
         self._stem_dp = nn.Dropout(drop_out)
 
         if num_chars: # forward is open
-            self._char_emb = nn.Embedding(num_chars, embed_dim)
+            self._char_emb = nn.Embedding(num_chars, embed_dim, padding_idx = 0)
             self._char_dp = nn.Dropout(drop_out)
 
         if attention_hint: # domain_and_subject is open
@@ -513,13 +519,14 @@ class PadRNN(nn.Module):
         if self._subject_bw_d:  sub_emb = sub_emb + self._stem_dp(self._subject_bw_d(bw[:, :-1] - bw[:, 1:]))
         return dom_emb, sub_emb
 
-    def forward(self, char_idx, fence): # concat fence vectors
+    def forward(self, char_idx, fence, offset = None): # concat fence vectors
         batch_size, char_len = char_idx.shape
         char_emb = self._char_emb(char_idx)
         char_emb = self._stem_dp(char_emb)
         fence_hidden, _ = self._fence_emb(char_emb, self.get_h0c0(batch_size))
-        fw, bw = birnn_fwbw(fence_hidden, self._tanh(self._pad), char_idx > 0)
-        helper = condense_helper(fence, True)
+        existence = char_idx > 0
+        fw, bw = birnn_fwbw(fence_hidden, self._tanh(self._pad), )
+        helper = condense_helper(fence, True, offset)
         fw = condense_left(fw, helper)
         bw = condense_left(bw, helper)
         return torch.cat([fw[:, 1:] - fw[:, :-1], bw[:, :-1] - bw[:, 1:]], dim = 2)

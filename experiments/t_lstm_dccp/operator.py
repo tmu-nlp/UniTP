@@ -25,8 +25,8 @@ train_type = dict(loss_weight = dict(tag    = BaseType(0.3, validator = frac_ope
                                      _undirect_orient = BaseType(0.9, validator = frac_close)),
                   learning_rate = BaseType(0.001, validator = frac_open_0),
                   label_freq_as_loss_weight = false_type,
-                  tune_pre_trained_from_nth_epoch = tune_epoch_type,
-                  lr_factor_for_tuning = frac_06)
+                  tune_pre_trained = dict(from_nth_epoch = tune_epoch_type,
+                                          lr_factor = frac_06))
 
 class DiscoOperator(Operator):
     def __init__(self, model, get_datasets, recorder, i2vs, train_config, evalb_lcfrs_prm):
@@ -61,9 +61,9 @@ class DiscoOperator(Operator):
         return optim
 
     def _schedule(self, epoch, wander_ratio):
-        tune = self._train_config.tune_pre_trained_from_nth_epoch
+        tune = self._train_config.tune_pre_trained.from_nth_epoch
         self._tune_pre_trained = tune = tune is not None and tune < epoch
-        lr_factor = self._train_config.lr_factor_for_tuning if tune else 1
+        lr_factor = self._train_config.tune_pre_trained.lr_factor if tune else 1
         learning_rate = self._schedule_lr(epoch, wander_ratio, lr_factor)
         self.recorder.tensorboard(self.global_step, 'Batch/%s', Learning_Rate = learning_rate, Epoch = epoch)
 
@@ -149,13 +149,11 @@ class DiscoOperator(Operator):
         else:
             vis, _, _, pending_heads = self._vis_mode
             if vis.save_tensors:
-                if self._model._input_layer.has_static_pca:
-                    mpc_token = self._model._input_layer.pca(static)
-                    mpc_label = self._model._input_layer.pca(embeddings)
-                else:
+                pca = self._model.get_static_pca()
+                if pca is None:
                     pca = PCA(embeddings.reshape(-1, embeddings.shape[2]))
-                    mpc_token = pca(static)
-                    mpc_label = pca(embeddings)
+                mpc_token = pca(static)
+                mpc_label = pca(embeddings)
 
                 tag_scores,     tags = self._model.get_decision_with_value(tag_logits)
                 label_scores, labels = self._model.get_decision_with_value(label_logits)
@@ -209,8 +207,7 @@ class DiscoOperator(Operator):
         vis = VisRunner(vis, async_ = True) # wrapper
         vis.before()
         self._vis_mode = vis, use_test_set, final_test, pending_heads
-        if self._model._input_layer.has_static_pca:
-            self._model._input_layer.flush_pc_if_emb_is_tuned()
+        self._model.update_static_pca()
 
     def _after_validation(self, ds_name, count, seconds):
         vis, use_test_set, final_test, pending_heads = self._vis_mode

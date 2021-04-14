@@ -70,8 +70,8 @@ class SentimentExtention(nn.Module):
     def get_polar_decisions_with_values(self, logits):
         return sorted_decisions_with_values(self._sentiment_score_fn, 5, logits)
 
-    def get_polar_loss(self, logits, top3_polar_logits, batch, height_mask, weight_mask):
-        polar_loss = get_loss(self._sentiment_finale, self._sentiment_argmax, logits, batch, True, height_mask, weight_mask, 'polar')
+    def get_polar_loss(self, logits, top3_polar_logits, batch, height_mask):
+        polar_loss = get_loss(self._sentiment_finale, self._sentiment_argmax, logits, batch, True, height_mask, None, 'polar')
         if top3_polar_logits is not None:
             polar_loss += get_loss(self._sentiment_finale, self._sentiment_argmax, top3_polar_logits, batch, None, 'top3_polar')
         return polar_loss

@@ -118,7 +118,8 @@ class MAryDataset(LengthOrderedDataset):
         heads = 'token', 'tag', 'label', 'fence'
         self._signals_heads = signals, heads
         if extra_text_helper:
-            extra_text_helper = extra_text_helper(text, device)
+            c2i = field_v2is['char'][1] if 'char' in field_v2is else None
+            extra_text_helper = extra_text_helper(text, device, c2i)
         if 0 < balanced < 1:
             factors = {0: 1 - balanced, 1: balanced}
         else:

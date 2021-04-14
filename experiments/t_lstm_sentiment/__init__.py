@@ -7,6 +7,11 @@ from experiments.t_lstm_sentiment.model import StanRnnTree, model_type
 from utils.types import M_TRAIN, M_DEVEL, M_TEST
 from utils.param_ops import HParams
 from utils.shell_io import byte_style
+from data.backend import CharTextHelper
+
+nccp_data_config = nccp_data_config.copy()
+nccp_data_config.pop('nil_as_pads')
+nccp_data_config.pop('sort_by_length')
 
 def get_configs(recorder = None):
     if recorder is None:
@@ -21,13 +26,15 @@ def get_configs(recorder = None):
     else:
         trapezoid_specs = None
         prompt = f'Use triangular data for SST', '3'
-    print(byte_style(*prompt), end = '; ')
+    print(byte_style(*prompt), end = '')
+    model = HParams(model_config)
 
     stan_reader = StanReader(stan.data_path,
                              stan.vocab_size,
                              stan.nil_as_pads,
                              stan.nil_is_neutral,
-                             trapezoid_specs)
+                             trapezoid_specs,
+                             CharTextHelper if model.use.char_rnn else None)
     
 
     if model_config['tag_label_layer']['hidden_dim']:
@@ -43,26 +50,31 @@ def get_configs(recorder = None):
                                             penn.data_splits.devel_set,
                                             penn.data_splits.test_set)
             data_splits = {k:v for k,v in zip((M_TRAIN, M_DEVEL, M_TEST), specs[-1])}
-            trapezoid_specs = specs[:-1] + (data_splits, penn.trapezoid_height)
-            prompt = f'use trapezoidal data ({penn.trapezoid_height}) for PTB', '2'
+            trapezoid_specs = specs[:-1] + (data_splits, penn.trapezoid_height, False) # KTP
+            prompt = f'trapezoidal data ({penn.trapezoid_height}) for PTB', '2'
         else:
-            prompt = f'use triangular data for PTB', '3'
-        print(byte_style(*prompt))
+            prompt = f'triangular data for PTB', '3'
+        print(',', byte_style(*prompt))
 
         penn_reader = PennReader(penn.data_path,
                                  penn.vocab_size,
                                  True, # load_label
                                  penn.unify_sub,
                                  penn.with_ftags,
-                                 penn.nil_as_pads,
-                                 trapezoid_specs)
+                                 stan.nil_as_pads, # TODO offset
+                                 trapezoid_specs,
+                                 CharTextHelper if model.use.char_rnn else None)
 
-        stan_reader.extend_vocab(penn_reader.i2vs.token, penn_reader.get_to_model('initial_weights'))
+        stan_reader.extend_vocab(penn_reader.i2vs, penn_reader.get_to_model('initial_weights'))
         task_params = {'num_polars': stan_reader.get_to_model('num_polars')}
         for pname in ('num_tags', 'num_labels', 'paddings'):
             task_params[pname] = penn_reader.get_to_model(pname)
-        for pname in ('initial_weights', 'num_tokens'):
-            task_params[pname] = stan_reader.get_to_model(pname)
+        if model.use.word_emb:
+            for pname in ('initial_weights', 'num_tokens'):
+                task_params[pname] = stan_reader.get_to_model(pname)
+        if model.use.char_rnn:
+            assert stan.nil_as_pads, 'for CharRNN'
+            task_params['num_chars'] = stan_reader.get_to_model('num_chars')
         penn_pad, stan_pad = (len(r.get_to_model('paddings')) for r in (penn_reader, stan_reader))
         assert penn_pad == stan_pad
         penn_i2vs = penn_reader.i2vs
@@ -70,10 +82,15 @@ def get_configs(recorder = None):
         stan_i2vs.create(token = penn_i2vs.token)
     else:
         stan_i2vs = penn_i2vs = stan_reader.i2vs
-        task_params = 'initial_weights', 'num_tokens', 'num_polars', 'paddings'
+        task_params = ['num_polars', 'paddings']
+        if model.use.word_emb:
+            task_params += ['initial_weights', 'num_tokens']
+        if model.use.char_rnn:
+            assert stan.nil_as_pads, 'for CharRNN'
+            task_params.append('num_chars')
         task_params = {pname: stan_reader.get_to_model(pname) for pname in task_params}
         task_params['num_tags'] = task_params['num_labels'] = penn_reader = None
-        print(byte_style(f'not using PTB', '1'))
+        print(byte_style(f'without using PTB', '1'))
         
     
     def get_datasets(mode):
@@ -81,14 +98,14 @@ def get_configs(recorder = None):
         datasets = {}
         if mode == M_TRAIN:
             datasets[C_SSTB] = stan_reader.batch(M_TRAIN, stan.batch_size, stan.bucket_len,
-                                                max_len = stan.max_len, sort_by_length = stan.sort_by_length)
+                                                 max_len = stan.max_len, sort_by_length = stan.sort_by_length)
         else:
             datasets[C_SSTB] = stan_reader.batch(mode, stan.batch_size, 0)
 
         if penn_reader is not None:
             if mode == M_TRAIN:
                 datasets[C_PTB] = penn_reader.batch(M_TRAIN, penn.batch_size, penn.bucket_len, train_cnf,
-                                                    max_len = penn.max_len, sort_by_length = penn.sort_by_length)
+                                                    max_len = penn.max_len, sort_by_length = stan.sort_by_length)
             else:
                 datasets[C_PTB] = penn_reader.batch(mode, penn.batch_size, 0, non_train_cnf)
         return datasets

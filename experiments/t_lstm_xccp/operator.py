@@ -16,16 +16,17 @@ train_type = dict(loss_weight = dict(tag   = BaseType(0.2, validator = frac_open
                                      disco_1d = BaseType(0.5, validator = frac_open_0),
                                      disco_2d = BaseType(0.5, validator = frac_open_0)),
                   learning_rate = BaseType(0.001, validator = frac_open_0),
-                  tune_pre_trained_from_nth_epoch = tune_epoch_type,
-                  lr_factor_for_tuning = frac_06,
                   multiprocessing_decode = false_type,
-                  binary_hinge_loss = true_type)
+                  binary_hinge_loss = true_type,
+                  tune_pre_trained = dict(from_nth_epoch = tune_epoch_type,
+                                          lr_factor = frac_06))
 
 
 class DiscoMultiOperator(DiscoOperator):
     def _step(self, mode, ds_name, batch, batch_id = None):
 
         supervised_signals = {}
+        has_disco_2d = 'dis_component' in batch
         if mode == M_TRAIN:
             all_space = batch['space']
             dis_disco = batch['dis_disco']
@@ -50,11 +51,12 @@ class DiscoMultiOperator(DiscoOperator):
             #         comp = dis_comp[start:end].reshape(shape)
             #         print(comp * 1)
             supervised_signals['supervision'] = space_layers, disco_layers
-            # if 'dis_' batch
-        if 'plm_idx' in batch:
+        if 'sub_idx' in batch:
+            for x in ('sub_idx', 'sub_fence'):
+                supervised_signals[x] = batch[x]
+        elif 'plm_idx' in batch:
             for x in ('plm_idx', 'plm_start'):
                 supervised_signals[x] = batch[x]
-        has_disco_2d = 'dis_component' in batch
 
         batch_time = time()
         (batch_size, batch_len, static, top3_label_logits,

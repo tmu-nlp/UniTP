@@ -2,7 +2,7 @@ from utils.types import fill_placeholder, M_TRAIN, M_DEVEL, M_TEST, NIL
 from data.io import load_i2vs
 from data.io import isfile
 
-from data.backend import WordBaseReader, post_batch, defaultdict
+from data.backend import WordBaseReader, post_batch, defaultdict, CharTextHelper, add_char_from_word
 
 class DiscoReader(WordBaseReader):
     def __init__(self,
@@ -13,6 +13,8 @@ class DiscoReader(WordBaseReader):
         self._load_options = True, extra_text_helper, False
         vocabs = 'word tag label'
         i2vs = load_i2vs(vocab_dir, vocabs.split())
+        if extra_text_helper is CharTextHelper:
+            add_char_from_word(i2vs)
         oovs = {}
         if unify_sub:
             labels = [t for t in i2vs['label'] if t[0] not in '#_']
@@ -66,6 +68,8 @@ class DiscoMultiReader(WordBaseReader):
                  word_trace = False,
                  extra_text_helper = None):
         i2vs = load_i2vs(vocab_dir, 'word tag label'.split())
+        if extra_text_helper is CharTextHelper:
+            add_char_from_word(i2vs)
         oovs = {}
         labels = i2vs['label']
         if has_greedy_sub:
@@ -82,6 +86,7 @@ class DiscoMultiReader(WordBaseReader):
         super(DiscoMultiReader, self).__init__(vocab_dir, vocab_size, True, i2vs, oovs)
 
         v2is = self.v2is
+        c2i = v2is['char'][1] if 'char' in v2is else None
         v2is = v2is['token'][1], v2is['tag'][1], v2is['label'][1]
         samples = defaultdict(list)
         corpus, in_train_set, in_devel_set, in_test_set, from_tree_fn = data_splits
@@ -97,7 +102,7 @@ class DiscoMultiReader(WordBaseReader):
                 samples[M_DEVEL].append(keeper)
             elif in_test_set(fid):
                 samples[M_TEST].append(keeper)
-        self._load_options = samples, word_trace, extra_text_helper
+        self._load_options = samples, word_trace, extra_text_helper, c2i
 
     def batch(self,
               mode,
@@ -109,12 +114,13 @@ class DiscoMultiReader(WordBaseReader):
               min_gap        = 0,
               sort_by_length = True):
         from data.cross.dataset import DynamicCrossDataset
-        samples, word_trace, extra_text_helper = self._load_options
+        samples, word_trace, extra_text_helper, c2i = self._load_options
         len_sort_ds = DynamicCrossDataset(samples[mode],
                                           self.device,
                                           medium_factors,
                                           min_len,
                                           max_len,
                                           min_gap,
-                                          extra_text_helper)
+                                          extra_text_helper,
+                                          c2i)
         return post_batch(mode, len_sort_ds, sort_by_length, bucket_length, batch_size)

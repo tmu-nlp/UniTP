@@ -15,11 +15,11 @@ train_type = dict(loss_weight = dict(tag    = BaseType(0.2, validator = frac_ope
                                      label  = BaseType(0.3, validator = frac_open_0),
                                      orient = BaseType(0.5, validator = frac_open_0)),
                   learning_rate = BaseType(0.001, validator = frac_open_0),
-                  tune_pre_trained_from_nth_epoch = tune_epoch_type,
                   label_freq_as_loss_weight = false_type,
-                  lr_factor_for_tuning = frac_06,
                   multiprocessing_decode = false_type,
-                  orient_hinge_loss = true_type)
+                  orient_hinge_loss = true_type,
+                  tune_pre_trained = dict(from_nth_epoch = tune_epoch_type,
+                                          lr_factor = frac_06))
 
 class PennOperator(Operator):
     def __init__(self, model, get_datasets, recorder, i2vs, evalb, train_config):
@@ -46,9 +46,9 @@ class PennOperator(Operator):
         return optim
 
     def _schedule(self, epoch, wander_ratio):
-        tune = self._train_config.tune_pre_trained_from_nth_epoch
+        tune = self._train_config.tune_pre_trained.from_nth_epoch
         self._tune_pre_trained = tune = tune is not None and tune < epoch
-        lr_factor = self._train_config.lr_factor_for_tuning if tune else 1
+        lr_factor = self._train_config.tune_pre_trained.lr_factor if tune else 1
         learning_rate = self._schedule_lr(epoch, wander_ratio, lr_factor)
         self.recorder.tensorboard(self.global_step, 'Batch/%s', Learning_Rate = learning_rate, Epoch = epoch)
 
@@ -123,9 +123,8 @@ class PennOperator(Operator):
         else:
             vis, _, _, serial, c_vis = self._vis_mode
             if serial:
-                if self._model._input_layer.has_static_pca:
-                    pca = self._model._input_layer.pca
-                else:
+                pca = self._model.get_static_pca()
+                if pca is None:
                     pca = PCA(layers_of_base.reshape(-1, layers_of_base.shape[2]))
                 mpc_token = pca(static)
                 mpc_label = pca(layers_of_base)
@@ -184,26 +183,24 @@ class PennOperator(Operator):
         devel_init, test_init = self._initial_run
         if use_test_set:
             if final_test:
-                folder = 'penn_test'
+                folder = ds_name + '_test'
                 scores_of_bins = save_tensors = True
             else:
-                folder = 'penn_test_with_devel'
+                folder = ds_name + '_test_with_devel'
                 save_tensors = is_bin_times(int(float(epoch)))
                 scores_of_bins = False
             length_bins = test_bins
             flush_heads = test_init
             self._initial_run = devel_init, False
         else:
-            folder = 'penn_devel'
+            folder = ds_name + '_devel'
             length_bins = devel_bins
             save_tensors = is_bin_times(int(float(epoch)))
             scores_of_bins = False
             flush_heads = devel_init
             self._initial_run = False, test_init
 
-        if self._model._input_layer.has_static_pca:
-            self._model._input_layer.flush_pc_if_emb_is_tuned()
-
+        self._model.update_static_pca()
         work_dir = self.recorder.create_join(folder)
         serial = save_tensors or flush_heads or not self._mp_decode
         if serial:

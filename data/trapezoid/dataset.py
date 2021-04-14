@@ -272,7 +272,8 @@ class TrapezoidDataset(LengthOrderedDataset):
 
         heads = tuple(heads.split())
         if extra_text_helper:
-            extra_text_helper = extra_text_helper(text, device)
+            c2i = field_v2is['char'][1] if 'char' in field_v2is else None
+            extra_text_helper = extra_text_helper(text, device, c2i)
         super().__init__(heads, lengths, factors, min_len, max_len, extra_text_helper)
 
         self._paddings_device_height = paddings, device, trapezoid_height

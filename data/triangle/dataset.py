@@ -23,9 +23,14 @@ class TriangularDataset(LengthOrderedDataset):
 
         heads   = []
         columns = {}
-        if 'label' in field_v2is or 'polar' in field_v2is:
+        has_char = 'char' in field_v2is
+        has_xtype = 'label' in field_v2is or 'polar' in field_v2is
+        if has_char or has_xtype:
             field_v2is = field_v2is.copy()
-            field_v2is['xtype'] = (len(E_XDIM), int)
+            if has_char:
+                _, c2i = field_v2is.pop('char')
+            if has_xtype:
+                field_v2is['xtype'] = (len(E_XDIM), int)
         field_v2is = token_first(field_v2is)
         num_fields_left = -1
         field_names = []
@@ -34,7 +39,7 @@ class TriangularDataset(LengthOrderedDataset):
                 field_names.append(f)
                 num_fields_left += 1
             else:
-                num_factors = len(factors)
+                num_factors = len(factors) if factors else 1
                 field_names.append(f + f'({num_factors})')
                 num_fields_left += num_factors
         
@@ -57,7 +62,7 @@ class TriangularDataset(LengthOrderedDataset):
         assert all(len(lengths) == len(col) for col in columns.values())
         
         if extra_text_helper:
-            extra_text_helper = extra_text_helper(text, device)
+            extra_text_helper = extra_text_helper(text, device, c2i if has_char else None)
         heads = tuple(heads)
         super().__init__(heads, lengths, factors, min_len, max_len, extra_text_helper)
 
