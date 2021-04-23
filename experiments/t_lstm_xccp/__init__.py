@@ -35,12 +35,12 @@ def get_configs(recorder = None):
     def get_datasets(mode):
         datasets = {}
         if mode == M_TRAIN:
-            datasets[C_ABSTRACT] = reader.batch(M_TRAIN, penn.batch_size, penn.bucket_len, penn.medium_factor._nested,
-                                                max_len = penn.max_len,
-                                                min_gap = penn.min_gap,
-                                                sort_by_length = penn.sort_by_length)
+            datasets[corp_name] = reader.batch(M_TRAIN, penn.batch_size, penn.bucket_len, penn.medium_factor._nested,
+                                               max_len = penn.max_len,
+                                               min_gap = penn.min_gap,
+                                               sort_by_length = penn.sort_by_length)
         else:
-            datasets[C_ABSTRACT] = reader.batch(mode, penn.batch_size << 1, 0)
+            datasets[corp_name] = reader.batch(mode, penn.batch_size << 1, 0)
         return datasets
 
     task_params = ['num_tags', 'num_labels', 'paddings']

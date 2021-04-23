@@ -239,11 +239,14 @@ def disco_tree(word, bottom_tag,
                layers_of_label,
                layers_of_space,
                fall_back_root_label = None,
+               layers_of_weight     = None,
                perserve_sub         = False):
 
     (NTS, bottom_len, track_nodes, terminals, non_terminals, top_down, track_fall_back,
      error_layer_id) = bottom_trees(word, bottom_tag, layers_of_label, fall_back_root_label, perserve_sub)
     non_terminal_end = NTS
+
+    add_weight_base = layers_of_weight is not None
 
     if track_fall_back:
         def fallback(non_terminal_end):
@@ -272,19 +275,27 @@ def disco_tree(word, bottom_tag,
         for src, dst in enumerate(space_layer):
             td[dst].append(src)
         td = sorted(td.items(), key = lambda pc: pc[0])
+        add_weight = add_weight_base and lid < len(layers_of_weight)
         
         combined = []
         new_track_nodes = []
         track_count = len(track_nodes)
         for pid, cids in td:
             if len(cids) > 1:
+                if add_weight:
+                    for cid in cids:
+                        track_nid = track_nodes[cid]
+                        non_terminals[non_terminal_end] = f'{layers_of_weight[lid][cid, 0] * 100:.0f}%'
+                        top_down[non_terminal_end].add(track_nid)
+                        track_nodes[cid] = non_terminal_end
+                        non_terminal_end += 1
                 labels = layers_of_label[lid + 1][pid]
                 labels = [labels] if perserve_sub or labels[0] in '#_' else labels.split('+')
                 non_terminals[non_terminal_end] = labels.pop()
                 # >j<
                 for cid in cids:
                     _combine(NTS, non_terminal_end, track_nodes[cid], non_terminals, top_down, perserve_sub)
-                while labels: # unary
+                while labels: # unary DIY
                     non_terminal_end += 1
                     non_terminals[non_terminal_end] = labels.pop()
                     top_down[non_terminal_end] = set({non_terminal_end - 1})

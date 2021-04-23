@@ -106,7 +106,9 @@ class PennOperator(Operator):
             total_loss = self._train_config.loss_weight.label * label_loss + total_loss
             total_loss = self._train_config.loss_weight.orient * orient_loss + total_loss
             total_loss.backward()
-            # check = existences == (batch['xtype'] > 0)
+            
+            if hasattr(self._model, 'tensorboard'):
+                self._model.tensorboard(self.recorder, self.global_step)
             self.recorder.tensorboard(self.global_step, 'Accuracy/%s',
                                       Tag    = 1 - fraction(tag_mis,     tag_weight),
                                       Label  = 1 - fraction(label_mis, label_weight),
@@ -123,7 +125,7 @@ class PennOperator(Operator):
         else:
             vis, _, _, serial, c_vis = self._vis_mode
             if serial:
-                pca = self._model.get_static_pca()
+                pca = self._model.get_static_pca() if hasattr(self._model, 'get_static_pca') else None
                 if pca is None:
                     pca = PCA(layers_of_base.reshape(-1, layers_of_base.shape[2]))
                 mpc_token = pca(static)
@@ -200,7 +202,8 @@ class PennOperator(Operator):
             flush_heads = devel_init
             self._initial_run = False, test_init
 
-        self._model.update_static_pca()
+        if hasattr(self._model, 'update_static_pca'):
+            self._model.update_static_pca()
         work_dir = self.recorder.create_join(folder)
         serial = save_tensors or flush_heads or not self._mp_decode
         if serial:
@@ -229,7 +232,9 @@ class PennOperator(Operator):
 
     def _after_validation(self, ds_name, count, seconds):
         vis, use_test_set, final_test, serial, c_vis = self._vis_mode
-        scores, desc, logg, self._dm = vis.after()
+        scores, desc, logg, dm = vis.after()
+        if dm and self._dm is None:
+            self._dm = dm
         length_bins = vis.length_bins
         devel_bins, test_bins = self._mode_length_bins
         if length_bins is not None:
@@ -446,33 +451,31 @@ class ParallelVis(BaseVis):
         super().__init__(epoch)
         self._join = lambda fname: join(work_dir, fname)
         self._fdata = self._join(f'data.{self.epoch}.tree')
-        self._args = evalb, i2vs, logger
-        self._dm = dm
+        self._args = evalb, i2vs, logger, dm
 
     def _before(self):
-        if self._dm:
-            self._dm.timeit()
+        _, _, _, dm = self._args
+        if dm: dm.timeit()
 
     def _process(self, batch, d_trapezoid_info):
         (_, batch_size, _, h_offset, h_length, h_token,
          d_tag, d_label, d_right) = batch
-        evalb, i2vs, logger = self._args
+        evalb, i2vs, logger, dm = self._args
         
         if d_trapezoid_info:
-            if self._dm is None:
-                self._dm = TrapezoidalDM(batch_size, i2vs, num_threads)
-            dm = self._dm
+            if dm is None:
+                dm = TrapezoidalDM(batch_size, i2vs, num_threads)
+                self._args = evalb, i2vs, logger, dm
             d_segment, d_seg_length = d_trapezoid_info
             dm.batch(d_segment, h_offset, h_length, h_token, d_tag, d_label, d_right, d_seg_length)
         else:
-            if self._dm is None:
-                self._dm = TriangularDM(batch_size, i2vs, num_threads)
-            dm = self._dm
+            if dm is None:
+                dm = TriangularDM(batch_size, i2vs, num_threads)
+                self._args = evalb, i2vs, logger, dm
             dm.batch(h_offset, h_length, h_token, d_tag, d_label, d_right)
     
     def _after(self):
-        evalb, i2vs, logger = self._args
-        dm = self._dm
+        evalb, i2vs, logger, dm = self._args
         fhead = self._join(f'head.tree')
         fdata = self._fdata
 

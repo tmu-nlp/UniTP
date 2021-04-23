@@ -4,7 +4,7 @@ from utils.math_ops import s_index
 from utils.types import BaseType, true_type, frac_4, frac_2, BaseWrapper
 from utils.types import orient_dim, num_ori_layer, false_type
 
-from models.combine import get_combinator, get_components, combine_type, valid_trans_compound
+from models.combine import get_combinator, combine_type
 stem_config = dict(orient_dim   = orient_dim,
                    combine_type = combine_type,
                    num_layers   = num_ori_layer,
@@ -314,8 +314,7 @@ class Contextual(nn.Module):
                  num_layers,
                  rnn_type,
                  rnn_drop_out,
-                 use_state,
-                 ):
+                 use_state):
         super().__init__()
         if num_layers:
             assert input_dim % 2 == 0
@@ -392,7 +391,8 @@ class PadRNN(nn.Module):
                  rnn_drop_out,
                  trainable_initials,
                  fence_vote = None,
-                 activation = None):
+                 activation = None,
+                 char_space_idx = None):
         super().__init__()
         single_size = fence_dim // 2
         if num_layers:
@@ -418,8 +418,11 @@ class PadRNN(nn.Module):
             self.register_parameter('_c0', None)
             self._initial_size = None
 
-        self._pad = nn.Parameter(torch.empty(1, 1, single_size), requires_grad = True)
-        init.uniform_(self._pad, -bound, bound)
+        if char_space_idx is None:
+            self._pad = nn.Parameter(torch.empty(1, 1, single_size), requires_grad = True)
+            init.uniform_(self._pad, -bound, bound)
+        else:
+            self._pad = char_space_idx
         self._stem_dp = nn.Dropout(drop_out)
 
         if num_chars: # forward is open
@@ -519,14 +522,17 @@ class PadRNN(nn.Module):
         if self._subject_bw_d:  sub_emb = sub_emb + self._stem_dp(self._subject_bw_d(bw[:, :-1] - bw[:, 1:]))
         return dom_emb, sub_emb
 
-    def forward(self, char_idx, fence, offset = None): # concat fence vectors
+    def forward(self, char_idx, fence = None, offset = None): # concat fence vectors
         batch_size, char_len = char_idx.shape
         char_emb = self._char_emb(char_idx)
         char_emb = self._stem_dp(char_emb)
         fence_hidden, _ = self._fence_emb(char_emb, self.get_h0c0(batch_size))
-        existence = char_idx > 0
-        fw, bw = birnn_fwbw(fence_hidden, self._tanh(self._pad), )
-        helper = condense_helper(fence, True, offset)
+        if fence is None:
+            helper = condense_helper(char_idx == self._pad, True, offset)
+        else:    
+            existence = char_idx > 0
+            fw, bw = birnn_fwbw(fence_hidden, self._tanh(self._pad), existence)
+            helper = condense_helper(fence, True, offset)
         fw = condense_left(fw, helper)
         bw = condense_left(bw, helper)
         return torch.cat([fw[:, 1:] - fw[:, :-1], bw[:, :-1] - bw[:, 1:]], dim = 2)

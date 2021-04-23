@@ -76,7 +76,7 @@ class StanOperator(PennOperator):
             else:
                 vis, _, _ = self._vis_mode
                 if vis.save_tensors:
-                    pca = self._model.get_static_pca()
+                    pca = self._model.get_static_pca() if hasattr(self._model, 'get_static_pca') else None
                     if pca is None:
                         try:
                             pca = PCA(layers_of_base.reshape(-1, layers_of_base.shape[2]))
@@ -141,7 +141,8 @@ class StanOperator(PennOperator):
             save_tensors = is_bin_times(int(float(epoch)) - 1)
             scores_of_bins = False
             
-        self._model.update_static_pca()
+        if hasattr(self._model, 'update_static_pca'):
+            self._model.update_static_pca()
         vis = StanVis(epoch,
                       self.recorder.create_join(folder),
                       self._stan_i2vs,
@@ -179,9 +180,10 @@ class StanOperator(PennOperator):
 
     @staticmethod
     def combine_scores_and_decide_key(epoch, ds_scores):
+        ds_scores = {ds: dict(sc) for ds, sc in ds_scores.items()}
         scores = ds_scores[C_SSTB]
         qui = f_score(scores['5'], scores['Q'], 2)
-        ter = f_score(scores['3'], scores['T'], 2) #∴⋮:
+        ter = f_score(scores['3'], scores['T'], 2) #:∴⋮
         bi  = f_score(scores['2'], scores['B'], 2)
         ds_scores['key'] = f_score(f_score(bi, ter, 2), qui, 2)
         return ds_scores

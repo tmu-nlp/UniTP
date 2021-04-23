@@ -1,6 +1,8 @@
-from models.backend import torch, InputLeaves, Contextual, input_config, contextual_config, true_type, false_type, char_rnn_config, PadRNN
+from models.backend import torch, InputLeaves, Contextual, input_config, contextual_config
+from models.backend import PadRNN, char_rnn_config, nn
 from models.dccp import BaseRnnTree, model_type
-from utils.types import word_dim, true_type
+from utils.types import word_dim, true_type, false_type
+from models.combine import get_combinator, combine_static_type
 
 model_type = model_type.copy()
 model_type['model_dim']        = word_dim
@@ -8,7 +10,7 @@ model_type['char_rnn']         = char_rnn_config
 model_type['word_emb']         = input_config
 model_type['use']              = dict(char_rnn = false_type, word_emb = true_type)
 model_type['contextual_layer'] = contextual_config
-model_type['residual_add']     = true_type
+model_type['combine_static']   = combine_static_type
 
 class DiscoRnnTree(BaseRnnTree):
     def __init__(self,
@@ -18,7 +20,7 @@ class DiscoRnnTree(BaseRnnTree):
                  word_emb,
                  char_rnn,
                  contextual_layer,
-                 residual_add,
+                 combine_static,
                  num_chars       = None,
                  num_tokens      = None,
                  initial_weights = None,
@@ -38,14 +40,18 @@ class DiscoRnnTree(BaseRnnTree):
             
         contextual_layer = Contextual(input_dim, model_dim, self.hidden_dim, **contextual_layer)
         diff = model_dim - input_dim
+        self._combine_static = None
+        self._bias_only = False
         if contextual_layer.is_useless:
             self._contextual_layer = None
             assert diff == 0, 'useless difference'
         else:
             self._contextual_layer = contextual_layer
+            if combine_static:
+                self._bias_only = combine_static in ('NS', 'NV')
+                self._combine_static = get_combinator(combine_static, input_dim)
             assert diff >= 0, 'invalid difference'
         self._half_dim_diff = diff >> 1
-        self._residual_add = residual_add
 
     def get_static_pca(self):
         if self._word_emb and self._word_emb.has_static_pca:
@@ -72,12 +78,35 @@ class DiscoRnnTree(BaseRnnTree):
             top3_hidden = None
         else:
             dynamic, top3_hidden = self._contextual_layer(static)
-            base_inputs = dynamic * bottom_existence
             if self._half_dim_diff:
                 zero_pads = torch.zeros(batch_size, batch_len, self._half_dim_diff, dtype = static.dtype, device = static.device)
                 static = torch.cat([zero_pads, static, zero_pads], dim = 2)
-            if self._residual_add:
-                base_inputs = base_inputs + static
+            base_inputs = dynamic * bottom_existence
+            if self._combine_static is not None:
+                base_inputs = self._combine_static.compose(static, base_inputs, None)
         base_returns = super().forward(base_inputs, bottom_existence.squeeze(dim = 2), **kw_args)
         top3_labels  = super().get_label(top3_hidden) if top3_hidden is not None else None
         return (batch_size, batch_len, static, top3_labels) + base_returns
+
+    def tensorboard(self, recorder, global_step):
+        if self._bias_only:
+            ctx_ratio = self._combine_static.itp_rhs_bias().detach()
+            if ctx_ratio is not None:
+                params = dict(ContextualRatio = ctx_ratio.mean())
+                if ctx_ratio.nelement() > 1:
+                    params['RatioStdv'] = ctx_ratio.std()
+                recorder.tensorboard(global_step, 'Parameters/%s', **params)
+
+    @property
+    def message(self):
+        if self._bias_only:
+            ctx_ratio = self._combine_static.itp_rhs_bias().detach()
+            if ctx_ratio is not None:
+                ctx_ratio *= 100
+                msg = 'Contextual Rate:'
+                msg += f' {ctx_ratio.mean():.2f}'
+                if ctx_ratio.nelement() > 1:
+                    msg += f'±{ctx_ratio.std():.2f}%'
+                else:
+                    msg += '%'
+                return msg

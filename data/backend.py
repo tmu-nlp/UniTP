@@ -5,7 +5,7 @@ from data.delta import xtype_to_logits, logits_to_xtype
 from collections import defaultdict, namedtuple
 from utils.param_ops import HParams
 from utils.file_io import parpath
-from utils.types import NIL, UNK, BOS, EOS, M_TRAIN
+from utils.types import NIL, UNK, BOS, EOS, M_TRAIN, PAD
 import torch
 
 BatchSpec = namedtuple('BatchSpec', 'size, iter')
@@ -109,7 +109,7 @@ def add_char_from_word(i2vs):
     chars = set()
     for word in i2vs['word'][1:]:
         chars.update(word)
-    i2vs['char'] = [NIL] + sorted(chars)
+    i2vs['char'] = [NIL, PAD] + sorted(chars)
 
 from utils.param_ops import change_key
 class WordBaseReader(_BaseReader):
@@ -552,25 +552,24 @@ class TextHelper:
     def get(self):
         raise NotImplementedError('TextHelper.get')
 
+from tqdm import tqdm
 class CharTextHelper(TextHelper):
     def __init__(self, text, device, alphabet_fn):
         cache = []
-        for words in text:
+        pad_idx = alphabet_fn(PAD)
+        for words in tqdm(text, 'CharTextHelper'):
+            char_seq = [pad_idx]
             segment = [0]
-            char_seq = []
             for word in words:
-                wl = len(word)
-                segment.append(wl + segment[-1]) # cumu
                 char_seq.extend(alphabet_fn(x) for x in word)
+                char_seq.append(pad_idx)
+                segment.append(len(word) + 1 + segment[-1])
             cache.append((char_seq, segment))
         super().__init__(cache, device)
         
     def get(self):
-        char_idx, word_fence = [], []
-        ws_range = range(self._max_len + 1)
+        char_idx = []
         for wi, ws, len_diff in self.gen_from_buffer():
-            char_idx  .append(wi + [0] * len_diff)
-            word_fence.append([i in ws for i in ws_range])
-        char_idx   = torch.tensor(char_idx,   device = self._device)
-        word_fence = torch.tensor(word_fence, device = self._device)
-        return dict(sub_idx = char_idx, sub_fence = word_fence)
+            char_idx.append(wi + [0] * len_diff)
+        char_idx = torch.tensor(char_idx,   device = self._device)
+        return dict(sub_idx = char_idx)

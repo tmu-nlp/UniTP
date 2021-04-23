@@ -81,10 +81,11 @@ class DiscoMultiOperator(DiscoOperator):
             else:
                 assert disco_2d_logits is None
             if not self._train_config.binary_hinge_loss:
-                fence_logits = self._sigmoid(fence_logits)
-                disco_1d_logits = self._sigmoid(disco_1d_logits)
+                _sigmoid = self._model._sigmoid
+                fence_logits = _sigmoid(fence_logits)
+                disco_1d_logits = _sigmoid(disco_1d_logits)
                 if has_disco_2d:
-                    disco_2d_logits = self._sigmoid(disco_2d_logits)
+                    disco_2d_logits = _sigmoid(disco_2d_logits)
 
             tag_loss, label_loss = self._model.get_losses(batch, tag_logits, label_logits)
             if self._train_config.binary_hinge_loss:
@@ -105,7 +106,9 @@ class DiscoMultiOperator(DiscoOperator):
             if has_disco_2d:
                 total_loss = self._train_config.loss_weight.disco_2d * disco_2d_loss + total_loss
             total_loss.backward()
-            # check = existences == (batch['xtype'] > 0)
+            
+            if hasattr(self._model, 'tensorboard'):
+                self._model.tensorboard(self.recorder, self.global_step)
             self.recorder.tensorboard(self.global_step, 'Accuracy/%s',
                                       Tag   = 1 - fraction(tag_mis,     tag_weight),
                                       Label = 1 - fraction(label_mis, label_weight),
@@ -124,13 +127,23 @@ class DiscoMultiOperator(DiscoOperator):
                 batch_kwargs['Height'] = batch['segment'].shape[0]
             self.recorder.tensorboard(self.global_step, 'Batch/%s', **batch_kwargs)
         else:
-            vis, _, _, serial = self._vis_mode
+            vis, _, _, pending_heads = self._vis_mode
 
             tags   = self._model.get_decision(tag_logits  ).type(torch.uint8).cpu().numpy()
             labels = self._model.get_decision(label_logits).type(torch.uint8).cpu().numpy()
-            spaces = (space - 1).type(torch.int16).cpu().numpy() # internal diff: data/model
             seg_length = seg_length.type(torch.int16).cpu().numpy()
-            if serial:
+            spaces = (space - 1).type(torch.int16).cpu().numpy() # internal diff: data/model
+
+            if vis._draw_trees:
+                _sigmoid = self._model._sigmoid
+                fence    = _sigmoid(fence_logits)
+                disco_1d = _sigmoid(disco_1d_logits)
+                weight   = mean_stdev(weights).type(torch.float16).cpu().numpy()
+                disco_2d = None if disco_2d_logits is None else disco_2d_logits.type(torch.float16).cpu().numpy()
+            else:
+                weight = fence = disco_1d = disco_2d = None
+
+            if pending_heads:
                 b_size = (batch_len,)
                 b_head = []
                 for fn in ('token', 'tag', 'label', 'space', 'segment', 'seg_length'):
@@ -141,13 +154,11 @@ class DiscoMultiOperator(DiscoOperator):
                         tensor = tensor.type(torch.uint8)
                     b_head.append(tensor.cpu().numpy())
                 b_head = tuple(b_head)
-                weight = mean_stdev(weights).cpu().numpy()
                 b_data = (tags, labels, spaces, weight, segment, seg_length)
             else:
                 b_size = (batch_len,)
                 b_head = (batch['token'].cpu().numpy(),)
-                # batch_size, segment, token, tag, label, fence, seg_length
-                b_data = (tags, labels, spaces, segment, seg_length)
+                b_data = (tags, labels, spaces, weight, segment, seg_length)
 
             # tag, label, fence, segment, seg_length
             tensors = b_size + b_head + b_data
@@ -180,7 +191,7 @@ class DiscoMultiOperator(DiscoOperator):
                             self._discodop_prm,
                             draw_trees)
         pending_heads = vis._pending_heads
-        vis = VisRunner(vis, async_ = False) # wrapper
+        vis = VisRunner(vis, async_ = True) # wrapper
         vis.before()
         self._vis_mode = vis, use_test_set, final_test, pending_heads
 
@@ -212,14 +223,19 @@ def batch_trees(b_word, b_tag, b_label, b_space, b_segment, b_seg_length, i2vs, 
         ln = seg_length[0]
         wd = [i2vs.token[i] for i in word[:ln]]
         tg = [i2vs.tag  [i] for i in  tag[:ln]]
-        yield disco_tree(wd, tg, layers_of_label, layers_of_space, fb_label) # layers_of_weight
+        yield disco_tree(wd, tg, layers_of_label, layers_of_space, fb_label, layers_of_weight)
 
 
 from data.cross.evalb_lcfrs import DiscoEvalb, ExportWriter, read_param
+from utils.file_io import isfile, remove
 class DiscoMultiVis(DiscoVis):
     def __init__(self, epoch, work_dir, i2vs, head_trees, logger, evalb_lcfrs_kwargs, discodop_prm, draw_trees):
         super().__init__(epoch, work_dir, i2vs, head_trees, logger, evalb_lcfrs_kwargs, discodop_prm, None, False)
-        self._draw_trees = self._dtv.join(f'tree.{epoch}.art') if draw_trees else None
+        if draw_trees:
+            draw_trees = self._dtv.join(f'tree.{epoch}.art')
+            if isfile(draw_trees):
+                remove(draw_trees)
+        self._draw_trees = draw_trees
 
     def _process(self, batch_id, batch):
         bid_offset, _ = self._evalb.total_missing
@@ -236,39 +252,41 @@ class DiscoMultiVis(DiscoVis):
                 head_trees_for_scores.append(inner_score(btm, td, rt, self._xh_writer, **self._evalb_lcfrs_kwargs))
             self._head_batches.append((head_trees_for_scores, head_lines))
         else:
-            (batch_len, h_token, d_tag, d_label, d_space, d_segment, d_seg_length) = batch
+            (batch_len, h_token, d_tag, d_label, d_space, d_weight, d_segment, d_seg_length) = batch
             head_trees_for_scores, head_lines = self._head_batches[self._data_batch_cnt]
             self._data_batch_cnt += 1
         
         # data_errors = []
         lines = ''
         self._evalb.add_batch_line(batch_id)
+        evalb_lines = []
         for sid, (btm, td, rt, error) in enumerate(batch_trees(h_token, d_tag, d_label, d_space, d_segment, d_seg_length, i2vs, 'VROOT')):
             pred_gold = inner_score(btm, td, rt, self._xd_writer, **self._evalb_lcfrs_kwargs) + head_trees_for_scores[sid]
-            bracket_match, p_num_brackets, g_num_brackets, dbm, pdbc, gdbc, tag_match, g_tag_count = self._evalb.add(*pred_gold)
+            if self._draw_trees: evalb_lines.append(self._evalb.add(*pred_gold))
             if error: self._v_errors[bid_offset + sid] = error
-            if self._draw_trees:
-                lines += f'Batch #{batch_id} ───────────────────────────────────────────\n'
-                lines += f'  Sent #{sid} | #{bid_offset + sid}: '
-                tag_line = 'Exact Tagging Match' if tag_match == g_tag_count else f'Tagging: {tag_match}/{g_tag_count}'
-                if pdbc or gdbc:
-                    tag_line += ' | DISC.'
-                    if not dbm and gdbc:
-                        tag_line += ' failed'
-                    if not gdbc and pdbc:
-                        tag_line += ' overdone'
-                if bracket_match == g_num_brackets:
-                    if tag_match == g_tag_count:
-                        lines += 'Exact Match\n\n'
-                    else:
-                        lines += 'Exact Bracketing Match | ' + tag_line + '\n\n'
-                    lines += head_lines[sid]
-                else:
-                    lines += f'Bracketing {p_num_brackets} > {bracket_match} < {g_num_brackets} | '
-                    lines += tag_line + '\n\n'
-                    lines += head_lines[sid] + '\n\n'
-                    lines += '\n'.join(draw_str_lines(btm, td, root_stamp = ' (Predicted)'))
-                lines += '\n\n\n'
         if self._draw_trees:
             with open(self._draw_trees, 'a+') as fw:
-                fw.write(lines)
+                for sid, (btm, td, rt, error) in enumerate(batch_trees(h_token, d_tag, d_label, d_space, d_segment, d_seg_length, i2vs, 'VROOT', d_weight)):
+                    bracket_match, p_num_brackets, g_num_brackets, dbm, pdbc, gdbc, tag_match, g_tag_count = evalb_lines[sid]
+                    lines += f'Batch #{batch_id} ───────────────────────────────────────────\n'
+                    lines += f'  Sent #{sid} | #{bid_offset + sid}: '
+                    tag_line = 'Exact Tagging Match' if tag_match == g_tag_count else f'Tagging: {tag_match}/{g_tag_count}'
+                    if pdbc or gdbc:
+                        tag_line += ' | DISC.'
+                        if not dbm and gdbc:
+                            tag_line += ' failed'
+                        if not gdbc and pdbc:
+                            tag_line += ' overdone'
+                    if bracket_match == g_num_brackets:
+                        if tag_match == g_tag_count:
+                            lines += 'Exact Match\n\n'
+                        else:
+                            lines += 'Exact Bracketing Match | ' + tag_line + '\n\n'
+                        lines += '\n'.join(draw_str_lines(btm, td, root_stamp = ' (Predicted)'))
+                    else:
+                        lines += f'Bracketing {p_num_brackets} > {bracket_match} < {g_num_brackets} | '
+                        lines += tag_line + '\n\n'
+                        lines += head_lines[sid] + '\n\n'
+                        lines += '\n'.join(draw_str_lines(btm, td, root_stamp = ' (Predicted)'))
+                    lines += '\n\n\n'
+                    fw.write(lines)

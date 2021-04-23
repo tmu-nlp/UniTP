@@ -91,27 +91,21 @@ def build(save_to_dir,
             desc += f'({sid}); '
         qbar.desc = 'Loaded ' + desc
     pickle_dump(join(save_to_dir, 'info.pkl'), (ds_len_cnts, ds_ner_cnts))
-    chr_cnt = defaultdict(int)
-    for tk, cnt in tok_cnt.items():
-        for ch in tk:
-            chr_cnt[ch] += cnt
     tok_file = join(save_to_dir, 'vocab.word')
-    chr_file = join(save_to_dir, 'vocab.char')
     pos_file = join(save_to_dir, 'vocab.pos')
     ner_file = join(save_to_dir, 'vocab.ner')
     bio_file = join(save_to_dir, 'vocab.bio')
     _, ts = save_vocab(tok_file, tok_cnt, [NIL])
-    _, cs = save_vocab(chr_file, chr_cnt, [NIL])
     _, ps = save_vocab(pos_file, pos_cnt, [NIL])
     _, ns = save_vocab(ner_file, ner_cnt, [NIL])
     _, bs = save_vocab(bio_file, bio_cnt, [NIL])
-    return ts, cs, ps, ns, bs
+    return ts, ps, ns, bs
 
 def check_data(save_dir, valid_sizes):
     from sys import stderr
     from utils.str_ops import histo_count
     try:
-        tok_size, chr_size, pos_size, ner_size, bio_size = valid_sizes
+        tok_size, pos_size, ner_size, bio_size = valid_sizes
     except:
         print('Should check vocab with compatible sizes, even Nones', file = stderr)
         return False
@@ -120,12 +114,10 @@ def check_data(save_dir, valid_sizes):
         print('Not found: info.pkl')
         return False
     tok_file = join(save_dir, 'vocab.word')
-    chr_file = join(save_dir, 'vocab.char')
     pos_file = join(save_dir, 'vocab.pos')
     ner_file = join(save_dir, 'vocab.ner')
     bio_file = join(save_dir, 'vocab.bio')
     res = check_vocab(tok_file, tok_size)
-    res = res and check_vocab(chr_file, chr_size)
     res = res and check_vocab(pos_file, pos_size)
     res = res and check_vocab(ner_file, ner_size)
     res = res and check_vocab(bio_file, bio_size)

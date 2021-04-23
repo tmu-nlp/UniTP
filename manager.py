@@ -136,11 +136,10 @@ class Manager:
                 status = basic_status
                 if len(listdir(work_dir)):
                     print(f"CREATING WARNING: work_dir '{work_dir}' is NOT empty.", file = sys.stderr)
-            save_yaml(status, *self._mfile_lfile) # save for new appended feature (experiments)
         else:
             mkdir(work_dir)
             status = basic_status
-            save_yaml(status, *self._mfile_lfile)
+        save_yaml(status, *self._mfile_lfile) # save for new appended feature (experiments)
 
     def list_experiments_status(self, print_file = sys.stdout):
         from utils.recorder import Recorder

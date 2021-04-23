@@ -115,6 +115,10 @@ class Operator:
         scores['epoch'] = epoch
         self._recorder.log(timestamp(epoch, prefix) + f' - {ds_logg} ({from_start} from start).')
         if final_test:
+            if hasattr(self._model, 'message'):
+                message = self._model.message
+                if message:
+                    self._recorder.log(message)
             return dict(scores)
 
     def validation_or_test(self, mode, ds_total, ds_names, ds_iters, icon, epoch, final_test = False):

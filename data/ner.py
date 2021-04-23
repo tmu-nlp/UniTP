@@ -23,7 +23,7 @@ data_type = dict(vocab_size     = vocab_size,
                                        insert        = augment,
                                        substitute    = augment))
 
-from data.backend import CharTextHelper
+from data.backend import CharTextHelper, PAD, tqdm
 class NerReader(WordBaseReader):
     def __init__(self,
                  vocab_dir,
@@ -32,22 +32,24 @@ class NerReader(WordBaseReader):
                  with_pos_tag,
                  vocab_size = None,
                  extra_text_helper = None):
-        vocabs = '' if extra_text_helper is None else 'char '
         if with_bi_prefix:
-            vocabs += 'word bio'
+            vocabs = 'word bio'
         else:
-            vocabs += 'word ner'
+            vocabs = 'word ner'
         if with_pos_tag:
             vocabs += ' pos'
         i2vs = load_i2vs(vocab_dir, vocabs.split())
+        if extra_text_helper is CharTextHelper:
+            add_char_from_word(i2vs)
         super().__init__(vocab_dir, vocab_size, True, i2vs, {})
         char_vocab = None
         if extra_text_helper is CharTextHelper:
             char_vocab = {}
             _, t2is = self.v2is['token']
             _, c2is = self.v2is['char']
-            for word in self.i2vs.token[1:]: # skip pad <nil>
-                char_vocab[t2is(word)] = [c2is(t) for t in word]
+            pad_idx = c2is(PAD)
+            for word in tqdm(self.i2vs.token[1:], 'NER-Wordlist'): # skip pad <nil>
+                char_vocab[t2is(word)] = [c2is(t) for t in word] + [pad_idx]
         self._load_options = corpus_path, extra_text_helper, char_vocab
 
     def batch(self,

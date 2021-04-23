@@ -37,6 +37,7 @@ class NerOperator(Operator):
                 new_tok += t
             t2is.append(new_tok)
         self._t2is = tuple(t2is)
+        self._head_tsv_lines = []
 
     def _build_optimizer(self, start_epoch):
         self._schedule_lr = hp = WarmOptimHelper.adam(self._model, self._train_config.learning_rate)
@@ -142,14 +143,15 @@ class NerOperator(Operator):
                      self.i2vs,
                      self._t2is,
                      self.recorder.log,
-                     flush_heads)
+                     flush_heads,
+                     self._head_tsv_lines)
         vis = VisRunner(vis, async_ = False) # wrapper
         vis.before()
         self._vis_mode = vis, use_test_set, final_test, flush_heads, save_tensors
 
     def _after_validation(self, ds_name, count, seconds):
         vis, use_test_set, final_test, flush_heads, save_tensors = self._vis_mode
-        scores, desc, logg = vis.after()
+        scores, desc, logg, self._head_tsv_lines = vis.after()
         if vis.is_async:
             rate = vis.proc_time / seconds
         else:
@@ -175,7 +177,7 @@ class NerOperator(Operator):
         pass
 
 import numpy as np
-from data.ner_types import bio_to_tree, ner_to_tree
+from data.ner_types import bio_to_tree, ner_to_tree, recover_bio_prefix
 def batch_trees(b_length, b_word, b_pos, b_bio, b_ner, b_fence, i2vs, b_weight = None, t2vs = None, **kw_args):
     has_pos = b_pos is not None
     has_bio = b_bio is not None
@@ -188,15 +190,15 @@ def batch_trees(b_length, b_word, b_pos, b_bio, b_ner, b_fence, i2vs, b_weight =
         
         if has_bio:
             bi = [i2vs.bio[i] for i in b_bio[sid, :ln]]
-            yield bio_to_tree(wd, bi, ps, show_internal, **kw_args)
+            yield bio_to_tree(wd, bi, ps, show_internal, **kw_args), (wd, bi)
         else:
             nr = [i2vs.ner[i] for i in b_ner[sid, :b_fence[sid, 1:].sum()]]
             fence, = np.where(b_fence[sid]) #.nonzero() in another format
             weights = b_weight[sid, :ln] if show_internal and b_weight is not None else None
-            tree = ner_to_tree(wd, nr, fence, ps, show_internal, weights, **kw_args)
-            if len(tree) == 0:
-                import pdb; pdb.set_trace()
-            yield tree
+            bi = recover_bio_prefix(fence, nr)
+            yield ner_to_tree(wd, nr, fence, ps, show_internal, weights, **kw_args), (wd, bi)
+            # if len(tree) == 0:
+            #     import pdb; pdb.set_trace()
 
 from utils.vis import BaseVis, VisRunner
 from data.multib import draw_str_lines
@@ -204,13 +206,15 @@ from utils.file_io import join, isfile, remove
 from utils.shell_io import parseval, rpt_summary
 from nltk.tree import Tree
 class NerVis(BaseVis):
-    def __init__(self, epoch, work_dir, evalb, i2vs, t2is, logger, flush_heads = False):
+    def __init__(self, epoch, work_dir, evalb, i2vs, t2is, logger, flush_heads = False, head_tsv_lines = []):
         super().__init__(epoch)
         self._evalb_i2vs_logger = evalb, i2vs, t2is, logger
         htree = join(work_dir, 'head.tree')
         dtree = join(work_dir, f'data.{epoch}.tree')
         self._art_lines = []
+        self._tsv_lines = head_tsv_lines, []
         self._art = join(work_dir, f'data.{epoch}.art')
+        self._csv = join(work_dir, f'data.{epoch}.tsv')
         self._err = join(work_dir, f'data.{epoch}.rpt')
         self._fnames = htree, dtree
         self._head_tree = flush_heads
@@ -228,17 +232,20 @@ class NerVis(BaseVis):
 
     def _process(self, batch):
         evalb, i2vs, t2is, logger = self._evalb_i2vs_logger
+        head_tsv_lines, data_tsv_lines = self._tsv_lines
         if self._head_tree:
             (batch_id, h_length, h_token, h_pos, h_bio, h_ner, h_fence,
              d_pos, d_bio, d_ner, d_fence, d_weight) = batch
-            for tree in batch_trees(h_length, h_token, h_pos, h_bio, h_ner, h_fence, i2vs, t2vs = t2is):
+            for tree, bio in batch_trees(h_length, h_token, h_pos, h_bio, h_ner, h_fence, i2vs, t2vs = t2is):
+                head_tsv_lines.append(bio)
                 print(' '.join(str(tree).split()), file = self._head_tree)
         else:
             (batch_id, h_length, h_token,
              d_pos, d_bio, d_ner, d_fence, d_weight) = batch
-        for tree in batch_trees(h_length, h_token, d_pos, d_bio, d_ner, d_fence, i2vs, t2vs = t2is):
+        for tree, (_, bio) in batch_trees(h_length, h_token, d_pos, d_bio, d_ner, d_fence, i2vs, t2vs = t2is):
+            data_tsv_lines.append(bio)
             print(' '.join(str(tree).split()), file = self._data_tree)
-        for tree in batch_trees(h_length, h_token, d_pos, d_bio, d_ner, d_fence, i2vs, d_weight, root_label = 'Prediction'):
+        for tree, _ in batch_trees(h_length, h_token, d_pos, d_bio, d_ner, d_fence, i2vs, d_weight, root_label = 'Prediction'):
             self._art_lines.append('\n'.join(draw_str_lines(tree)))
 
     def _after(self): # TODO TODO TODO length or num_ners
@@ -282,7 +289,12 @@ class NerVis(BaseVis):
         # ============================================================================
         #    1    2    0  100.00  50.00     1      1    2      0      2     1    50.00
 
-
+        head_tsv_lines, data_tsv_lines = self._tsv_lines
+        with open(self._csv, 'w') as fw:
+            for (words, h_bio), d_bio in zip(head_tsv_lines, data_tsv_lines):
+                for wd, h, d in zip(words, h_bio, d_bio):
+                    fw.write(wd + '\t' + h + '\t' + d + '\n')
+                fw.write('\n')
         # if self.length_bins is not None and self._scores_of_bins:
         #     with open(self._ctvis.join(f'{self.epoch}.scores'), 'w') as fw:
         #         fw.write('wbin,num,lp,lr,f1,ta\n')
@@ -299,4 +311,4 @@ class NerVis(BaseVis):
         key_score = f'{scores["F1"]:.2f}'
         desc_for_screen = desc + byte_style(key_score, underlined = True) + ')'
         desc_for_logger = f'N: {scores["N"]} {desc}{key_score})'
-        return scores, desc_for_screen, desc_for_logger
+        return scores, desc_for_screen, desc_for_logger, head_tsv_lines

@@ -138,7 +138,9 @@ class DiscoOperator(Operator):
                 tb_loss_kwargs['Right'] = right_loss
                 tb_loss_kwargs['Direc'] = direc_loss
             total_loss.backward()
-            # check = existences == (batch['xtype'] > 0)
+            
+            if hasattr(self._model, 'tensorboard'):
+                self._model.tensorboard(self.recorder, self.global_step)
             self.recorder.tensorboard(self.global_step, 'Loss/%s',
                                       Tag = tag_loss, Label = label_loss, Joint = joint_loss, Total = total_loss,
                                        **tb_loss_kwargs)
@@ -149,7 +151,7 @@ class DiscoOperator(Operator):
         else:
             vis, _, _, pending_heads = self._vis_mode
             if vis.save_tensors:
-                pca = self._model.get_static_pca()
+                pca = self._model.get_static_pca() if hasattr(self._model, 'get_static_pca') else None
                 if pca is None:
                     pca = PCA(embeddings.reshape(-1, embeddings.shape[2]))
                 mpc_token = pca(static)
@@ -207,7 +209,8 @@ class DiscoOperator(Operator):
         vis = VisRunner(vis, async_ = True) # wrapper
         vis.before()
         self._vis_mode = vis, use_test_set, final_test, pending_heads
-        self._model.update_static_pca()
+        if hasattr(self._model, 'update_static_pca'):
+            self._model.update_static_pca()
 
     def _after_validation(self, ds_name, count, seconds):
         vis, use_test_set, final_test, pending_heads = self._vis_mode

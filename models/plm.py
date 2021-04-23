@@ -3,7 +3,7 @@ E_SUB = S_LFT, S_RGT, S_AVG, S_SGT = 'leftmost rightmost average selfgate'.split
 subword_proc = BaseType(0, as_index = True, default_set = E_SUB)
 
 from models.utils import condense_helper, condense_left
-from models.backend import torch, nn
+from models.backend import torch, nn, init, math
 class PreLeaves(nn.Module):
     has_static_pca = False # class property
 
@@ -16,7 +16,8 @@ class PreLeaves(nn.Module):
                  rnn_drop_out,
                  activation,
                  paddings,
-                 subword_proc):
+                 subword_proc,
+                 sum_weighted_layers):
         super().__init__() #  
 
         from transformers import AutoModel
@@ -40,8 +41,25 @@ class PreLeaves(nn.Module):
             self._gate_act = nn.Sigmoid()
 
         if paddings:
-            self._bos = nn.Parameter(torch.randn(1, 1, model_dim), requires_grad = True)
-            self._eos = nn.Parameter(torch.randn(1, 1, model_dim), requires_grad = True)
+            bos = torch.empty(1, 1, model_dim)
+            eos = torch.empty(1, 1, model_dim)
+            self._bos = nn.Parameter(bos, requires_grad = True)
+            self._eos = nn.Parameter(eos, requires_grad = True)
+            bound = 1 / math.sqrt(model_dim)
+            init.uniform_(self._bos, -bound, bound)
+            init.uniform_(self._eos, -bound, bound)
+
+        if sum_weighted_layers:
+            n_layer = self._pre_model.n_layer
+            layer_weights = torch.empty(n_layer + 1, 1, 1, 1) # TODO: better to use layers[n:]?
+            self._layer_weights = nn.Parameter(layer_weights, requires_grad = True)
+            self._softmax = nn.Softmax(dim = 0)
+            bound = 1 / math.sqrt(n_layer)
+            init.uniform_(self._layer_weights, -bound, bound)
+            self._pre_model.config.__dict__['output_hidden_states'] = True
+        else:
+            self._layer_weights = None
+
         self._paddings = paddings
         self._word_dim = model_dim
         self._subword_proc = subword_proc
@@ -59,11 +77,19 @@ class PreLeaves(nn.Module):
             offset = temp
 
         if tune_pre_trained:
-            xl_hidden = self._pre_model(plm_idx)[0]
+            plm_outputs = self._pre_model(plm_idx, output_hidden_states = True)
             # xl_hidden = xl_hidden[:, :-2] # Bad idea: git rid of some [cls][sep]
         else:
             with torch.no_grad():
-                xl_hidden = self._pre_model(plm_idx)[0]
+                plm_outputs = self._pre_model(plm_idx, output_hidden_states = True)
+        
+        if self._layer_weights is None:
+            xl_hidden = plm_outputs.last_hidden_state
+        else:
+            layer_weights = self._softmax(self._layer_weights)
+            xl_hidden = torch.stack(plm_outputs.hidden_states)
+            xl_hidden = (xl_hidden * layer_weights).sum(dim = 0)
+
         xl_hidden = self._dp_layer(xl_hidden)
 
         def transform_dim(xl_hidden):
@@ -122,44 +148,12 @@ class PreLeaves(nn.Module):
 xlnet_model_key = 'xlnet-base-cased'
 gbert_model_key = 'bert-base-german-cased'
 class XLNetLeaves(PreLeaves):
-    def __init__(self,
-                 model_dim,
-                 contextual,
-                 num_layers,
-                 drop_out,
-                 rnn_drop_out,
-                 activation,
-                 paddings,
-                 subword_proc):
-        super().__init__(xlnet_model_key,
-                         model_dim,
-                         contextual,
-                         num_layers,
-                         drop_out,
-                         rnn_drop_out,
-                         activation,
-                         paddings,
-                         subword_proc)
+    def __init__(self, *args, **kw_args):
+        super().__init__(xlnet_model_key, *args, **kw_args)
 
 class GBertLeaves(PreLeaves):
-    def __init__(self,
-                 model_dim,
-                 contextual,
-                 num_layers,
-                 drop_out,
-                 rnn_drop_out,
-                 activation,
-                 paddings,
-                 subword_proc):
-        super().__init__(gbert_model_key,
-                         model_dim,
-                         contextual,
-                         num_layers,
-                         drop_out,
-                         rnn_drop_out,
-                         activation,
-                         paddings,
-                         subword_proc)
+    def __init__(self, *args, **kw_args):
+        super().__init__(gbert_model_key, *args, **kw_args)
 
 
 _penn_to_xlnet = {'``': '"', "''": '"'}

@@ -1,4 +1,4 @@
-from multiprocessing import Process, Queue
+from multiprocessing import Process, Queue, TimeoutError
 from math import ceil
 from time import time, sleep
 from data.backend import before_to_seq
@@ -113,7 +113,11 @@ class DM:
         q_workers, _, _, _, _ = self._mp_workers
         for in_q, d2t in q_workers:
             in_q.put(-1)
-            d2t.join()
+            try:
+                d2t.join(timeout = 0.5)
+            except TimeoutError:
+                print('terminate', d2t)
+                d2t.terminate()
 
 
 class TR(Process):

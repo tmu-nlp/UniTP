@@ -98,6 +98,68 @@ def strange_to(string, unit_op = lambda x:x, include_end_to_range = True):
             final.append(unit_op(g))
     return final
 
+def hex_ratio(x):
+    assert 0 <= x <= 1
+    return '0123456789abcdef'[int(16 * x - 1e-8)]
+
+def hw_ratio(x):
+    assert 0 <= x <= 1
+    return ' ▁▂▃▄▅▆▇ ▏▎▍▌▋▊▉'[int(16 * x - 1e-8)]
+
+def wh_ratio(x):
+    assert 0 <= x <= 1
+    return '  ▏▎▍▌▋▊▁▂▃▄▅▆▇▉'[int(16 * x - 1e-8)]
+
+def width_ratio(x):
+    assert 0 <= x <= 1
+    return '▏▎▍▌▋▊▉'[int(7 * x - 1e-8)]
+
+def height_ratio(x):
+    assert 0 <= x <= 1
+    return '▁▂▃▄▅▆▇▉'[int(8 * x - 1e-8)]
+
+def str_ruler(length, upper = True, append_length = True):
+    unit = '┃╵╵╵╵╿╵╵╵╵' if upper else '┃╷╷╷╷╽╷╷╷╷'
+    rule = ''
+    while len(rule) < length:
+        rule += unit
+    rule = rule[:length]
+    if append_length:
+        rule += str(length)
+    return rule
+
+def cat_lines(lhs_lines, rhs_lines, offset = 0, from_top = False):
+    lhs_len = len(lhs_lines)
+    rhs_len = len(rhs_lines)
+    lines = []
+    lhs_span = max(len(x) for x in lhs_lines)
+    rhs_span = max(len(x) for x in rhs_lines)
+    lhs_space = ' ' * lhs_span
+    rhs_space = ' ' * rhs_span
+    assert offset >= 0
+    if not from_top:
+        lhs_lines = lhs_lines[::-1]
+        rhs_lines = rhs_lines[::-1]
+    for lid, lhs_line in enumerate(lhs_lines):
+        line = lhs_line + ' ' * (lhs_span - len(lhs_line))
+        if 0 <= lid - offset < rhs_len:
+            line += rhs_lines[lid - offset]
+        # else:
+        #     line += rhs_space
+        lines.append(line)
+    rhs_remain = lhs_len - offset
+    # print('\n'.join(lines), rhs_remain)
+    while rhs_remain < rhs_len:
+        if rhs_remain < 0:
+            line = ''
+        else:
+            line = lhs_space + rhs_lines[rhs_remain]
+        lines.append(line)
+        rhs_remain += 1
+    if not from_top:
+        lines.reverse()
+    return lines
+
 import unicodedata
 def len_ea(string, ea_unit = 2):
     nfc_string = unicodedata.normalize('NFC', string)

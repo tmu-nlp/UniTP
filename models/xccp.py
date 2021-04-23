@@ -18,19 +18,18 @@ def predict_disco_hint(dis_batch, bbt_zeros, existence, seq_idx, discontinuous, 
     batch_dim, con_min, con_max = bool_start_end(continuous)
     con_left = torch.cat([bbt_zeros, continuous], dim = 1)
     con_right = torch.cat([continuous, bbt_zeros], dim = 1)
+    con_left[batch_dim, con_min] = True
+    con_right[batch_dim, con_max + 1] = True
     if True:
-        con_left[batch_dim, con_min] = True
-        con_right[batch_dim, con_max + 1] = True
-
         fl_left  = condense_left(fence_logits, condense_helper(con_left,  as_existence = True))
         fl_right = condense_left(fence_logits, condense_helper(con_right, as_existence = True))
-        fence_logits = torch.where(fl_left * fl_right > 0,
-                                   torch.where(fl_left > 0, # same sign
-                                               torch.where(fl_left < fl_right, fl_left, fl_right),
-                                               torch.where(fl_left > fl_right, fl_left, fl_right)),
+        fence_logits = torch.where(fl_left * fl_right > 0, # same sign
+                                   torch.where(fl_left > 0,
+                                               torch.where(fl_left > fl_right, fl_left, fl_right),
+                                               torch.where(fl_left < fl_right, fl_left, fl_right)),
                                    fl_left + fl_right) # oppo sign
     else:
-        fence_logits = condense_left(fence_logits, condense_helper(con_left|con_right, as_existence = True))
+        con_left ^ con_right
 
     dis_exist = discontinuous[dis_batch]
     dis_helper = condense_helper(dis_exist, as_existence = True)
@@ -286,12 +285,13 @@ class DiscoMultiStem(MultiStem):
 
         layers_of_u_emb = []
         layers_of_existence = []
+        # training logits
+        layers_of_fence = [] # 101011
+        layers_of_disco_1d = [] # 0000111100
+        layers_of_disco_2d = [] # 1010x0101
+        
         if teacher_forcing:
             space, dis_disco = supervision
-            # training logits
-            layers_of_fence = [] # 101011
-            layers_of_disco_1d = [] # 0000111100
-            layers_of_disco_2d = [] # 1010x0101
         else:
             # dis_slice_start = 0
             layers_of_space = [] # 001132324
@@ -307,8 +307,6 @@ class DiscoMultiStem(MultiStem):
             if not teacher_forcing:
                 segment   .append(seg_len)
                 seg_length.append(seq_len)
-                if unit_emb.shape[1] == 0:
-                    import pdb; pdb.set_trace()
 
             disco_hidden, _ = self._fence_emb(unit_emb, h0c0)
             fw, bw = self.pad_fwbw_hidden(disco_hidden, existence)
@@ -316,6 +314,7 @@ class DiscoMultiStem(MultiStem):
             fw = self._stem_dp(fw)
             bw = self._stem_dp(bw)
             disco_1d_logits = self.predict_1d_disco(disco_hidden)
+            layers_of_disco_1d.append(disco_1d_logits)
             fence_logits = self.predict_fence(fw, bw) # local fw & bw for continuous
             layer_fence_logits = fence_logits # save for the next function
 
@@ -323,14 +322,12 @@ class DiscoMultiStem(MultiStem):
             seq_idx = longer_seq_idx[None, :seg_len]
             if teacher_forcing:
                 discontinuous = dis_disco[l_cnt] # [b, s]
-                layers_of_disco_1d.append(disco_1d_logits)
             else:
                 discontinuous = disco_1d_logits > 0
                 if discontinuous.shape != existence.shape:
                     print(f'WARNING: Invalid sections caused unmatched existence {l_cnt}', file = stderr, end = '')
                     break
                 discontinuous &= existence
-
                 discontinuous = torch.where(discontinuous.sum(dim = 1, keepdim = True) == 1,
                                             torch.zeros_like(discontinuous), discontinuous)
             
@@ -355,12 +352,12 @@ class DiscoMultiStem(MultiStem):
                 disco_2d_logits = self.predict_2d_disco(*self._select(get_dis_emb, disco_hidden, unit_emb))
             else:
                 disco_2d_logits = None
+            layers_of_fence.append(fence_logits)
 
             if teacher_forcing:
                 sections = space[l_cnt]
                 if disco_2d_logits is not None:
                     layers_of_disco_2d.append(disco_2d_logits.reshape(-1))
-                layers_of_fence.append(fence_logits)
             else:
                 layer_len = seq_len[:, None]
                 layer_fence_logits[:, 0] = fmax
@@ -383,6 +380,7 @@ class DiscoMultiStem(MultiStem):
                     #000011011_ ^
                     layer_fence &= discontinuous.logical_not()
                     disco_2d = self._sigmoid(disco_2d_logits)
+                    layers_of_disco_2d.append(disco_2d.reshape(-1))
                     sections = predict_disco_sections(disco_2d, layer_fence, dis_batch, dis_length, dis_indice)
                 sections = torch.where(seq_idx < layer_len, sections, torch.zeros_like(sections))
                 layers_of_space.append(sections)
@@ -404,16 +402,14 @@ class DiscoMultiStem(MultiStem):
             if not teacher_forcing:
                 layers_of_weight.append(weights)
 
-        embeddings = torch.cat(layers_of_u_emb, dim = 1)
+        embeddings = torch.cat(layers_of_u_emb,     dim = 1)
         existence  = torch.cat(layers_of_existence, dim = 1)
+        fence      = torch.cat(layers_of_fence,     dim = 1)
+        disco_1d   = torch.cat(layers_of_disco_1d, dim = 1)
+        disco_2d   = torch.cat(layers_of_disco_2d, dim = 0) if layers_of_disco_2d else None
         if teacher_forcing:
             weight = space = None
-            # training logits
-            fence    = torch.cat(layers_of_fence, dim = 1)
-            disco_1d = torch.cat(layers_of_disco_1d, dim = 1)
-            disco_2d = torch.cat(layers_of_disco_2d, dim = 0) if layers_of_disco_2d else None
         else:
-            disco_1d = fence = disco_2d = None
             if not layers_of_space:
                 assert not layers_of_weight
                 space  = torch.zeros(batch_size, 0, dtype = batch_dim.dtype, device = batch_dim.device)

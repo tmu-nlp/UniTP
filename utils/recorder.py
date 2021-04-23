@@ -174,11 +174,16 @@ class Recorder:
             if value is None: continue
             self._writer.add_scalar(template % key, value, step)
 
+    def tensorboard_histogram(self, step, key, vector):
+        if self._writer is None:
+            return
+        self._writer.add_histogram(key, vector, step)
+
     @staticmethod
     def msg(*args, **kwargs):
         print(*args, **kwargs, file = stderr, flush = True)
 
-    def task_specs(self):
+    def task_specs(self): # TODO if not training set trainset & develset to {}
         from utils.param_ops import HParams
         specs = load_yaml(*self._sv_file_lock, wait_lock = False)
         _, model_type, train_type = self._module.get_configs()

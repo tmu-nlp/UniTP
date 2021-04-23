@@ -114,7 +114,9 @@ class MultiOperator(PennOperator):
             total_loss = self._train_config.loss_weight.label * label_loss + total_loss
             total_loss = self._train_config.loss_weight.fence * fence_loss + total_loss
             total_loss.backward()
-            # check = existences == (batch['xtype'] > 0)
+            
+            if hasattr(self._model, 'tensorboard'):
+                self._model.tensorboard(self.recorder, self.global_step)
             self.recorder.tensorboard(self.global_step, 'Accuracy/%s',
                                       Tag   = 1 - fraction(tag_mis,     tag_weight),
                                       Label = 1 - fraction(label_mis, label_weight),

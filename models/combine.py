@@ -64,7 +64,11 @@ def valid_trans_compound(x): # CT.Tanh.3
             return valid
         return valid and is_numeric.fullmatch(segs[2])
     return False
+
 combine_type = BaseType(0, as_index = True, default_set = E_COMBINE, validator = valid_trans_compound)
+combine_static_type = BaseType(0, as_index = True,
+                               default_set = [None] + E_COMBINE,
+                               validator = lambda x: x is None or valid_trans_compound(x))
 
 def get_combinator(type_id, in_size = None):
     if ':' in type_id:
@@ -277,7 +281,7 @@ class Interpolation(Add):
         self._compose = _compose
 
     def compose(self, lw_emb, rw_emb, is_jnt):
-        if self._use_condenser and is_jnt.any():
+        if self._use_condenser and isinstance(is_jnt, torch.Tensor) and is_jnt.any():
             helper = condense_helper(is_jnt.squeeze(dim = 2), as_existence = True)
             cds_lw, seq_idx = condense_left(lw_emb, helper, get_indice = True)
             cds_rw          = condense_left(rw_emb, helper)
@@ -286,5 +290,11 @@ class Interpolation(Add):
             return release_left(cds_cmb, seq_idx)
         return self._compose(lw_emb, rw_emb)
 
+    def itp_rhs_bias(self):
+        if hasattr(self, '_itp_r'):
+            if hasattr(self._itp_r, 'bias'):
+                return self._activation(self._itp_r.bias)
+        elif hasattr(self._itp, 'bias'):
+            return self._activation(self._itp.bias)
     # def extra_repr(self):
     #     return self._extra_repr

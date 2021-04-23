@@ -128,6 +128,7 @@ tune_epoch_type  = BaseType(None, as_exception = True, validator = valid_epoch)
 train_max_len    = BaseType(None, validator = valid_size, as_exception = True)
 fill_placeholder = '//FILL//THIS//'
 trapezoid_height = BaseType(None, valid_size, as_exception = True)
+combine_static = BaseType(0, as_index = True, default_set = (None, 'add', 'scalar_add', 'vector_add'))
 
 from utils.str_ops import strange_to
 def strange_validator(x):
@@ -141,7 +142,7 @@ def strange_validator(x):
 
 str_num_array = BaseType('', validator = strange_validator)
 
-NIL, UNK, BOS, EOS = '<nil>', '<unk>', '<bos>', '<eos>'
+NIL, PAD, UNK, BOS, EOS = '<nil>', '<pad>', '<unk>', '<bos>', '<eos>'
 M_TRAIN = 'train'
 M_DEVEL = 'devel'
 M_TEST  = 'test'

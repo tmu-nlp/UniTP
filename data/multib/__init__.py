@@ -136,14 +136,7 @@ def signals(tree, w2i = keep_str, t2i = keep_str, l2i = keep_str):
         layers_of_splits.append(split_layer)
     return words, tags, layers_of_labels, layers_of_splits
 
-def width_ratio(x):
-    assert 0 <= x <= 1
-    return '▏▎▍▌▋▊▉'[int(7 * x - 1e-8)]
-
-def height_ratio(x):
-    assert 0 <= x <= 1
-    return '▁▂▃▄▅▆▇▉'[int(8 * x - 1e-8)]
-
+from utils.str_ops import height_ratio
 def coord_vote(units, fence_location):
     if units.sum() > 0:
         pro_num_ratio = (units > 0).sum() / units.size
