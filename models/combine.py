@@ -135,7 +135,7 @@ class Add(nn.Module):
         return new_ext, new_jnt, lw_relay, rw_relay, new_emb
 
     def compose(self, lw_emb, rw_emb, is_jnt):
-        return None # Default by add
+        return lw_emb + rw_emb # Default by add
 
 class Mul(Add):
     def compose(self, lw_emb, rw_emb, is_jnt):

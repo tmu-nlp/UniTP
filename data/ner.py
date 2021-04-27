@@ -23,7 +23,7 @@ data_type = dict(vocab_size     = vocab_size,
                                        insert        = augment,
                                        substitute    = augment))
 
-from data.backend import CharTextHelper, PAD, tqdm
+from data.backend import CharTextHelper, add_char_from_word, PAD, tqdm
 class NerReader(WordBaseReader):
     def __init__(self,
                  vocab_dir,

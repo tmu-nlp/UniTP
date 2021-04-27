@@ -1643,7 +1643,7 @@ if desktop:
                     words = fields.token[1:length + 1]
                     tags = fields.tag[1:length + 1]
                     bottom = tuple((bid, vocabs.token[wid], vocabs.tag[tid]) for bid, (wid, tid) in enumerate(zip(words, tags)))
-                    return draw_str_lines(bottom, fields.tree, root_stamp = stamp)
+                    return draw_str_lines(bottom, fields.tree, attachment = stamp)
                 lines = get_lines(self._head, ' (gold)')
                 if show_all_trees:
                     for tid in range(self._time_slider[0]):

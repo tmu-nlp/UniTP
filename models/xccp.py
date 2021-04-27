@@ -68,6 +68,7 @@ def predict_disco_sections(disco_2d, layer_fence, dis_batch, dis_length, dis_ind
     clear_3d[:, seq, seq] = 1
 
     dis_comps = []
+    layer_2d_logits = {}
     for clear_2d, dis_len, bid, indice in zip(clear_3d, dis_length, dis_batch, dis_indice):
         #                                       final      first     final      first
         # 4578
@@ -80,9 +81,11 @@ def predict_disco_sections(disco_2d, layer_fence, dis_batch, dis_length, dis_ind
         in_deg  = b_clear_2d.sum(dim = 0)
         out_deg = b_clear_2d.sum(dim = 1)
         # import pdb; pdb.set_trace()
+        fallback = False
         if (in_deg != out_deg).any():
             comps = fb_comps[:, :dis_len]
             comp_idx = fb_comp_idx[:dis_len]
+            fallback = True
         else:
             comps, comp_idx = b_clear_2d.unique(dim = 0, return_inverse = True) # no way: map_fn
             while not (comps.sum(dim = 0) == 1).all():
@@ -97,6 +100,8 @@ def predict_disco_sections(disco_2d, layer_fence, dis_batch, dis_length, dis_ind
                 # import pdb; pdb.set_trace()
                 comps = fb_comps[:, :dis_len]
                 comp_idx = fb_comp_idx[:dis_len]
+                fallback = True
+        layer_2d_logits[int(bid)] = clear_2d.cpu().numpy(), fallback
 
         # num_comps, _ = comps.shape
         # comp_idx = (comp_dim[:num_comps, None] * comps).sum(dim = 0) # 0101 (or 1010)
@@ -161,7 +166,7 @@ def predict_disco_sections(disco_2d, layer_fence, dis_batch, dis_length, dis_ind
     # cate_time = time() - start - svd_time
     # with open('svd_time.csv', 'a+') as fw:
     #     fw.write(f'{dis_size},{dis_max_children},{svd_time},{cate_time}\n')
-    return sections
+    return sections, layer_2d_logits
 
 
 from models.types import rnn_module_type, discontinuous_attention_hint, activation_type, logit_type, fmin, fmax
@@ -369,6 +374,7 @@ class DiscoMultiStem(MultiStem):
                     sections = layer_fence.cumsum(dim = 1)
                     # layers_of_slice.append((dis_slice_start, dis_slice_start))
                     # layers_of_shape.append(None)
+                    layers_of_disco_2d.append({})
                 else:
                     # layers_of_space.append(disco_2d.shape)
                     # dis_slice_end = dis_slice_start + disco_2d.shape.numel()
@@ -379,9 +385,9 @@ class DiscoMultiStem(MultiStem):
                     #0010__1__1 v (result: layer_fence)
                     #000011011_ ^
                     layer_fence &= discontinuous.logical_not()
-                    disco_2d = self._sigmoid(disco_2d_logits)
-                    layers_of_disco_2d.append(disco_2d.reshape(-1))
-                    sections = predict_disco_sections(disco_2d, layer_fence, dis_batch, dis_length, dis_indice)
+                    disco_2d_logits = self._sigmoid(disco_2d_logits) # need to be in a arange (not hard compress)
+                    sections, disco_2d = predict_disco_sections(disco_2d_logits, layer_fence, dis_batch, dis_length, dis_indice)
+                    layers_of_disco_2d.append(disco_2d)
                 sections = torch.where(seq_idx < layer_len, sections, torch.zeros_like(sections))
                 layers_of_space.append(sections)
                 
@@ -406,10 +412,11 @@ class DiscoMultiStem(MultiStem):
         existence  = torch.cat(layers_of_existence, dim = 1)
         fence      = torch.cat(layers_of_fence,     dim = 1)
         disco_1d   = torch.cat(layers_of_disco_1d, dim = 1)
-        disco_2d   = torch.cat(layers_of_disco_2d, dim = 0) if layers_of_disco_2d else None
         if teacher_forcing:
             weight = space = None
+            disco_2d = torch.cat(layers_of_disco_2d, dim = 0) if layers_of_disco_2d else None
         else:
+            disco_2d = layers_of_disco_2d
             if not layers_of_space:
                 assert not layers_of_weight
                 space  = torch.zeros(batch_size, 0, dtype = batch_dim.dtype, device = batch_dim.device)

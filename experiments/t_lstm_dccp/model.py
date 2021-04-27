@@ -34,7 +34,7 @@ class DiscoRnnTree(BaseRnnTree):
             self._word_emb = None
             input_dim = model_dim
         if use['char_rnn']:
-            self._char_rnn = PadRNN(num_chars, None, None, fence_dim = model_dim, **char_rnn)
+            self._char_rnn = PadRNN(num_chars, None, None, fence_dim = model_dim, char_space_idx = 1, **char_rnn)
         else:
             self._char_rnn = None
             

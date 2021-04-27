@@ -626,7 +626,7 @@ class SpanTale:
         return blocks
 
 from utils.str_ops import len_ea
-def draw_str_lines(bottom, top_down, reverse = True, root_stamp = '', wrap_len = 1, line_start = ''):
+def draw_str_lines(bottom, top_down, reverse = True, attachment = {}, wrap_len = 1, line_start = ''):
     if reverse:
         LC, MC, RC, MP = '┌┬┐┴'
     else:
@@ -642,6 +642,8 @@ def draw_str_lines(bottom, top_down, reverse = True, root_stamp = '', wrap_len =
     else:
         assert len(bottom) == 1
         root_id = bottom[0][0]
+    if isinstance(attachment, str):
+        attachment = {root_id: attachment}
     str_lines = []
     word_line = line_start
     tag_line = line_start
@@ -676,7 +678,7 @@ def draw_str_lines(bottom, top_down, reverse = True, root_stamp = '', wrap_len =
                span_tale.overlapped(min(p for _, p in cid_pos_pairs), max(p for _, p in cid_pos_pairs)):
                 future_top_down[pid].extend(cid_pos_pairs) # exclude ones with intersections
                 continue
-            if  num_children == 1:
+            if num_children == 1:
                 _, mid_pos = cid_pos_pairs[0]
                 unit = '│'
                 line_line += ((mid_pos - len(line_line)) * ' ') + unit
@@ -718,8 +720,8 @@ def draw_str_lines(bottom, top_down, reverse = True, root_stamp = '', wrap_len =
                 line_line += ((mid_pos - len(line_line)) * ' ')[:-unit_half] + unit
                 # print('Comp:', unit)
             label = top_down[pid].label
-            if pid == root_id:
-                label += root_stamp
+            if attach := attachment.get(pid):
+                label += attach
             cons_half = round(len(label) / 2)
             if cons_half:
                 cons_line += ((mid_pos - len(cons_line)) * ' ')[:-cons_half] + label

@@ -21,7 +21,7 @@ def get_configs(recorder = None):
                        ner_data.with_bi_prefix,
                        ner_data.with_pos_tag,
                        ner_data.vocab_size,
-                       CharTextHelper)
+                       CharTextHelper if ner_model.use.char_rnn else None)
     
     def get_datasets(mode):
         datasets = {}

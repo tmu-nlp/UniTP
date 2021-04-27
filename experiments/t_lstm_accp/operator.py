@@ -73,8 +73,9 @@ class MultiOperator(PennOperator):
             supervised_signals['supervised_fence'] = gold_fences = unpack_fence(batch['fence'], batch['segment'], True)
             # supervised_signals['keep_low_attention_rate'] = self._train_config.keep_low_attention_rate
         if 'sub_idx' in batch:
-            for x in ('sub_idx', 'sub_fence'):
-                supervised_signals[x] = batch[x]
+            supervised_signals['sub_idx'] = batch['sub_idx']
+        if 'sub_fence' in batch:
+            supervised_signals['sub_fence'] = batch['sub_fence']
         elif 'plm_idx' in batch:
             for x in ('plm_idx', 'plm_start'):
                 supervised_signals[x] = batch[x]

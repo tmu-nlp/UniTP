@@ -247,6 +247,7 @@ def disco_tree(word, bottom_tag,
     non_terminal_end = NTS
 
     add_weight_base = layers_of_weight is not None
+    weight_nodes = {}
 
     if track_fall_back:
         def fallback(non_terminal_end):
@@ -288,6 +289,7 @@ def disco_tree(word, bottom_tag,
                         non_terminals[non_terminal_end] = f'{layers_of_weight[lid][cid, 0] * 100:.0f}%'
                         top_down[non_terminal_end].add(track_nid)
                         track_nodes[cid] = non_terminal_end
+                        weight_nodes[track_nid] = lid
                         non_terminal_end += 1
                 labels = layers_of_label[lid + 1][pid]
                 labels = [labels] if perserve_sub or labels[0] in '#_' else labels.split('+')
@@ -326,6 +328,8 @@ def disco_tree(word, bottom_tag,
     for nid, label in non_terminals.items():
         top_down[nid] = TopDown(label, top_down.pop(nid))
 
+    if add_weight_base:
+        return terminals, top_down, non_terminal_end - 1, error_layer_id, weight_nodes
     return terminals, top_down, non_terminal_end - 1, error_layer_id
 
 

@@ -19,7 +19,12 @@ class VisWorker(Process): # designed for decoding batch
                 break
             args, kw_args = inp
             start      = time()
-            vis._process(*args, **kw_args)
+            try:
+                vis._process(*args, **kw_args)
+            except Exception as err:
+                if hasattr(vis, 'close'):
+                    vis.close()
+                raise err
             proc_time += time() - start
         out_q.put((vis._after(), vis._attrs, proc_time))
 
@@ -69,7 +74,13 @@ class VisRunner:
             iq.put((args, kw_args))
         else:
             start = time()
-            self._vis._process(*args, **kw_args)
+            try:
+                self._vis._process(*args, **kw_args)
+            except Exception as err:
+                if hasattr(self._vis, 'close'):
+                    self._vis.close()
+                raise err
+            
             self._timer += time() - start
 
     def after(self):

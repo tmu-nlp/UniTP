@@ -529,6 +529,9 @@ class PadRNN(nn.Module):
         fence_hidden, _ = self._fence_emb(char_emb, self.get_h0c0(batch_size))
         if fence is None:
             helper = condense_helper(char_idx == self._pad, True, offset)
+            fence_hidden = fence_hidden.view(batch_size, char_len, 2, -1)
+            fw = fence_hidden[:, :, 0]
+            bw = fence_hidden[:, :, 1]
         else:    
             existence = char_idx > 0
             fw, bw = birnn_fwbw(fence_hidden, self._tanh(self._pad), existence)

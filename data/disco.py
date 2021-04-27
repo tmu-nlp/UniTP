@@ -90,19 +90,14 @@ class DiscoMultiReader(WordBaseReader):
         v2is = v2is['token'][1], v2is['tag'][1], v2is['label'][1]
         samples = defaultdict(list)
         corpus, in_train_set, in_devel_set, in_test_set, from_tree_fn = data_splits
-        from tqdm import tqdm
-        for fid, tree, dep in tqdm(corpus, 'Loading corpus'):
-            try:
-                keeper = from_tree_fn(tree, v2is, dep, has_greedy_sub)
-            except AssertionError: # 2 multi-attatchment in tiger test set
-                continue
+        for fid, tree, dep in corpus:
             if in_train_set(fid):
-                samples[M_TRAIN].append(keeper)
+                samples[M_TRAIN].append((tree, dep))
             elif in_devel_set(fid):
-                samples[M_DEVEL].append(keeper)
+                samples[M_DEVEL].append((tree, dep))
             elif in_test_set(fid):
-                samples[M_TEST].append(keeper)
-        self._load_options = samples, word_trace, extra_text_helper, c2i
+                samples[M_TEST].append((tree, dep))
+        self._load_options = from_tree_fn, v2is, has_greedy_sub, word_trace, samples, extra_text_helper, c2i
 
     def batch(self,
               mode,
@@ -114,8 +109,18 @@ class DiscoMultiReader(WordBaseReader):
               min_gap        = 0,
               sort_by_length = True):
         from data.cross.dataset import DynamicCrossDataset
-        samples, word_trace, extra_text_helper, c2i = self._load_options
-        len_sort_ds = DynamicCrossDataset(samples[mode],
+        from tqdm import tqdm
+        from_tree_fn, v2is, has_greedy_sub, word_trace, samples, extra_text_helper, c2i = self._load_options
+        signals = []
+        errors = defaultdict(int)
+        for tree, dep in tqdm(samples[mode], f'Load {mode.title()}set'):
+            try:
+                signals.append(from_tree_fn(tree, v2is, dep, has_greedy_sub))
+            except AssertionError as ae:
+                errors[ae.args[0]] += 1
+        if errors:
+            print(errors)
+        len_sort_ds = DynamicCrossDataset(signals,
                                           self.device,
                                           medium_factors,
                                           min_len,

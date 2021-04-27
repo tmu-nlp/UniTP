@@ -214,7 +214,7 @@ class NerVis(BaseVis):
         self._art_lines = []
         self._tsv_lines = head_tsv_lines, []
         self._art = join(work_dir, f'data.{epoch}.art')
-        self._csv = join(work_dir, f'data.{epoch}.tsv')
+        self._tsv = join(work_dir, f'data.{epoch}.tsv')
         self._err = join(work_dir, f'data.{epoch}.rpt')
         self._fnames = htree, dtree
         self._head_tree = flush_heads
@@ -227,6 +227,9 @@ class NerVis(BaseVis):
         self._data_tree = open(dtree, 'w')
 
     def __del__(self):
+        self.close()
+
+    def close(self):
         if self._head_tree: self._head_tree.close()
         if self._data_tree: self._data_tree.close()
 
@@ -290,7 +293,7 @@ class NerVis(BaseVis):
         #    1    2    0  100.00  50.00     1      1    2      0      2     1    50.00
 
         head_tsv_lines, data_tsv_lines = self._tsv_lines
-        with open(self._csv, 'w') as fw:
+        with open(self._tsv, 'w') as fw:
             for (words, h_bio), d_bio in zip(head_tsv_lines, data_tsv_lines):
                 for wd, h, d in zip(words, h_bio, d_bio):
                     fw.write(wd + '\t' + h + '\t' + d + '\n')

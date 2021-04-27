@@ -34,7 +34,10 @@ class ContinuousRnnTree(BaseRnnTree):
             self._word_emb = None
             input_dim = model_dim
         if use['char_rnn']:
-            self._char_rnn = PadRNN(num_chars, None, None, fence_dim = model_dim, **char_rnn)
+            embed_dim = char_rnn['embed_dim']
+            self._char_rnn = PadRNN(num_chars, None, None, fence_dim = embed_dim, char_space_idx = 1, **char_rnn)
+            self._char_lin = nn.Linear(embed_dim, model_dim)
+            self._char_act = nn.Tanh()
         else:
             self._char_rnn = None
 
@@ -68,7 +71,11 @@ class ContinuousRnnTree(BaseRnnTree):
         if self._word_emb:
             static, bottom_existence = self._word_emb(word_idx, tune_pre_trained)
             if self._char_rnn:
-                static = static + self._char_rnn(sub_idx, sub_fence, offset) * bottom_existence
+                char_info = self._char_rnn(sub_idx, sub_fence, offset)
+                char_info = self._stem_dp(char_info)
+                char_info = self._char_lin(char_info)
+                char_info = self._char_act(char_info)
+                static = static + char_info * bottom_existence
         else:
             bottom_existence = word_idx > 0
             bottom_existence.unsqueeze_(dim = 2)

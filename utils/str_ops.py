@@ -118,6 +118,10 @@ def height_ratio(x):
     assert 0 <= x <= 1
     return '▁▂▃▄▅▆▇▉'[int(8 * x - 1e-8)]
 
+def space_height_ratio(x):
+    assert 0 <= x <= 1
+    return ' ▁▂▃▄▅▆▇▉'[int(9 * x - 1e-8)]
+
 def str_ruler(length, upper = True, append_length = True):
     unit = '┃╵╵╵╵╿╵╵╵╵' if upper else '┃╷╷╷╷╽╷╷╷╷'
     rule = ''
