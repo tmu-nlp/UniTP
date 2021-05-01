@@ -27,6 +27,7 @@ def _multi_hash(bottom, top_down, factor):
                 location.append(nid)
                 children.append(node)
                 bottom_trace[nid] = node
+                bottom_flag[nid] = False
 
         if isinstance(factor, str):
             if factor == F_RANDOM:
@@ -64,6 +65,7 @@ def _continuous_hash(bottom, bottom_top_down, future_top_down, gaps, boundaries,
                 location.append(nid)
                 children.append(node)
                 bottom_trace[nid] = node
+                bottom_flag[nid] = False
 
         factor = random() if factor is None else factor
         if gaps[p_node] == 0: # 0 does not effect order in the next bottom
@@ -381,7 +383,7 @@ class TreeKeeper:
     def word_tag(self):
         return self._word_tag
     
-    def stratify(self, factor = F_RANDOM, balancing = False):
+    def stratify(self, factor = F_LEFT, balancing = False):
         bottom, node2tag, bottom_unary, top_down, l2i, root_id, dep = self._materials
         if balancing:
             if self._balanced_top_down is None:

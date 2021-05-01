@@ -223,6 +223,49 @@ class ExportWriter:
         with open(fname, 'w') as fw:
             fw.write('\n'.join(self._lines))
 
+def is_nonterminal(node):
+    if node[0] == '#':
+        core = node[1:]
+        if core.isdigit() and (core := int(core)) > 499:
+            return core
+
+from data.cross import TopDown
+def read_export_samples(fname):
+    sample = None
+    with open(fname) as fr:
+        for line in fr:
+            if line.startswith('#BOS'):
+                sample = [line]
+            elif line.startswith('#EOS'):
+                sample.append(line)
+                yield sample
+                sample = None
+            else:
+                sample.append(line)
+
+def parse_export_sample(lines):
+    bottom = []
+    top_down = defaultdict(list)
+    non_terminals = {}
+    for line in lines[1:-1]:
+        cid_or_word, _, _, label, _, _, pid = line.split('\t')
+        pid = int(pid)
+        cid = is_nonterminal(cid_or_word)
+        if cid:
+            non_terminals[cid] = label
+            top_down[pid].append(cid)
+        else:
+            nid = len(bottom)
+            bottom.append((nid, cid_or_word, label))
+            top_down[pid].append(nid)
+    root = top_down.pop(0)
+    assert len(root) == 1
+    root = root.pop()
+    for pid, label in non_terminals.items():
+        top_down[pid] = TopDown(label, {n: '--' for n in top_down[pid]})
+    # import pdb; pdb.set_trace()
+    return bottom, top_down, root
+
 def export_string(sent_id, bottom, top_down, root_id):
     lines = f'#BOS {sent_id}\n'
     bottom_up = {}

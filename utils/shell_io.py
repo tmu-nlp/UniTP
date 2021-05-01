@@ -87,7 +87,7 @@ def discodop_eval(fhead, fdata, prm_file, rpt_file = None):
     command = ['discodop', 'eval', fhead, fdata, prm_file]
     dst = run(command, stdout = PIPE, stderr = PIPE)
     total = dst.stdout.decode('ascii')
-    smy_string = total.rfind('_________ Summary _________')
+    smy_string = total.rfind(' Summary ')
     smy_string = total[smy_string:].split('\n')
     smy = dict(TF = 0, TP = 0, TR = 0, DF = 0, DP = 0, DR = 0)
     for line in smy_string:
@@ -100,7 +100,7 @@ def discodop_eval(fhead, fdata, prm_file, rpt_file = None):
     command.append('--disconly')
     dst = run(command, stdout = PIPE, stderr = PIPE)
     discontinuous = dst.stdout.decode('ascii')
-    smy_string = discontinuous.rfind('_________ Summary _________')
+    smy_string = discontinuous.rfind(' Summary ')
     discontinuous = discontinuous[smy_string:]
     for line in discontinuous.split('\n'):
         if line.startswith('labeled recall:'):

@@ -237,10 +237,7 @@ class DiscoOperator(Operator):
     @staticmethod
     def combine_scores_and_decide_key(epoch, ds_scores):
         scores = ds_scores[get_sole_key(ds_scores)]
-        if scores['TF'] + scores['DF'] > 0:
-            scores['key'] = f_score(scores['TF'], scores['DF'], 0.5)
-        else:
-            scores['key'] = 0
+        scores['key'] = scores.get('TF', 0.0)
         return scores
         
     def optuna_model(self, train_params):

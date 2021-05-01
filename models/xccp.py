@@ -44,7 +44,7 @@ def predict_disco_hint(dis_batch, bbt_zeros, existence, seq_idx, discontinuous, 
     # 001132324 (sup)
     return fence_logits, dis_exist.sum(dim = 1), dis_indice, get_dis_emb
 
-def predict_disco_sections(disco_2d, layer_fence, dis_batch, dis_length, dis_indice):
+def predict_disco_sections(disco_2d, layer_fence, dis_batch, dis_length, dis_indice, head_by = 'max_in'):
     dis_size, dis_max_children, _ = disco_2d.shape
     fb_comps = torch.ones(1, dis_max_children, dtype = torch.bool, device = dis_batch.device)
     fb_comp_idx = torch.zeros(dis_max_children, dtype = dis_batch.dtype, device = dis_batch.device)
@@ -101,11 +101,22 @@ def predict_disco_sections(disco_2d, layer_fence, dis_batch, dis_length, dis_ind
                 comps = fb_comps[:, :dis_len]
                 comp_idx = fb_comp_idx[:dis_len]
                 fallback = True
-        layer_2d_logits[int(bid)] = clear_2d.cpu().numpy(), fallback
+        layer_2d_logits[int(bid)] = clear_2d.cpu().numpy(), comp_idx.unique().cpu().numpy(), fallback
 
         # num_comps, _ = comps.shape
         # comp_idx = (comp_dim[:num_comps, None] * comps).sum(dim = 0) # 0101 (or 1010)
-        dis_b_max = blocky_max(comp_idx, clear_2d.sum(dim = 0), False) # 0110 (for 57)
+        if head_by == 'max_in':
+            head_score = clear_2d.sum(dim = 0)
+        elif head_by == 'max_out':
+            head_score = clear_2d.sum(dim = 1)
+        elif head_by == 'leftmost':
+            head_score = seq[:dis_len].flip(0) + 1 # +1 for blocky_max
+        elif head_by == 'rightmost':
+            head_score = seq[:dis_len] + 1 # +1 for blocky_max
+        else:
+            raise ValueError('Unknown head_by = ' + head_by)
+
+        dis_b_max = blocky_max(comp_idx, head_score, False) # 0110 (for 57)
         comp_max_idx = comp_idx[dis_b_max] # 0101 -> 01 or 10
         
         indice = indice[:dis_len]
@@ -172,14 +183,15 @@ def predict_disco_sections(disco_2d, layer_fence, dis_batch, dis_length, dis_ind
 from models.types import rnn_module_type, discontinuous_attention_hint, activation_type, logit_type, fmin, fmax
 from models.combine import get_combinator, get_components, valid_trans_compound
 from utils.types import orient_dim, hidden_dim, frac_2, frac_4, frac_5, num_ori_layer, true_type, false_type, BaseType
+head_by = BaseType(0, as_index = True, default_set = ('max_in', 'max_out', 'leftmost', 'rightmost'))
 disco_2d_from = BaseType(2, as_index = True, default_set = ('state.dot', 'unit.dot', 'state_unit.dot', 'unit_state.dot'
                                                             'state.cat', 'unit.cat', 'state_unit.cat', 'unit_state.cat'))
 stem_config = dict(space_dim           = orient_dim,
-                #    disco_dim           = orient_dim,
                    disco_indie_io      = false_type,
                    disco_1d_activation = activation_type,
                    disco_2d_activation = activation_type,
                    disco_2d_from       = disco_2d_from,
+                   disco_2d_decode_head= head_by,
                    disco_linear_dim    = orient_dim,
                    fence_linear_dim    = orient_dim,
                    space_module        = rnn_module_type,
@@ -199,6 +211,7 @@ class DiscoMultiStem(MultiStem):
                  disco_1d_activation,
                  disco_2d_activation,
                  disco_2d_from,
+                 disco_2d_decode_head,
                  space_module,
                  disco_linear_dim,
                  fence_linear_dim,
@@ -224,6 +237,7 @@ class DiscoMultiStem(MultiStem):
         self._disco_2d_act = disco_2d_activation()
         self._disco_1d_l2 = nn.Linear(disco_linear_dim, 1)
         disco_2d_from, method = disco_2d_from.split('.')
+        self._head_by = disco_2d_decode_head
         if disco_2d_from == 'state':
             self._select = lambda g, s, u: (g(s),) * 2
         elif disco_2d_from == 'unit':
@@ -386,7 +400,7 @@ class DiscoMultiStem(MultiStem):
                     #000011011_ ^
                     layer_fence &= discontinuous.logical_not()
                     disco_2d_logits = self._sigmoid(disco_2d_logits) # need to be in a arange (not hard compress)
-                    sections, disco_2d = predict_disco_sections(disco_2d_logits, layer_fence, dis_batch, dis_length, dis_indice)
+                    sections, disco_2d = predict_disco_sections(disco_2d_logits, layer_fence, dis_batch, dis_length, dis_indice, self._head_by)
                     layers_of_disco_2d.append(disco_2d)
                 sections = torch.where(seq_idx < layer_len, sections, torch.zeros_like(sections))
                 layers_of_space.append(sections)
@@ -410,7 +424,7 @@ class DiscoMultiStem(MultiStem):
 
         embeddings = torch.cat(layers_of_u_emb,     dim = 1)
         existence  = torch.cat(layers_of_existence, dim = 1)
-        fence      = torch.cat(layers_of_fence,     dim = 1)
+        fence      = torch.cat(layers_of_fence,     dim = 1) if layers_of_fence else torch.zeros(batch_size, 0, dtype = unit_emb.dtype, device = unit_emb.device)
         disco_1d   = torch.cat(layers_of_disco_1d, dim = 1)
         if teacher_forcing:
             weight = space = None

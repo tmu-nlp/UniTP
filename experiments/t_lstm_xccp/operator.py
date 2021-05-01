@@ -229,12 +229,19 @@ def batch_trees(b_word, b_tag, b_label, b_space, b_segment, b_seg_length, i2vs, 
 
 
 from data.cross.evalb_lcfrs import DiscoEvalb, ExportWriter, read_param
-from utils.file_io import isfile, remove
+from utils.file_io import isfile, remove, isdir, mkdir, listdir, join
 from utils.str_ops import cat_lines, height_ratio, space_height_ratio
 class DiscoMultiVis(DiscoVis):
     def __init__(self, epoch, work_dir, i2vs, head_trees, logger, evalb_lcfrs_kwargs, discodop_prm, draw_trees):
         super().__init__(epoch, work_dir, i2vs, head_trees, logger, evalb_lcfrs_kwargs, discodop_prm, None, False)
-        self._draw_trees = self._dtv.join(f'tree.{epoch}_%03d.')
+        if draw_trees:
+            draw_trees = self._dtv.join(f'tree.{epoch}.art')
+            if isdir(draw_trees):
+                for fname in listdir(draw_trees):
+                    remove(join(draw_trees, fname))
+            else:
+                mkdir(draw_trees)
+        self._draw_trees = draw_trees
 
     def _process(self, batch_id, batch):
         bid_offset, _ = self._evalb.total_missing
@@ -266,6 +273,7 @@ class DiscoMultiVis(DiscoVis):
             has_disco_2d = d_disco_2d is not None and any(l for l in d_disco_2d)
             c_lines = d_lines = m_lines = f'Batch #{batch_id} ───────────────────────────────────────────\n'
             c_cnt = d_cnt = m_cnt = 0
+            d_has_n_comps = d_has_n_fallback = m_has_n_comps = m_has_n_fallback = 0
             for sid, (btm, td, rt, error, wns) in enumerate(batch_trees(h_token, d_tag, d_label, d_space, d_segment, d_seg_length, i2vs, 'VROOT', d_weight)):
                 bracket_match, p_num_brackets, g_num_brackets, dbm, pdbc, gdbc, tag_match, g_tag_count = evalb_lines[sid]
                 lines = f'Sent #{sid} | #{bid_offset + sid}: '
@@ -277,15 +285,21 @@ class DiscoMultiVis(DiscoVis):
                     if not gdbc and pdbc:
                         tag_line += ' overdone'
 
+                has_n_comps = has_n_fallback = 0
                 if has_disco_2d and any(sid in l for l in d_disco_2d):
                     base_lines = ['2D ']
                     base_lines += [''] * max(len(l[sid][0]) for l in d_disco_2d if sid in l)
                     for lid, l_disco_2d in enumerate(d_disco_2d):
                         if sid in l_disco_2d:
                             new_lines = f'#{lid + 1}'
-                            mat, fallback = l_disco_2d[sid]
+                            mat, comp, fallback = l_disco_2d[sid]
+                            n_comps, = comp.shape
                             if fallback:
-                                new_lines += '*'
+                                new_lines += '**'
+                                has_n_fallback += 1
+                            elif n_comps > 1:
+                                new_lines += f'*{n_comps}'
+                                has_n_comps = max(has_n_comps, n_comps)
                             new_lines = [new_lines]
                             for row in mat:
                                 new_lines.append(''.join(space_height_ratio(val) for val in row) + ' | ')
@@ -309,8 +323,10 @@ class DiscoMultiVis(DiscoVis):
                     else:
                         lines += 'Exact Bracketing Match | ' + tag_line + '\n\n'
                     lines += '\n'.join(draw_str_lines(btm, td, attachment = heights))
-                    m_lines += lines + disco_2d_lines
+                    m_lines += lines + disco_2d_lines + '\n\n\n'
                     m_cnt += 1
+                    m_has_n_fallback = max(m_has_n_fallback, has_n_fallback)
+                    m_has_n_comps = max(m_has_n_comps, has_n_comps)
                 else:
                     lines += f'Bracketing {p_num_brackets} > {bracket_match} < {g_num_brackets} | '
                     lines += tag_line + '\n\n'
@@ -319,12 +335,25 @@ class DiscoMultiVis(DiscoVis):
                     if pdbc or gdbc:
                         d_lines += lines + disco_2d_lines + '\n\n\n'
                         d_cnt += 1
+                        d_has_n_fallback = max(d_has_n_fallback, has_n_fallback)
+                        d_has_n_comps = max(d_has_n_comps, has_n_comps)
                     else:
                         c_lines += lines + disco_2d_lines + '\n\n\n'
                         c_cnt += 1
-            fname_prefix = self._draw_trees % batch_id
+            fname_prefix = join(self._draw_trees, f'{batch_id:03d}.')
             total = c_cnt + d_cnt + m_cnt
-            for suffix, lines, cnt in zip(('.c.art', '.d.art', '.m.art'), (c_lines, d_lines, m_lines), (c_cnt, d_cnt, m_cnt)):
+            for suffix, lines, cnt in zip('cdm', (c_lines, d_lines, m_lines), (c_cnt, d_cnt, m_cnt)):
                 if cnt > 0:
+                    if suffix == 'd':
+                        if d_has_n_fallback:
+                            suffix += '.fb' if d_has_n_fallback < 2 else f'.{d_has_n_fallback}fb'
+                        if d_has_n_comps:
+                            suffix += '.comps' if d_has_n_comps < 3 else f'.{d_has_n_comps}comps'
+                    if suffix == 'm':
+                        if m_has_n_fallback:
+                            suffix += '.fb' if m_has_n_fallback < 2 else f'.{m_has_n_fallback}fb'
+                        if m_has_n_comps:
+                            suffix += '.comps' if m_has_n_comps < 3 else f'.{m_has_n_comps}comps'
+                    suffix = '.' + suffix + '.art'
                     with open(fname_prefix + f'{height_ratio(cnt / total)}' + suffix, 'w') as fw:
                         fw.write(lines)

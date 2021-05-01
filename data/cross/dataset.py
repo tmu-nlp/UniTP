@@ -290,7 +290,7 @@ class DynamicCrossDataset(LengthOrderedDataset):
                 lines += '          Yes'
             if original_prob:
                 lines += '      No (Origin without _SUB)'
-            lines = ['Load ' + byte_style('dynamic D.M. treebank', '5'), byte_style(lines, '2')]
+            lines = ['Load ' + byte_style('dynamic D.M. treebank', '7'), byte_style(lines, '2')]
             for factor, o_prob in factors['others'].items():
                 line = ''
                 prob = balanced_prob * o_prob
@@ -453,7 +453,7 @@ def fill_space_layers(batch_size, space_layers, tensor_seg):
                 tensor[bid, start:seq_end] = seq
                 tensor[bid, start:seq_end] += 1
             else:
-                tensor[bid, 0] = 1
+                tensor[bid, start] = 1
         start = end
     return tensor
 
