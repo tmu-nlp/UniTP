@@ -238,6 +238,28 @@ class StaticCrossDataset(LengthOrderedDataset):
         field_columns['offset'] = pad_len
         return field_columns
 
+def continuous_fence(space_layer, disco_set):
+    count = 0
+    split_layer = []
+    for lhs, rhs in zip(space_layer, space_layer[1:] + [-1]):
+        if lhs in disco_set:
+            continue
+        else:
+            count += 1
+        if lhs != rhs:
+            split_layer.append(count)
+    if split_layer:
+        split_layer.insert(0, 0)
+    return count, split_layer
+
+def total_fence(space_layer):
+    count = len(space_layer)
+    space_layer = [-1] + space_layer + [-1]
+    split_layer = []
+    for sid, (lhs, rhs) in enumerate(zip(space_layer, space_layer[1:])):
+        if lhs != rhs:
+            split_layer.append(sid)
+    return count, split_layer
 
 # from data.io import distribute_jobs
 from data.multib.dataset import fill_layers
@@ -252,6 +274,7 @@ class DynamicCrossDataset(LengthOrderedDataset):
                  min_gap  = 0,
                  extra_text_helper = None,
                  c2i = None,
+                 continuous_fence_only = True,
                  num_threads = 0):
 
         text = []
@@ -310,7 +333,7 @@ class DynamicCrossDataset(LengthOrderedDataset):
         if extra_text_helper:
             extra_text_helper = extra_text_helper(text, device, c2i)
         super().__init__(heads, lengths, factors, min_len, max_len, extra_text_helper)
-        self._device = device
+        self._device_cfo = device, continuous_fence_only
 
     def at_idx(self, idx, factor, length, helper_outputs):
         tree_keepers, heads = self._keepers_heads
@@ -325,6 +348,7 @@ class DynamicCrossDataset(LengthOrderedDataset):
 
     def _collate_fn(self, batch):
         field_columns = {}
+        device, continuous_fence_only = self._device_cfo
         for field, column in zip(self.heads, zip(*batch)):
             if field == 'length':
                 batch_size = len(column)
@@ -341,8 +365,8 @@ class DynamicCrossDataset(LengthOrderedDataset):
                     sl = [len(seq) for seq in layer]
                     segment.append(max(sl))
                     seg_len.append(sl)
-                field_columns['segment'] = torch.tensor(segment, device = self._device)
-                field_columns['seg_length'] = torch.tensor(seg_len, device = self._device).transpose(0, 1)
+                field_columns['segment'] = torch.tensor(segment, device = device)
+                field_columns['seg_length'] = torch.tensor(seg_len, device = device).transpose(0, 1)
                 tensor = fill_layers(column, segment, np.int32)
             elif field == 'space':
                 tensor = fill_space_layers(batch_size, column, segment[:-1])
@@ -358,22 +382,12 @@ class DynamicCrossDataset(LengthOrderedDataset):
                 for l_space, l_disco in zip(zip_longest(*space_column, fillvalue = []), zip_longest(*column, fillvalue = {})): # all layer slices [(), ] [(), ]
                     batch_layer_disco = [] # same dim with space
                     batch_layer_split = [] # splitting points for continuous constituents
-                    max_space_len = 0
+                    max_split_len = 0
                     for space_layer, disco_set in zip(l_space, l_disco): # every layer for a parse
-                        count = 0
-                        split_layer = []
-                        for lhs, rhs in zip(space_layer, space_layer[1:] + [-1]):
-                            if lhs in disco_set:
-                                continue
-                            else:
-                                count += 1
-                            if lhs != rhs:
-                                split_layer.append(count)
-                        if split_layer:
-                            split_layer.insert(0, 0)
+                        split_count, split_layer = continuous_fence(space_layer, disco_set) if continuous_fence_only else total_fence(space_layer)
                         batch_layer_split.append(split_layer)
-                        if count > max_space_len:
-                            max_space_len = count
+                        if split_count > max_split_len:
+                            max_split_len = split_count
                     comp_batch = []
                     max_comp_len = 0
                     max_comp_size = 0
@@ -390,7 +404,7 @@ class DynamicCrossDataset(LengthOrderedDataset):
                                 max_comp_len = num_comp_len
                             comp_batch.append((disco_set, disco_children))
                         batch_layer_disco.append(disco_children)
-                    split_segment.append(max_space_len + 1)
+                    split_segment.append(max_split_len + 1)
                     con_split_column.append(batch_layer_split)
                     dis_layer_column.append(batch_layer_disco)
 
@@ -403,8 +417,8 @@ class DynamicCrossDataset(LengthOrderedDataset):
                     shape.append((len(comp_batch), max_comp_size, max_comp_len))
 
                 field_columns['split_segment'] = split_segment
-                field_columns['dis_disco'] = torch.tensor(fill_bool_layers(batch_size, dis_layer_column, segment), device = self._device)
-                field_columns['con_split'] = torch.tensor(fill_bool_layers(batch_size, con_split_column, split_segment, True), device = self._device)
+                field_columns['dis_disco'] = torch.tensor(fill_bool_layers(batch_size, dis_layer_column, segment), device = device)
+                field_columns['con_split'] = torch.tensor(fill_bool_layers(batch_size, con_split_column, split_segment, True), device = device)
                 if any(components):
                     start = 0
                     # dis_slice_shape = []
@@ -436,9 +450,9 @@ class DynamicCrossDataset(LengthOrderedDataset):
                     # field_columns['dis_slice'] = component_segment(shape) 
                     # field_columns['dis_shape'] = shape # [(layer, comp_x, comp_y)] [b, 3]
                     # field_columns['dis_slice_shape'] = dis_slice_shape
-                    field_columns['dis_component'] = torch.tensor(comp, device = self._device)
+                    field_columns['dis_component'] = torch.tensor(comp, device = device)
 
-            field_columns[field] = torch.as_tensor(tensor, dtype = torch.long, device = self._device)
+            field_columns[field] = torch.as_tensor(tensor, dtype = torch.long, device = device)
         return field_columns
 
 def fill_space_layers(batch_size, space_layers, tensor_seg):

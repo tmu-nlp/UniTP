@@ -27,6 +27,7 @@ def get_configs(recorder = None):
     reader = DiscoMultiReader(penn.data_path,
                               penn.medium_factor.balanced > 0,
                               penn.unify_sub,
+                              penn.continuous_fence_only,
                               data_splits,
                               penn.vocab_size,
                               None,
@@ -50,6 +51,7 @@ def get_configs(recorder = None):
         task_params.append('num_chars')
     task_params = {pname: reader.get_to_model(pname) for pname in task_params}
     
+    model_config['space_layer']['continuous_fence_only'] = penn.continuous_fence_only
     model = DiscoMultiRnnTree(**model_config, **task_params)
     model.to(reader.device)
     train_config.create(label_log_freq_inv = reader.frequency('label', log_inv = True))

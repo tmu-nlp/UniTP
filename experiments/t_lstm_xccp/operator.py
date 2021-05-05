@@ -14,8 +14,10 @@ train_type = dict(loss_weight = dict(tag   = BaseType(0.2, validator = frac_open
                                      label = BaseType(0.3, validator = frac_open_0),
                                      fence = BaseType(0.5, validator = frac_open_0),
                                      disco_1d = BaseType(0.5, validator = frac_open_0),
-                                     disco_2d = BaseType(0.5, validator = frac_open_0)),
+                                     disco_2d = BaseType(0.5, validator = frac_open_0),
+                                     disco_2d_neg = BaseType(0.5, validator = frac_open_0)),
                   learning_rate = BaseType(0.001, validator = frac_open_0),
+                  disco_2d_negrate = BaseType(0.05, validator = frac_close),
                   multiprocessing_decode = false_type,
                   binary_hinge_loss = true_type,
                   tune_pre_trained = dict(from_nth_epoch = tune_epoch_type,
@@ -38,6 +40,8 @@ class DiscoMultiOperator(DiscoOperator):
                 space_layers.append(all_space[:, dis_start:dis_end])
                 disco_layers.append(dis_disco[:, dis_start:dis_end])
                 dis_start = dis_end
+            if self._train_config.disco_2d_negrate:
+                supervised_signals['disco_2d_negative'] = self._train_config.disco_2d_negrate
             # for con_seg in batch['split_segment']:
             #     con_end = con_start + con_seg
             #     print(con_split[:, con_start:con_end] * 1)
@@ -61,7 +65,7 @@ class DiscoMultiOperator(DiscoOperator):
 
         batch_time = time()
         (batch_size, batch_len, static, top3_label_logits,
-         existences, embeddings, weights, disco_1d_logits, fence_logits, disco_2d_logits, space, tag_logits, label_logits,
+         existences, embeddings, weights, disco_1d_logits, fence_logits, disco_2d_logits, disco_2d_negative, space, tag_logits, label_logits,
          segment, seg_length) = self._model(batch['token'], self._tune_pre_trained, **supervised_signals)
         batch_time = time() - batch_time
 
@@ -87,6 +91,12 @@ class DiscoMultiOperator(DiscoOperator):
                 disco_1d_logits = _sigmoid(disco_1d_logits)
                 if has_disco_2d:
                     disco_2d_logits = _sigmoid(disco_2d_logits)
+            
+            has_disco_2d_negative = disco_2d_negative is not None
+            if has_disco_2d_negative:
+                disco_2d_negative_accuracy = disco_2d_negative < 0
+                if not self._train_config.binary_hinge_loss:
+                    disco_2d_negative = _sigmoid(disco_2d_negative)
 
             tag_loss, label_loss = self._model.get_losses(batch, tag_logits, label_logits)
             if self._train_config.binary_hinge_loss:
@@ -94,11 +104,15 @@ class DiscoMultiOperator(DiscoOperator):
                 disco_1d_loss = hinge_loss(disco_1d_logits, batch['dis_disco'], None)
                 if has_disco_2d:
                     disco_2d_loss = hinge_loss(disco_2d_logits, batch['dis_component'], None)
+                    if has_disco_2d_negative:
+                        disco_2d_negloss = hinge_loss(disco_2d_negative, torch.zeros_like(disco_2d_negative, dtype = torch.bool), None)
             else:
                 fence_loss = binary_cross_entropy(fence_logits, gold_fences, None)
                 disco_1d_loss = binary_cross_entropy(disco_1d_logits, batch['dis_disco'], None)
                 if has_disco_2d:
                     disco_2d_loss = binary_cross_entropy(disco_2d_logits, batch['dis_component'], None)
+                    if has_disco_2d_negative:
+                        disco_2d_negloss = binary_cross_entropy(disco_2d_negative, torch.zeros_like(disco_2d_negative, dtype = torch.bool), None)
 
             total_loss = self._train_config.loss_weight.tag * tag_loss
             total_loss = self._train_config.loss_weight.label * label_loss + total_loss
@@ -106,6 +120,9 @@ class DiscoMultiOperator(DiscoOperator):
             total_loss = self._train_config.loss_weight.disco_1d * disco_1d_loss + total_loss
             if has_disco_2d:
                 total_loss = self._train_config.loss_weight.disco_2d * disco_2d_loss + total_loss
+                if has_disco_2d_negative:
+                    total_loss = self._train_config.loss_weight.disco_2d_neg * disco_2d_negloss + total_loss
+
             total_loss.backward()
             
             if hasattr(self._model, 'tensorboard'):
@@ -115,13 +132,15 @@ class DiscoMultiOperator(DiscoOperator):
                                       Label = 1 - fraction(label_mis, label_weight),
                                       Fence = fraction(fences == gold_fences),
                                       Disco_1D = fraction(disco_1d == batch['dis_disco']),
-                                      Disco_2D = fraction(disco_2d == batch['dis_component']) if has_disco_2d else None)
+                                      Disco_2D = fraction(disco_2d == batch['dis_component']) if has_disco_2d else None,
+                                      Disco_2D_Neg = fraction(disco_2d_negative_accuracy) if has_disco_2d_negative else None)
             self.recorder.tensorboard(self.global_step, 'Loss/%s',
                                       Tag   = tag_loss,
                                       Label = label_loss,
                                       Fence = fence_loss,
                                       Disco_1D = disco_1d_loss,
                                       Disco_2D = disco_2d_loss if has_disco_2d else None,
+                                      Disco_2D_Neg = disco_2d_negloss if has_disco_2d_negative else None,
                                       Total = total_loss)
             batch_kwargs = dict(Length = batch_len, SamplePerSec = batch_len / batch_time)
             if 'segment' in batch:

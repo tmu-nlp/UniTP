@@ -35,6 +35,7 @@ xccp_data_config = dict(vocab_size     = vocab_size,
                         bucket_len     = train_bucket_len,
                         min_gap        = tune_epoch_type,
                         unify_sub      = true_type,
+                        continuous_fence_only = true_type,
                         sort_by_length = false_type)
 # tree = '/Users/zchen/KK/corpora/tiger_release_aug07.corrected.16012013.xml'
 

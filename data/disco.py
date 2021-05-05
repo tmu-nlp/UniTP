@@ -63,6 +63,7 @@ class DiscoMultiReader(WordBaseReader):
                  vocab_dir,
                  has_greedy_sub,
                  unify_sub,
+                 continuous_fence_only,
                  data_splits,
                  vocab_size = None,
                  word_trace = False,
@@ -97,7 +98,7 @@ class DiscoMultiReader(WordBaseReader):
                 samples[M_DEVEL].append((tree, dep))
             elif in_test_set(fid):
                 samples[M_TEST].append((tree, dep))
-        self._load_options = from_tree_fn, v2is, has_greedy_sub, word_trace, samples, extra_text_helper, c2i
+        self._load_options = from_tree_fn, v2is, has_greedy_sub, continuous_fence_only, word_trace, samples, extra_text_helper, c2i
 
     def batch(self,
               mode,
@@ -110,7 +111,7 @@ class DiscoMultiReader(WordBaseReader):
               sort_by_length = True):
         from data.cross.dataset import DynamicCrossDataset
         from tqdm import tqdm
-        from_tree_fn, v2is, has_greedy_sub, word_trace, samples, extra_text_helper, c2i = self._load_options
+        from_tree_fn, v2is, has_greedy_sub, continuous_fence_only, word_trace, samples, extra_text_helper, c2i = self._load_options
         signals = []
         errors = defaultdict(int)
         for tree, dep in tqdm(samples[mode], f'Load {mode.title()}set'):
@@ -127,5 +128,6 @@ class DiscoMultiReader(WordBaseReader):
                                           max_len,
                                           min_gap,
                                           extra_text_helper,
-                                          c2i)
+                                          c2i,
+                                          continuous_fence_only)
         return post_batch(mode, len_sort_ds, sort_by_length, bucket_length, batch_size)

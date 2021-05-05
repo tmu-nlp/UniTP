@@ -3,8 +3,21 @@ from models.utils import condense_helper, condense_left, blocky_softmax, blocky_
 from sys import stderr
 from time import time
 
-def predict_disco_hint(dis_batch, bbt_zeros, existence, seq_idx, discontinuous, fence_logits):
-    continuous = existence & ~discontinuous
+def continuous_fence(bbt_zeros, continuous, fence_logits):
+    batch_dim, con_min, con_max = bool_start_end(continuous)
+    con_left  = torch.cat([bbt_zeros, continuous], dim = 1)
+    con_right = torch.cat([continuous, bbt_zeros], dim = 1)
+    con_left[batch_dim, con_min] = True
+    con_right[batch_dim, con_max + 1] = True
+    fl_left  = condense_left(fence_logits, condense_helper(con_left,  as_existence = True))
+    fl_right = condense_left(fence_logits, condense_helper(con_right, as_existence = True))
+    return torch.where(fl_left * fl_right > 0, # same sign
+                       torch.where(fl_left > 0,
+                                   torch.where(fl_left > fl_right, fl_left, fl_right),
+                                   torch.where(fl_left < fl_right, fl_left, fl_right)),
+                       fl_left + fl_right) # oppo sign
+
+def discontinuous_hidden(dis_batch, seq_idx, discontinuous):
     # 012345678
     # 001132432
     # 10101_11_1 (sup 1_1)
@@ -15,21 +28,6 @@ def predict_disco_hint(dis_batch, bbt_zeros, existence, seq_idx, discontinuous, 
     # 1111100100
     #     ^cz
     # 1111001001
-    batch_dim, con_min, con_max = bool_start_end(continuous)
-    con_left = torch.cat([bbt_zeros, continuous], dim = 1)
-    con_right = torch.cat([continuous, bbt_zeros], dim = 1)
-    con_left[batch_dim, con_min] = True
-    con_right[batch_dim, con_max + 1] = True
-    if True:
-        fl_left  = condense_left(fence_logits, condense_helper(con_left,  as_existence = True))
-        fl_right = condense_left(fence_logits, condense_helper(con_right, as_existence = True))
-        fence_logits = torch.where(fl_left * fl_right > 0, # same sign
-                                   torch.where(fl_left > 0,
-                                               torch.where(fl_left > fl_right, fl_left, fl_right),
-                                               torch.where(fl_left < fl_right, fl_left, fl_right)),
-                                   fl_left + fl_right) # oppo sign
-    else:
-        con_left ^ con_right
 
     dis_exist = discontinuous[dis_batch]
     dis_helper = condense_helper(dis_exist, as_existence = True)
@@ -42,7 +40,7 @@ def predict_disco_hint(dis_batch, bbt_zeros, existence, seq_idx, discontinuous, 
     # 001112334 <- 112223445
     #     3232 (@4567)
     # 001132324 (sup)
-    return fence_logits, dis_exist.sum(dim = 1), dis_indice, get_dis_emb
+    return dis_exist.sum(dim = 1), dis_indice, get_dis_emb
 
 def predict_disco_sections(disco_2d, layer_fence, dis_batch, dis_length, dis_indice, head_by = 'max_in'):
     dis_size, dis_max_children, _ = disco_2d.shape
@@ -184,7 +182,7 @@ from models.types import rnn_module_type, discontinuous_attention_hint, activati
 from models.combine import get_combinator, get_components, valid_trans_compound
 from utils.types import orient_dim, hidden_dim, frac_2, frac_4, frac_5, num_ori_layer, true_type, false_type, BaseType
 head_by = BaseType(0, as_index = True, default_set = ('max_in', 'max_out', 'leftmost', 'rightmost'))
-disco_2d_from = BaseType(2, as_index = True, default_set = ('state.dot', 'unit.dot', 'state_unit.dot', 'unit_state.dot'
+disco_2d_from = BaseType(2, as_index = True, default_set = ('state.dot', 'unit.dot', 'state_unit.dot', 'unit_state.dot',
                                                             'state.cat', 'unit.cat', 'state_unit.cat', 'unit_state.cat'))
 stem_config = dict(space_dim           = orient_dim,
                    disco_indie_io      = false_type,
@@ -206,7 +204,7 @@ class DiscoMultiStem(MultiStem):
     def __init__(self,
                  model_dim,
                  space_dim,
-                #  disco_dim,
+                 continuous_fence_only,
                  disco_indie_io,
                  disco_1d_activation,
                  disco_2d_activation,
@@ -232,10 +230,15 @@ class DiscoMultiStem(MultiStem):
                          drop_out,
                          rnn_drop_out,
                          trainable_initials)
+        self._continuous_fence_only = continuous_fence_only
         self._disco_1d_l1 = nn.Linear(space_dim, disco_linear_dim)
         self._disco_1d_act = disco_1d_activation()
         self._disco_2d_act = disco_2d_activation()
-        self._disco_1d_l2 = nn.Linear(disco_linear_dim, 1)
+        if disco_linear_dim > 1:
+            self._disco_1d_act = disco_1d_activation()
+            self._disco_1d_l2 = nn.Linear(disco_linear_dim, 1)
+        else:
+            self._disco_1d_l2 =  None
         disco_2d_from, method = disco_2d_from.split('.')
         self._head_by = disco_2d_decode_head
         if disco_2d_from == 'state':
@@ -254,6 +257,7 @@ class DiscoMultiStem(MultiStem):
                 out_dim = model_dim
             self._disco_2d_i = d2di = nn.Linear(in_dim, disco_linear_dim, bias = disco_indie_io)
             self._disco_2d_o = nn.Linear(out_dim, disco_linear_dim) if disco_indie_io else d2di
+            self._disco_2d_b = nn.Parameter(torch.zeros(1), requires_grad = True)
             self.predict_2d_disco = self.predict_2d_disco_dot
         else:
             if disco_2d_from == 'state':
@@ -268,9 +272,11 @@ class DiscoMultiStem(MultiStem):
 
     def predict_1d_disco(self, fence_hidden):
         hidden = self._disco_1d_l1(fence_hidden)
-        hidden = self._stem_dp(hidden)
-        hidden = self._disco_1d_act(hidden)
-        return self._disco_1d_l2(hidden).squeeze(dim = 2)
+        if self._disco_1d_l2:
+            hidden = self._stem_dp(hidden)
+            hidden = self._disco_1d_act(hidden)
+            hidden = self._disco_1d_l2(hidden)
+        return hidden.squeeze(dim = 2)
 
     def predict_2d_disco_dot(self, in_hidden, out_hidden):
         hidden_i = self._disco_2d_i(in_hidden) # [b, s, e]
@@ -279,20 +285,20 @@ class DiscoMultiStem(MultiStem):
         hidden_o = self._stem_dp(hidden_o).transpose(1, 2) # [b, e, s]
         hidden_i = self._disco_2d_act(hidden_i)
         hidden_o = self._disco_2d_act(hidden_o)
-        return torch.matmul(hidden_i, hidden_o) # [b, s, s]
+        return torch.matmul(hidden_i, hidden_o) + self._disco_2d_b # [b, s, s]
 
     def predict_2d_disco_cat(self, in_hidden, out_hidden):
-        batch_size, seq_dim, in_dim = in_hidden.shape
-        _, _, out_dim = out_hidden.shape
-        in_hidden = in_hidden[:, :, None].expand(batch_size, seq_dim, seq_dim, in_dim)
-        out_hidden = out_hidden[:, None].expand(batch_size, seq_dim, seq_dim, out_dim)
+        batch_size, in_seq_dim, in_dim = in_hidden.shape
+        _, out_seq_dim, out_dim = out_hidden.shape
+        in_hidden = in_hidden[:, :, None].expand(batch_size, in_seq_dim, out_seq_dim, in_dim)
+        out_hidden = out_hidden[:, None].expand(batch_size, in_seq_dim, out_seq_dim, out_dim)
         hidden = torch.cat([in_hidden, out_hidden], dim = 3)
         hidden = self._disco_2d_i(hidden)
         hidden = self._stem_dp(hidden)
         hidden = self._disco_2d_act(hidden)
         return self._disco_2d_o(hidden).squeeze(dim = 3)
 
-    def forward(self, unit_emb, existence, supervision = None, **kw_args):
+    def forward(self, unit_emb, existence, supervision = None, disco_2d_negative = 0.1, **kw_args):
         batch_size, seg_len, model_dim = unit_emb.shape
         h0c0 = self.get_h0c0(batch_size)
         max_iter_n = seg_len << 2 # 4 times
@@ -311,6 +317,7 @@ class DiscoMultiStem(MultiStem):
         
         if teacher_forcing:
             space, dis_disco = supervision
+            layers_of_disco_2d_negative = []
         else:
             # dis_slice_start = 0
             layers_of_space = [] # 001132324
@@ -364,11 +371,25 @@ class DiscoMultiStem(MultiStem):
             if dis_batch.any():
                 dis_batch, = torch.where(dis_batch)
                 dis_batch_size, = dis_batch.shape
-                (fence_logits, dis_length, dis_indice,
-                 get_dis_emb) = predict_disco_hint(dis_batch, bbt_zeros,
-                                                   existence, seq_idx.repeat(dis_batch_size, 1),
-                                                   discontinuous, fence_logits)
-                disco_2d_logits = self.predict_2d_disco(*self._select(get_dis_emb, disco_hidden, unit_emb))
+                continuous = existence & ~discontinuous
+                if self._continuous_fence_only:
+                    fence_logits = continuous_fence(bbt_zeros, continuous, fence_logits)
+                (dis_length, dis_indice,
+                 get_dis_emb) = discontinuous_hidden(dis_batch, seq_idx.repeat(dis_batch_size, 1), discontinuous)
+                disco_in, disco_out = self._select(get_dis_emb, disco_hidden, unit_emb)
+                if teacher_forcing and disco_2d_negative:
+                    if (dis_continuous := continuous[dis_batch]).any():
+                        dis_continuous &= torch.rand_like(dis_continuous, dtype = unit_emb.dtype) < disco_2d_negative
+                        if dis_continuous.any():
+                            con_helper = condense_helper(dis_continuous, as_existence = True)
+                            get_con_emb = lambda emb: condense_left(emb[dis_batch], con_helper)
+                            con_in, con_out = self._select(get_con_emb, disco_hidden, unit_emb)
+                            dis_continuous = condense_left(dis_continuous, con_helper)
+                            negative = self.predict_2d_disco(disco_in, con_out)
+                            layers_of_disco_2d_negative.append(negative[dis_continuous.unsqueeze(dim = 1).expand_as(negative)].reshape(-1))
+                            negative = self.predict_2d_disco(con_in, disco_out)
+                            layers_of_disco_2d_negative.append(negative[dis_continuous.unsqueeze(dim = 2).expand_as(negative)].reshape(-1))
+                disco_2d_logits = self.predict_2d_disco(disco_in, disco_out)
             else:
                 disco_2d_logits = None
             layers_of_fence.append(fence_logits)
@@ -429,8 +450,10 @@ class DiscoMultiStem(MultiStem):
         if teacher_forcing:
             weight = space = None
             disco_2d = torch.cat(layers_of_disco_2d, dim = 0) if layers_of_disco_2d else None
+            disco_2d_negative = torch.cat(layers_of_disco_2d_negative, dim = 0) if layers_of_disco_2d_negative else None
         else:
             disco_2d = layers_of_disco_2d
+            disco_2d_negative = None
             if not layers_of_space:
                 assert not layers_of_weight
                 space  = torch.zeros(batch_size, 0, dtype = batch_dim.dtype, device = batch_dim.device)
@@ -440,7 +463,7 @@ class DiscoMultiStem(MultiStem):
                 weight = torch.cat(layers_of_weight, dim = 1)
             seg_length = torch.stack(seg_length, dim = 1)
 
-        return existence, embeddings, weight, disco_1d, fence, disco_2d, space, segment, seg_length
+        return existence, embeddings, weight, disco_1d, fence, disco_2d, disco_2d_negative, space, segment, seg_length
 
 
 # batch_insert(101011, 4444) -> 1010000011
@@ -497,7 +520,7 @@ class BaseRnnTree(DiscoMultiStem):
                 bottom_existence,
                 ingore_logits = False,
                 **kw_args):
-        (existence, embeddings, weight, disco_1d, fence, disco_2d, space, segment,
+        (existence, embeddings, weight, disco_1d, fence, disco_2d, disco_2d_neg, space, segment,
          seg_length) = super().forward(base_inputs, bottom_existence, **kw_args)
 
         if self._hidden_dim:
@@ -519,7 +542,7 @@ class BaseRnnTree(DiscoMultiStem):
         else:
             layers_of_hidden = tags = labels = None
 
-        return existence, embeddings, weight, disco_1d, fence, disco_2d, space, tags, labels, segment, seg_length
+        return existence, embeddings, weight, disco_1d, fence, disco_2d, disco_2d_neg, space, tags, labels, segment, seg_length
 
     @property
     def model_dim(self):

@@ -427,7 +427,6 @@ class PadRNN(nn.Module):
 
         if num_chars: # forward is open
             self._char_emb = nn.Embedding(num_chars, embed_dim, padding_idx = 0)
-            self._char_dp = nn.Dropout(drop_out)
 
         if attention_hint: # domain_and_subject is open
             if not isinstance(attention_hint, HParams): attention_hint = HParams(attention_hint)
