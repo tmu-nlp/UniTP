@@ -1,6 +1,16 @@
 library(ggplot2)
 
-data <- read.csv('conti_ptb.csv')
+data <- read.csv('parse_ptb.csv')
+multi <- read.csv('parse_multi.csv')
+left_lm <- lm(left ~ len + I(len^2), data = data)
+right_lm <- lm(right ~ len + I(len^2), data = data)
+midin_lm <- lm(midin ~ len + I(len^2), data = data)
+midout_lm <- lm(midout ~ len + I(len^2), data = data)
+print(left_lm$coefficients)
+print(right_lm$coefficients)
+print(midin_lm$coefficients)
+print(midout_lm$coefficients)
+
 length <- length(data$len)
 left <- data[c('len', 'left')]
 left$type <- rep('left', length)
@@ -16,12 +26,17 @@ names(right) <- c('len', 'size', 'type')
 names(midin) <- c('len', 'size', 'type')
 names(midout) <- c('len', 'size', 'type')
 
-data <- rbind(left, right, midin, midout)
-data$type <- factor(data$type, levels = c('left', 'right', 'midin', 'midout'), labels = c('CNF Left', 'CNF Right', 'non-CNF midin', 'non-CNF midout'))
+multi <- multi[which(multi$corp == 'PTB'),]
+multi <- multi[c('len', 'size', 'type')]
+multi_lm <- lm(size ~ len + I(len^2), data = multi)
+data <- rbind(left, right, midin, midout, multi)
+factor_levels <- c('left', 'right', 'none', 'midin', 'midout')
+factor_labels <- c('CNF Left', 'CNF Right', 'Multi-branching', 'non-CNF Midin', 'non-CNF Midout')
+data$type <- factor(data$type, levels = factor_levels, labels = factor_labels)
 
 p <- ggplot(data, aes(len, size, fill = type))#, alpha = I(0.2)))
 p <- p + coord_cartesian(xlim = c(0, 100), ylim = c(0, 650))
-p <- p + facet_wrap(~type, ncol = 2)
+p <- p + facet_wrap(~type, ncol = 3)
 p <- p + labs(x = 'Sentence Length', y = 'Number of Nodes')
 # p <- p + labs(x = 'Training Batch Length', y = 'Speed (sents/sec)')
 # p <- p + labs(color = "", shape = "")
@@ -29,7 +44,37 @@ p <- p + theme(legend.position = "none",
                axis.title = element_text(size = 14),
                text = element_text(size = 15))
 p <- p + geom_bin2d(bins = c(100, 650))
-p <- p + stat_smooth(method = 'lm', formula = y ~ splines::bs(x, 4), geom = 'line', alpha = 0.5, color = 'black', show.legend=FALSE)
+p <- p + stat_smooth(method = 'lm', formula = y ~ x + I(x^2), geom = 'line', alpha = 0.5, color = 'black', show.legend=FALSE)
+
+
+library(latex2exp)
+
+ann_lm <- function(factor_f, lm_f) {
+    lm_2 <- lm_f$coefficients[2]
+    lm_3 <- lm_f$coefficients[3]
+    lm_2 <- format(round(lm_2, 1), scientific = F, nsmall = 1)
+    sign <- if (lm_3 > 0) '+' else '-'
+    abs3 <- abs(lm_3)
+    abs3 <- format(round(abs3, 4), scientific = F)
+    labels <- paste('$', lm_2, 'x', ' ', sign, ' ', abs3, 'x^2$')
+    fill <- if (lm_3 > 0) 'coral1' else 'cadetblue1'
+    ann_text <- data.frame(type = factor_f,
+                           len = 40, size = 550)
+    geom_label(data = ann_text, size = 3.5, label = unname(TeX(labels)), fill = fill)
+}
+
+left_f <- factor('left', levels = factor_levels, labels = factor_labels)
+right_f <- factor('right', levels = factor_levels, labels = factor_labels)
+midin_f <- factor('midin', levels = factor_levels, labels = factor_labels)
+midout_f <- factor('midout', levels = factor_levels, labels = factor_labels)
+multi_f <- factor('none', levels = factor_levels, labels = factor_labels)
+
+p <- p + ann_lm(left_f,   left_lm)
+p <- p + ann_lm(right_f,  right_lm)
+p <- p + ann_lm(midin_f,  midin_lm)
+p <- p + ann_lm(midout_f, midout_lm)
+p <- p + ann_lm(multi_f,  multi_lm)
+
 p
 
 # model, data, pre, cnf, f1, tid, eid

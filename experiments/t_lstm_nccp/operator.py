@@ -183,13 +183,14 @@ class PennOperator(Operator):
     def _before_validation(self, ds_name, epoch, use_test_set = False, final_test = False):
         devel_bins, test_bins = self._mode_length_bins
         devel_init, test_init = self._initial_run
+        epoch_major, epoch_minor = epoch.split('.')
         if use_test_set:
             if final_test:
                 folder = ds_name + '_test'
                 scores_of_bins = save_tensors = True
             else:
                 folder = ds_name + '_test_with_devel'
-                save_tensors = is_bin_times(int(float(epoch)))
+                save_tensors = is_bin_times(int(epoch_major)) if int(epoch_minor) == 0 else False
                 scores_of_bins = False
             length_bins = test_bins
             flush_heads = test_init
@@ -197,7 +198,7 @@ class PennOperator(Operator):
         else:
             folder = ds_name + '_devel'
             length_bins = devel_bins
-            save_tensors = is_bin_times(int(float(epoch)))
+            save_tensors = is_bin_times(int(epoch_major)) if int(epoch_minor) == 0 else False
             scores_of_bins = False
             flush_heads = devel_init
             self._initial_run = False, test_init

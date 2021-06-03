@@ -22,7 +22,7 @@ data <- rbind(tri_data, trapo_data)
 p <- ggplot(data, aes(length, speed, color = type, shape = type, alpha = I(0.7), linetype = type))
 p <- p + labs(x = 'Training Batch Length', y = 'Speed (sents/sec)')
 p <- p + labs(color = "", shape = "")
-p <- p + theme(legend.position = c(0.25, 0.88),
+p <- p + theme(legend.position = c(0.33, 0.88),
                legend.direction = "horizontal",
                legend.background = element_blank(),
                legend.key = element_rect(fill = "white", color = NA),
@@ -50,4 +50,4 @@ p <- p + stat_smooth(method = 'lm', formula = y ~ splines::bs(x, 4), geom = 'lin
 # p <- p + theme(legend.position = "none", text = element_text(size = 15), axis.title = element_blank())
 # p
 
-ggsave('speed.pdf', height = 2.2, width = 5.2, dpi = 600)
+ggsave('speed.pdf', height = 2.2, width = 4, dpi = 600)

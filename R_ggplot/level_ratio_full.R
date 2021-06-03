@@ -2,14 +2,14 @@ library(ggplot2)
 library(latex2exp)
 
 
-left <- read.csv('conti_ptb_left.csv')
-right <- read.csv('conti_ptb_right.csv')
+left <- read.csv('parse_ptb_left.csv')
+right <- read.csv('parse_ptb_right.csv')
 left$fct <- rep('left', length(left$size))
 right$fct <- rep('right', length(right$size))
 # data <- left
 # data <- rbind(left, right)
-midin <- read.csv('conti_ptb_midin.csv')
-midout <- read.csv('conti_ptb_midout.csv')
+midin <- read.csv('parse_ptb_midin.csv')
+midout <- read.csv('parse_ptb_midout.csv')
 midin$fct <- rep('midin', length(midin$size))
 midout$fct <- rep('midout', length(midout$size))
 data <- rbind(left, right, midin, midout)
@@ -41,5 +41,11 @@ p <- p + annotate("text", x = 160, y = 0.5, label = unname(TeX("|$\\leftarrow$ B
 # p <- p + annotate("text", x = 240, y = 0.715, label = unname(TeX("$\\leftarrow$ layer@0")), size = 9, color = 'blue')
 # p <- p + annotate("text", x = 180, y = 0.718, label = unname(TeX("$\\leftarrow$ layer@1")), size = 9, color = 'blue')
 p
+
+ann_lm <- function(corp_f, factor_f) {
+    ann_text <- data.frame(type = factor_f,
+                           len = 78, size = 70)
+    geom_label(data = ann_text, size = 3.5, label = unname(TeX(labels)), fill = fill)
+}
 
 ggsave('level_ratio_full_ptb.pdf', height = 28, width = 20)

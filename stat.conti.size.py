@@ -5,8 +5,9 @@ from nltk.corpus import BracketParseCorpusReader
 from data.io import load_i2vs, encapsulate_vocabs
 from utils.types import num_threads, E_ORIF4
 from utils.str_ops import strange_to
+from utils.file_io import join
 
-base_name = '001'
+base_path = '001'
 
 def from_penn(vocab_path, corp_path, trapezoid_height, factors):
 
@@ -33,7 +34,7 @@ def from_penn(vocab_path, corp_path, trapezoid_height, factors):
     works = distribute_jobs(fnames, num_threads)
     q = Queue()
     for i in range(num_threads):
-        w = PennWorker(q, reader, works[i], trapezoid_height, v2is, factors)
+        w = PennWorker(q, reader, works[i], trapezoid_height, v2is, factors, vocab_path.endswith('ktb'))
         w.start()
         works[i] = w
     def core_fn(words, length, tree_str, factored):
@@ -46,7 +47,7 @@ def from_penn(vocab_path, corp_path, trapezoid_height, factors):
 from collections import defaultdict
 def to_csv(keepers, corp_name, factors):
     ratios = {fct: defaultdict(int) for fct in factors}
-    with open(f'R_ggplot/parse_{corp_name}.csv', 'w') as fw:
+    with open(f'R_ggplot/parse_ori/parse_{corp_name}.csv', 'w') as fw:
         fw.write('len,' + ','.join(factors) + '\n')
         for keeper in keepers:
             line = []
@@ -64,12 +65,12 @@ def to_csv(keepers, corp_name, factors):
             line = ','.join(str(x) for x in line)
             fw.write(line + '\n')
     for fct, lt_cnt in ratios.items():
-        with open(f'R_ggplot/parse_{corp_name}_{fct}.csv', 'w') as fw:
+        with open(f'R_ggplot/parse_ori/parse_{corp_name}_{fct}.csv', 'w') as fw:
             fw.write('size,ratio,count\n')
             for (last_size, this_size), cnt in lt_cnt.items():
                 fw.write(f'{last_size},{this_size/last_size},{cnt}\n')
 
-    with open(f'R_ggplot/orient_{corp_name}.csv', 'w') as fw:
+    with open(f'R_ggplot/parse_ori/orient_{corp_name}.csv', 'w') as fw:
         fw.write('fct,lft,non,rgh\n')
         for fct in E_ORIF4:
             nlr = defaultdict(int)

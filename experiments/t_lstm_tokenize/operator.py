@@ -198,7 +198,8 @@ class TokenizerOperator(Operator):
             if final_test:
                 save_tensors = True
             else:
-                save_tensors = is_bin_times(int(float(epoch)) - 1)
+                epoch_major, epoch_minor = epoch.split('.')
+                save_tensors = is_bin_times(int(epoch_major)) if int(epoch_minor) == 0 else False
             vis = UTreeVis(epoch,
                            self.recorder.create_join(folder),
                            self.i2vs,

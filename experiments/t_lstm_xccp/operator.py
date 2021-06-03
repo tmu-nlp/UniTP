@@ -188,6 +188,7 @@ class DiscoMultiOperator(DiscoOperator):
     def _before_validation(self, ds_name, epoch, use_test_set = False, final_test = False):
         # devel_bins, test_bins = self._mode_length_bins
         devel_head_batchess, test_head_batchess = self._mode_trees
+        epoch_major, epoch_minor = epoch.split('.')
         if use_test_set:
             head_trees = test_head_batchess
             if final_test:
@@ -195,11 +196,11 @@ class DiscoMultiOperator(DiscoOperator):
                 draw_trees = True
             else:
                 folder = ds_name + '_test_with_devel'
-                draw_trees = is_bin_times(int(float(epoch)) - 1)
+                draw_trees = is_bin_times(int(epoch_major)) if int(epoch_minor) == 0 else False
         else:
             head_trees = devel_head_batchess
             folder = ds_name + '_devel'
-            draw_trees = is_bin_times(int(float(epoch)) - 1)
+            draw_trees = is_bin_times(int(epoch_major)) if int(epoch_minor) == 0 else False
         if self._optuna_mode:
             draw_trees = False
         vis = DiscoMultiVis(epoch,

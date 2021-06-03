@@ -27,7 +27,7 @@ p <- p + stat_smooth(method = 'lm', formula = y ~ splines::bs(x, 23), geom = 'li
 # p <- p + labs(tag = unname(TeX('$\\leftarrow$ Bottom-up combinatory direction')))
 p <- p + annotate("text", x = 2, y = 0.532, label = "Top", size = 14)
 p <- p + annotate('text', x = 180, y = 0.83, label = unname(TeX('$\\leftarrow$ Bottom-up combinatory direction')), size = 14)
-p <- p + annotate("text", x = 160, y = 0.5, label = unname(TeX("|$\\leftarrow$ Bottom Layers from Long Sentences $\\rightarrow$|")), size = 15, color = 'gray')
+p <- p + annotate("text", x = 148, y = 0.5, label = unname(TeX("|$\\leftarrow$ Open Bottom Layers from Long Sentences $\\rightarrow$|")), size = 15, color = 'gray')
 p <- p + annotate("text", x = 240, y = 0.71, label = unname(TeX("$\\leftarrow$ layer@0")), size = 11, color = 'blue')
 p <- p + annotate("text", x = 180, y = 0.713, label = unname(TeX("$\\leftarrow$ layer@1")), size = 11, color = 'blue')
 p

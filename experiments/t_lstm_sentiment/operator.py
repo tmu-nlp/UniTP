@@ -127,18 +127,19 @@ class StanOperator(PennOperator):
             return super()._before_validation(ds_name, epoch, use_test_set, final_test)
 
         devel_bins, test_bins = self._mode_length_bins
+        epoch_major, epoch_minor = epoch.split('.')
         if use_test_set:
             if final_test:
                 folder = ds_name + '_test'
             else:
                 folder = ds_name + '_test_with_devel'
-            save_tensors = True
+            save_tensors = is_bin_times(int(epoch_major)) if int(epoch_minor) == 0 else False
             length_bins = test_bins
             scores_of_bins = True
         else:
             folder = ds_name + '_devel'
             length_bins = devel_bins
-            save_tensors = is_bin_times(int(float(epoch)) - 1)
+            save_tensors = is_bin_times(int(epoch_major)) if int(epoch_minor) == 0 else False
             scores_of_bins = False
             
         if hasattr(self._model, 'update_static_pca'):

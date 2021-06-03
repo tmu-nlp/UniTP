@@ -98,7 +98,7 @@ class StanTreeKeeper:
             self._factored = words, len(words), tree_str, factored
         return self._factored
         
-
+# from data.multib import add_efficient_subs
 class PennWorker(Process):
     def __init__(self, *args):
         Process.__init__(self)
@@ -114,6 +114,7 @@ class PennWorker(Process):
                     preproc_cnf(tree, word_trace = word_trace) # watch for ktb
                 except:
                     print(tree)
+                # _, tree = add_efficient_subs(tree)
                 words = tree.leaves()
                 length = len(words)
                 keeper = PennTreeKeeper(tree, v2is, height)
