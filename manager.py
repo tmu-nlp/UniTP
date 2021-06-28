@@ -16,8 +16,6 @@ from utils.str_ops import strange_to
 from utils.shell_io import call_fasttext, byte_style
 from collections import defaultdict
 from datetime import datetime
-from data.penn_types import E_PENN, C_ABSTRACT as C_PENN_ABS
-from data.disco_types import E_DISCO, C_ABSTRACT as C_DISCO_ABS
 import pdb
 
 _mfile = 'manager.yaml'
@@ -346,9 +344,14 @@ class Manager:
             train_params = check_train(args.train)
         
         if None in exp_ids: # train new
+            from data.penn_types import E_PENN, C_ABSTRACT as C_PENN_ABS
+            try:
+                from data.disco_types import E_DISCO, C_ABSTRACT as C_DISCO_ABS
+            except:
+                E_DISCO = C_DISCO_ABS = None
             if corp_name in E_PENN: # only happen at penn data
                 change_key(data_config, C_PENN_ABS, corp_name)
-            elif corp_name in E_DISCO:
+            elif E_DISCO and corp_name in E_DISCO:
                 change_key(data_config, C_DISCO_ABS, corp_name)
             for dn, dc in data_config.items():
                 if dn not in ready_paths:

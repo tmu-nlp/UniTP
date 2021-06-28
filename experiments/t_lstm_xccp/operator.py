@@ -7,7 +7,7 @@ from utils.math_ops import is_bin_times
 from utils.types import M_TRAIN, BaseType, frac_open_0, true_type, false_type, tune_epoch_type, frac_06, frac_close
 from models.utils import PCA, fraction, hinge_score, mean_stdev
 from models.loss import binary_cross_entropy, hinge_loss
-from experiments.t_lstm_dccp.operator import DiscoOperator, DiscoVis, inner_score
+from experiments.t_lstm_dccp.operator import DiscoOperator, DiscoVis, inner_score, ParallelVis as BinaryParallelVis
 from utils.shell_io import has_discodop, discodop_eval, byte_style
 
 train_type = dict(loss_weight = dict(tag   = BaseType(0.2, validator = frac_open_0),
@@ -18,7 +18,7 @@ train_type = dict(loss_weight = dict(tag   = BaseType(0.2, validator = frac_open
                                      disco_2d_neg = BaseType(0.5, validator = frac_open_0)),
                   learning_rate = BaseType(0.001, validator = frac_open_0),
                   disco_2d_negrate = BaseType(0.05, validator = frac_close),
-                  multiprocessing_decode = false_type,
+                  multiprocessing_decode = true_type,
                   binary_hinge_loss = true_type,
                   tune_pre_trained = dict(from_nth_epoch = tune_epoch_type,
                                           lr_factor = frac_06))
@@ -147,7 +147,7 @@ class DiscoMultiOperator(DiscoOperator):
                 batch_kwargs['Height'] = batch['segment'].shape[0]
             self.recorder.tensorboard(self.global_step, 'Batch/%s', **batch_kwargs)
         else:
-            vis, _, _, pending_heads = self._vis_mode
+            vis, _, _, pending_heads, _ = self._vis_mode
 
             tags   = self._model.get_decision(tag_logits  ).type(torch.uint8).cpu().numpy()
             labels = self._model.get_decision(label_logits).type(torch.uint8).cpu().numpy()
@@ -203,18 +203,25 @@ class DiscoMultiOperator(DiscoOperator):
             draw_trees = is_bin_times(int(epoch_major)) if int(epoch_minor) == 0 else False
         if self._optuna_mode:
             draw_trees = False
-        vis = DiscoMultiVis(epoch,
-                            self.recorder.create_join(folder),
-                            self.i2vs,
-                            head_trees,
-                            self.recorder.log,
-                            self._evalb_lcfrs_kwargs,
-                            self._discodop_prm,
-                            draw_trees)
+        work_dir = self.recorder.create_join(folder)
+        serial = draw_trees or not head_trees or not self._train_config.multiprocessing_decode
+        if serial:
+            async_ = True
+            vis = DiscoMultiVis(epoch,
+                                work_dir,
+                                self.i2vs,
+                                head_trees,
+                                self.recorder.log,
+                                self._evalb_lcfrs_kwargs,
+                                self._discodop_prm,
+                                draw_trees)
+        else:
+            async_ = False
+            vis = ParallelVis(epoch, work_dir, self.i2vs, self.recorder.log, self._evalb_lcfrs_kwargs, self._discodop_prm, self._dm)
         pending_heads = vis._pending_heads
-        vis = VisRunner(vis, async_ = True) # wrapper
+        vis = VisRunner(vis, async_ = async_) # wrapper
         vis.before()
-        self._vis_mode = vis, use_test_set, final_test, pending_heads
+        self._vis_mode = vis, use_test_set, final_test, pending_heads, serial
 
 
 from utils.vis import BaseVis, VisRunner
@@ -377,3 +384,18 @@ class DiscoMultiVis(DiscoVis):
                     suffix = '.' + suffix + '.art'
                     with open(fname_prefix + f'{height_ratio(cnt / total)}' + suffix, 'w') as fw:
                         fw.write(lines)
+
+
+from data.cross.multib import MxDM
+from utils.types import num_threads
+class ParallelVis(BinaryParallelVis):
+    _draw_trees = False
+    
+    def _process(self, batch_id, batch):
+        (batch_len, h_token, d_tag, d_label, d_space, d_weight, d_disco_2d, d_segment, d_seg_length) = batch
+        batch_size = h_token.shape[0]
+        
+        if self._dm is None:
+            self._dm = MxDM(batch_size, self._dtv.vocabs, num_threads)
+        self._dm.batch(self._bid_offset, d_segment, d_seg_length, h_token, d_tag, d_label, d_space)
+        self._bid_offset += batch_size

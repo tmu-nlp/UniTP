@@ -398,3 +398,34 @@ class TreeKeeper:
         if factor == F_DEP:
             return cross_signals(bottom, node2tag, bottom_unary, top_down, root_id, factor, l2i, dep)
         return cross_signals(bottom, node2tag, bottom_unary, top_down, root_id, factor, l2i)
+
+from data.mp import DM
+from data.cross.evalb_lcfrs import export_string
+
+class MxDM(DM):
+    @staticmethod
+    def tree_gen_fn(i2w, i2t, i2l, bid_offset, segments, *data_gen):
+        for seg_length, word, tag, label, space in zip(*data_gen):
+            layers_of_label = []
+            layers_of_space = []
+            label_start = 0
+            for l_size, l_len in zip(segments, seg_length):
+                label_end = label_start + l_len
+                label_layer = label[label_start: label_end]
+                layers_of_label.append(tuple(i2l(i) for i in label_layer))
+                if l_len == 1:
+                    break
+                layers_of_space.append(space[label_start: label_end])
+                label_start += l_size
+            ln = seg_length[0]
+            wd = [i2w[i] for i in word[:ln]]
+            tg = [i2t[i] for i in  tag[:ln]]
+            bt, td, rt, _ = disco_tree(wd, tg, layers_of_label, layers_of_space, 'VROOT')
+            yield export_string(bid_offset, bt, td, rt)
+            bid_offset += 1
+
+    @staticmethod
+    def arg_segment_fn(seg_id, seg_size, batch_size, args):
+        start = seg_id * seg_size
+        if start < batch_size:
+            return args[:2] + tuple(x[start: (seg_id + 1) * seg_size] for x in args[2:])

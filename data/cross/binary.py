@@ -600,3 +600,40 @@ def unzip_xlogit(cindex, xtypes): #, the_joints, the_labels):
     #         import pdb; pdb.set_trace()
     #     assert joint_layer == tj, '\nUj[' + c + a + b + e + d + ']\n' + f'{path}'
     return layers_of_right, layers_of_joint, layers_of_direc
+
+from data.mp import DM
+from data.cross.evalb_lcfrs import export_string
+
+class BxDM(DM):
+    @staticmethod
+    def tree_gen_fn(i2w, i2t, i2l, bid_offset, segments, *data_gen):
+        for s_seq_len, s_token, s_tag, s_label, s_right, s_joint, s_direc in zip(*data_gen):
+            layers_of_label = []
+            layers_of_right = []
+            layers_of_joint = []
+            layers_of_direc = []
+            jnt_start = 0
+            rgt_start = 0
+            for s_size, s_len in zip(segments, s_seq_len):
+                label_layer = tuple(i2l(i) for i in s_label[rgt_start + 1: rgt_start + s_len + 1])
+                layers_of_label.append(label_layer)
+                layers_of_joint.append(s_joint[jnt_start + 1: jnt_start + s_len])
+                layers_of_right.append(s_right[rgt_start + 1: rgt_start + s_len + 1])
+                layers_of_direc.append(s_direc[rgt_start + 1: rgt_start + s_len + 1])
+                rgt_start += s_size
+                jnt_start += s_size - 1
+                if s_len == 1:
+                    break
+            bottom_end = s_seq_len[0] + 1
+            tags  = tuple(i2t[i] for i in   s_tag[1:bottom_end])
+            words = tuple(i2w[i] for i in s_token[1:bottom_end])
+            bt, td, rt, _ = disco_tree(words, tags, layers_of_label, layers_of_right, layers_of_joint, layers_of_direc, 'VROOT')
+            yield export_string(bid_offset, bt, td, rt)
+            bid_offset += 1
+
+    @staticmethod
+    def arg_segment_fn(seg_id, seg_size, batch_size, args):
+        # import pdb; pdb.set_trace()
+        start = seg_id * seg_size
+        if start < batch_size:
+            return args[:2] + tuple(x[start: (seg_id + 1) * seg_size] for x in args[2:])

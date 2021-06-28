@@ -1,7 +1,7 @@
 import torch
 from torch import nn
 
-from utils.types import orient_dim, hidden_dim, num_ori_layer, BaseWrapper, BaseType
+from utils.types import chunk_dim, hidden_dim, half_hidden_dim, num_ori_layer, BaseWrapper, BaseType
 from utils.types import frac_2, frac_4, frac_5, true_type, false_type
 from utils.param_ops import HParams
 from random import random
@@ -9,16 +9,16 @@ from sys import stderr
 
 from models.types import rnn_module_type, continuous_attention_hint, activation_type, logit_type, fmin, fmax, fence_vote
 from models.combine import get_combinator, get_components, valid_trans_compound
-stem_config = dict(fence_dim      = orient_dim,
+stem_config = dict(fence_dim      = chunk_dim,
                    fence_module   = rnn_module_type,
                    fence_vote     = fence_vote,
-                   linear_dim     = orient_dim,
+                   linear_dim     = half_hidden_dim,
                    activation     = activation_type,
                    attention_hint = continuous_attention_hint,
                    num_layers     = num_ori_layer,
                    drop_out       = frac_4,
                    rnn_drop_out   = frac_2,
-                   trainable_initials = true_type)
+                   trainable_initials = false_type)
 from models.loss import cross_entropy, hinge_loss, binary_cross_entropy
 from models.utils import hinge_score as hinge_score_
 from models.utils import blocky_max, blocky_softmax, condense_helper, condense_left

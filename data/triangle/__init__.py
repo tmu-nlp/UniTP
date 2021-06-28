@@ -48,7 +48,7 @@ def triangle_to_layers(data, *size_offset_length_vocab):
         size, offset, length, vocab = size_offset_length_vocab
     else:
         length, offset = t_index(len(data))
-        assert offset == 0
+        assert offset == 0, f'offset == {offset}'
         size = length
         vocab = None
 

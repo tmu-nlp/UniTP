@@ -483,6 +483,42 @@ def midin_factored(tree, take_left = None):
         return Tree(tree.label(), [l_child, r_child])
     return explore_unary(midin_factored, tree)
 
+def add_efficient_subs(stretched_tree, sub = '_', max_range = None):
+    if stretched_tree.height() > 3:
+        parent_label = stretched_tree.label()
+        modified = False
+        children = []
+        for t in stretched_tree:
+            m, t = add_efficient_subs(t, sub, max_range)
+            modified |= m
+            children.append(t)
+        heights = set(t.height() for t in children)
+        if max_range is None:
+            upper = max(heights)
+        else:
+            upper = min(heights) + max_range
+            upper = min(upper, max(heights))
+        for ht in range(min(heights), upper):
+            new_children = []
+            for child in children:
+                if not new_children or child.height() > ht:
+                    new_children.append([child])
+                else:
+                    if new_children[-1][-1].height() > ht:
+                        new_children.append([child])
+                    else:
+                        new_children[-1].append(child)
+            children = []
+            for group in new_children:
+                if len(group) == 1:
+                    children.append(group.pop())
+                else:
+                    modified = True
+                    children.append(Tree(sub + parent_label, group))
+        if modified:
+            return True, Tree(parent_label, children)
+    return False, stretched_tree
+
 class X:
     @classmethod
     def pyramid(cls, bottom_len, sep = '@', sub = '_'):
@@ -606,9 +642,12 @@ class X:
 
 class DeltaX:
     @classmethod
-    def from_penn(cls, tree, factor = 'left', word_trace = False, do_preproc = True):
+    def from_penn(cls, tree, factor = 'left', word_trace = False, do_preproc = True, do_efficient_subs = False):
         if do_preproc:
             preproc_cnf(tree, word_trace = word_trace) # open in the furture
+        if do_efficient_subs:
+            _, tree = add_efficient_subs(tree)
+        # assert preproc done
         if factor in ('left', 'right'):
             tree = deepcopy(tree)
             tree.chomsky_normal_form(factor)
@@ -621,8 +660,10 @@ class DeltaX:
         return cls(tree, 2), lrc
 
     @classmethod
-    def from_penn_quad(cls, tree, word_trace = False):
+    def from_penn_quad(cls, tree, word_trace = False, do_efficient_subs = False):
         preproc_cnf(tree, word_trace = word_trace) # open in the furture
+        if do_efficient_subs:
+            _, tree = add_efficient_subs(tree)
         midi = midin_factored(tree)
         mido = midout_factored(tree)
         eert = deepcopy(tree)

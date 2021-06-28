@@ -3,6 +3,15 @@ from models.utils import condense_helper, condense_left, blocky_softmax, blocky_
 from sys import stderr
 from time import time
 
+try:
+    import xccp_decode
+    import numpy as np
+except:
+    from utils.shell_io import byte_style
+    print(byte_style('[HINT] CUDA module xccp_decode', '3'), 'is not compiled for full discontinuity matrix parallelism.', file = stderr)
+    print('    -> try', byte_style('\'cd cuda; python setup.py install\''), file = stderr)
+    xccp_decode = None
+
 def continuous_fence(bbt_zeros, continuous, fence_logits):
     batch_dim, con_min, con_max = bool_start_end(continuous)
     con_left  = torch.cat([bbt_zeros, continuous], dim = 1)
@@ -17,7 +26,7 @@ def continuous_fence(bbt_zeros, continuous, fence_logits):
                                    torch.where(fl_left < fl_right, fl_left, fl_right)),
                        fl_left + fl_right) # oppo sign
 
-def discontinuous_hidden(dis_batch, seq_idx, discontinuous):
+# def discontinuous_hidden(dis_batch, seq_idx, discontinuous):
     # 012345678
     # 001132432
     # 10101_11_1 (sup 1_1)
@@ -28,11 +37,6 @@ def discontinuous_hidden(dis_batch, seq_idx, discontinuous):
     # 1111100100
     #     ^cz
     # 1111001001
-
-    dis_exist = discontinuous[dis_batch]
-    dis_helper = condense_helper(dis_exist, as_existence = True)
-    dis_indice = condense_left(seq_idx, dis_helper)
-    get_dis_emb = lambda emb: condense_left(emb[dis_batch], dis_helper)
     # 001132324 (sup)
     # 012345678
     # 01238 4567 (con_indice & dis_indice)
@@ -40,12 +44,39 @@ def discontinuous_hidden(dis_batch, seq_idx, discontinuous):
     # 001112334 <- 112223445
     #     3232 (@4567)
     # 001132324 (sup)
-    return dis_exist.sum(dim = 1), dis_indice, get_dis_emb
 
 def predict_disco_sections(disco_2d, layer_fence, dis_batch, dis_length, dis_indice, head_by = 'max_in'):
+
     dis_size, dis_max_children, _ = disco_2d.shape
-    fb_comps = torch.ones(1, dis_max_children, dtype = torch.bool, device = dis_batch.device)
-    fb_comp_idx = torch.zeros(dis_max_children, dtype = dis_batch.dtype, device = dis_batch.device)
+    seq = torch.arange(dis_max_children, device = dis_batch.device)
+    disco_2d[:, seq, seq] = 1
+        
+    layer_2d_logits = {}
+    if disco_2d.is_cuda and xccp_decode is not None:
+
+        if head_by == 'max_in':
+            head_score = disco_2d.sum(dim = 1)
+        elif head_by == 'max_out':
+            head_score = disco_2d.sum(dim = 2)
+        else:
+            if head_by == 'leftmost':
+                head_score = seq.flip(0)
+            elif head_by == 'rightmost':
+                head_score = seq
+            else:
+                raise ValueError('Unknown head_by = ' + head_by)
+            head_score += 1 # +1 for blocky_max
+            head_score = head_score[None].repeat(dis_size, 1)
+
+        (sections, comp_id, components,
+         comp_check) = xccp_decode.predict_disco_sections(disco_2d, 0.5, False, dis_length, dis_batch, dis_indice.contiguous(), layer_fence.contiguous(), head_score)
+        disco_2d = (x.cpu().numpy() for x in (dis_batch, dis_length, disco_2d, comp_id, comp_check))
+        for bid, dis_len, clear_2d, cid, check in zip(*disco_2d):
+            cid = np.unique(cid[:dis_len])
+            clear_2d = clear_2d[:dis_len, :dis_len]
+            check = bool(check.all())
+            layer_2d_logits[int(bid)] = clear_2d, cid, check
+        return sections, layer_2d_logits
 
     # dis_max_parents = dis_max_children >> 1
     # if dis_max_parents > 7:
@@ -61,13 +92,12 @@ def predict_disco_sections(disco_2d, layer_fence, dis_batch, dis_length, dis_ind
     # dis_d[dis_d_diff_argmax < seq_idx[None]] = 0
     # clear_3d = torch.bmm(dis_d.unsqueeze(dim = 1) * dis_u, dis_v.transpose(1, 2))
     # svd_time = time() - start
-    seq = torch.arange(dis_max_children, device = dis_batch.device)
-    clear_3d = disco_2d
-    clear_3d[:, seq, seq] = 1
 
     dis_comps = []
-    layer_2d_logits = {}
-    for clear_2d, dis_len, bid, indice in zip(clear_3d, dis_length, dis_batch, dis_indice):
+    fb_comps = torch.ones(1, dis_max_children, dtype = torch.bool, device = dis_batch.device)
+    fb_comp_idx = torch.zeros(dis_max_children, dtype = dis_batch.dtype, device = dis_batch.device)
+
+    for clear_2d, dis_len, bid, indice in zip(disco_2d, dis_length, dis_batch, dis_indice):
         #                                       final      first     final      first
         # 4578
         # 1010 (7); 0101 (5) | *****1*1*
@@ -114,7 +144,7 @@ def predict_disco_sections(disco_2d, layer_fence, dis_batch, dis_length, dis_ind
         else:
             raise ValueError('Unknown head_by = ' + head_by)
 
-        dis_b_max = blocky_max(comp_idx, head_score, False) # 0110 (for 57)
+        dis_b_max = blocky_max(comp_idx, head_score[:dis_len], False) # 0110 (for 57)
         comp_max_idx = comp_idx[dis_b_max] # 0101 -> 01 or 10
         
         indice = indice[:dis_len]
@@ -150,6 +180,10 @@ def predict_disco_sections(disco_2d, layer_fence, dis_batch, dis_length, dis_ind
 
     # print(layer_fence * 1)
     sections = layer_fence.cumsum(dim = 1) # 0011123444
+    # min_sec, _ = sections.min(1)
+    # if (min_sec > 1).any():
+    #     print(torch.where(min_sec > 1))
+    #     import pdb; pdb.set_trace()
     # print(sections)
     # print('sec')
 
@@ -374,8 +408,13 @@ class DiscoMultiStem(MultiStem):
                 continuous = existence & ~discontinuous
                 if self._continuous_fence_only:
                     fence_logits = continuous_fence(bbt_zeros, continuous, fence_logits)
-                (dis_length, dis_indice,
-                 get_dis_emb) = discontinuous_hidden(dis_batch, seq_idx.repeat(dis_batch_size, 1), discontinuous)
+                # (dis_length, dis_indice,
+                #  get_dis_emb) = discontinuous_hidden(dis_batch, , discontinuous)
+
+                dis_exist = discontinuous[dis_batch]
+                dis_helper = condense_helper(dis_exist, as_existence = True)
+                get_dis_emb = lambda emb: condense_left(emb[dis_batch], dis_helper)
+
                 disco_in, disco_out = self._select(get_dis_emb, disco_hidden, unit_emb)
                 if teacher_forcing and disco_2d_negative:
                     if (dis_continuous := continuous[dis_batch]).any():
@@ -419,6 +458,8 @@ class DiscoMultiStem(MultiStem):
                     #_0101?11?1 v
                     #0010__1__1 v (result: layer_fence)
                     #000011011_ ^
+                    dis_length = dis_exist.sum(dim = 1)
+                    dis_indice = condense_left(seq_idx.repeat(dis_batch_size, 1), dis_helper)
                     layer_fence &= discontinuous.logical_not()
                     disco_2d_logits = self._sigmoid(disco_2d_logits) # need to be in a arange (not hard compress)
                     sections, disco_2d = predict_disco_sections(disco_2d_logits, layer_fence, dis_batch, dis_length, dis_indice, self._head_by)

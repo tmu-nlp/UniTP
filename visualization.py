@@ -1942,7 +1942,9 @@ if desktop:
                     continue
 
                 for p, (ps, pr) in enumerate(zip(label_layer, right_layer)):
-                    if not self._conf.show_paddings and not (head.offset <= p < head.offset + head.length - l) or not self._conf.show_nil and ps[0] < 0 if isinstance(ps, np.ndarray) else ps == nil: # not use ts because of spotlight
+                    if not self._conf.show_paddings and not (head.offset <= p < head.offset + head.length - l):
+                        continue
+                    elif not self._conf.show_nil and (ps[0] < 0 if isinstance(ps, np.ndarray) else ps == nil): # not use ts because of spotlight
                         continue
                         
                     center_x = (l/2 + p + .5) * self._conf.word_width + self._conf.offset_x

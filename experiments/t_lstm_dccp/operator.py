@@ -7,7 +7,7 @@ from time import time
 from utils.str_ops import strange_to
 from utils.math_ops import is_bin_times, f_score
 from utils.types import M_TRAIN, BaseType, frac_open_0, frac_06, frac_close
-from utils.types import str_num_array, false_type, tune_epoch_type
+from utils.types import str_num_array, true_type, false_type, tune_epoch_type
 from models.utils import PCA, fraction, hinge_score
 from models.loss import binary_cross_entropy, hinge_loss
 from experiments.helper import WarmOptimHelper
@@ -24,6 +24,7 @@ train_type = dict(loss_weight = dict(tag    = BaseType(0.3, validator = frac_ope
                                      shuffled = BaseType(0.6, validator = frac_open_0),
                                      _undirect_orient = BaseType(0.9, validator = frac_close)),
                   learning_rate = BaseType(0.001, validator = frac_open_0),
+                  multiprocessing_decode = true_type,
                   label_freq_as_loss_weight = false_type,
                   tune_pre_trained = dict(from_nth_epoch = tune_epoch_type,
                                           lr_factor = frac_06))
@@ -32,14 +33,20 @@ class DiscoOperator(Operator):
     def __init__(self, model, get_datasets, recorder, i2vs, train_config, evalb_lcfrs_prm):
         if has_discodop():
             prompt = 'Use discodop evalb (detected)'
+            if train_config.multiprocessing_decode:
+                prompt += ' + with multiprocessing_decode'
             color = '2'
             self._discodop_prm = evalb_lcfrs_prm
         else:
             prompt = 'Use our dccp evalb, [discodop] is not installed'
             color = '3'
             self._discodop_prm = None
+            if train_config.multiprocessing_decode:
+                prompt += '\n  [disabled] \'train::multiprocessing_decode = true\' is not supported.'
+                train_config._nested['multiprocessing_decode'] = False
         print(byte_style(prompt, color)); recorder.log(prompt)
         super().__init__(model, get_datasets, recorder, i2vs)
+        self._dm = None
         self._mode_trees = [], []
         self._train_config = train_config
         self._tune_pre_trained = False
@@ -149,7 +156,7 @@ class DiscoOperator(Operator):
                                       Length = batch_len,
                                       Height = batch['segments'].shape[0])
         else:
-            vis, _, _, pending_heads = self._vis_mode
+            vis, _, _, pending_heads, _ = self._vis_mode
             if vis.save_tensors:
                 pca = self._model.get_static_pca() if hasattr(self._model, 'get_static_pca') else None
                 if pca is None:
@@ -190,48 +197,70 @@ class DiscoOperator(Operator):
                 save_tensors = True
             else:
                 folder = ds_name + '_test_with_devel'
-                save_tensors = is_bin_times(int(epoch_major)) if int(epoch_minor) == 0 else False
+                save_tensors = is_bin_times(int(epoch_major)) and int(epoch_minor) == 0
         else:
             head_trees = devel_head_batchess
             folder = ds_name + '_devel'
-            save_tensors = is_bin_times(int(epoch_major)) if int(epoch_minor) == 0 else False
+            save_tensors = is_bin_times(int(epoch_major)) and int(epoch_minor) == 0
         if self._optuna_mode:
             save_tensors = False
-        vis = DiscoVis(epoch,
-                       self.recorder.create_join(folder),
-                       self.i2vs,
-                       head_trees,
-                       self.recorder.log,
-                       self._evalb_lcfrs_kwargs,
-                       self._discodop_prm,
-                       self._model.threshold,
-                       save_tensors)
+        serial = save_tensors or not head_trees or not self._train_config.multiprocessing_decode
+        work_dir = self.recorder.create_join(folder)
+        if serial:
+            async_ = True
+            vis = DiscoVis(epoch,
+                           work_dir,
+                           self.i2vs,
+                           head_trees,
+                           self.recorder.log,
+                           self._evalb_lcfrs_kwargs,
+                           self._discodop_prm,
+                           self._model.threshold,
+                           save_tensors)
+        else:
+            async_ = False
+            vis = ParallelVis(epoch, work_dir, self.i2vs, self.recorder.log, self._evalb_lcfrs_kwargs, self._discodop_prm, self._dm)
+
         pending_heads = vis._pending_heads
-        vis = VisRunner(vis, async_ = True) # wrapper
+        vis = VisRunner(vis, async_ = async_) # wrapper
         vis.before()
-        self._vis_mode = vis, use_test_set, final_test, pending_heads
+        self._vis_mode = vis, use_test_set, final_test, pending_heads, serial
         if hasattr(self._model, 'update_static_pca'):
             self._model.update_static_pca()
 
     def _after_validation(self, ds_name, count, seconds):
-        vis, use_test_set, final_test, pending_heads = self._vis_mode
-        scores, desc, logg, heads = vis.after()
-        if pending_heads:
+        vis, use_test_set, final_test, pending_heads, serial = self._vis_mode
+        scores, desc, logg, heads_or_dm = vis.after()
+        if not serial:
+            self._dm = heads_or_dm
+        elif pending_heads:
             devel_head_batchess, test_head_batchess = self._mode_trees
             if use_test_set:
-                self._mode_trees = devel_head_batchess, heads
+                self._mode_trees = devel_head_batchess, heads_or_dm
             else:
-                self._mode_trees = heads, test_head_batchess
-        speed = float(f'{count / seconds:.1f}')
+                self._mode_trees = heads_or_dm, test_head_batchess
+
+        speed_outer = float(f'{count / seconds:.1f}')
+        if serial:
+            dmt = speed_dm_str = ''
+        else:
+            dmt = self._dm.duration
+            speed_dm = count / dmt
+            speed_dm_str = f' ◇ {speed_dm:.1f}'
+            dmt = f' ◇ {dmt:.3f}'
+            desc += byte_style(speed_dm_str + 'sps.', '2')
+
         if vis.is_async:
             rate = vis.proc_time / seconds
         else:
             rate = vis.proc_time / (seconds - vis.proc_time)
-        logg += f' @{speed}sps. (sym:nn {rate:.2f})'
-        scores['speed'] = speed
-        if not final_test:
+        logg += f' @{speed_outer}{speed_dm_str} sps. (sym:nn {rate:.2f}; {seconds:.3f}{dmt} sec.)'
+        if final_test:
+            if self._dm:
+                self._dm.close()
+        else:
             self.recorder.tensorboard(self.global_step, 'TestSet/%s' if use_test_set else 'DevelSet/%s',
-                                      F1 = scores['TF'], Disc_F1 = scores['DF'], SamplePerSec = speed)
+                                      F1 = scores.get('F1', 0), SamplePerSec = None if serial else speed_dm)
         self._vis_mode = None
         return scores, desc, logg
 
@@ -491,3 +520,61 @@ class DiscoVis(BaseVis):
         #             else:
         #                 fw.write('\nK<<  ' + '\nK<<  '.join(h_lines) + '\n')
         #                 fw.write('|||\n|||\nAnswer Parsing:\nA>>  ' + '\nA>>  '.join(d_lines) + '\n\n\n\n')
+
+
+from data.cross.binary import BxDM
+from utils.types import num_threads
+class ParallelVis(BaseVis):
+    def __init__(self, epoch, work_dir, i2vs, logger, evalb_lcfrs_kwargs, discodop_prm, dm):
+        super().__init__(epoch)
+        self._dtv = Dummy(work_dir, i2vs)
+        self._logger = logger
+        self._pending_heads = False
+        self._evalb_lcfrs_kwargs = evalb_lcfrs_kwargs
+        assert discodop_prm
+        self._discodop_prm = discodop_prm
+        self._v_errors = {}
+        self._dm = dm
+        self._bid_offset = 0
+
+    def _before(self):
+        if self._dm:
+            self._dm.timeit()
+
+    def _process(self, batch_id, batch):
+        (d_segment, d_seq_len, h_token, d_tag, d_label, d_right, d_joint, d_direc) = batch
+        batch_size = h_token.shape[0]
+        
+        if self._dm is None:
+            self._dm = BxDM(batch_size, self._dtv.vocabs, num_threads)
+        self._dm.batch(self._bid_offset, d_segment, d_seq_len, h_token, d_tag, d_label, d_right, d_joint, d_direc)
+        self._bid_offset += batch_size
+
+    def _after(self):
+        fhead = self._dtv.join('head.export')
+        fdata = self._dtv.join(f'data.{self.epoch}.export')
+        
+        dm = self._dm
+        tree_text = dm.batched()
+        import pdb; pdb.set_trace()
+        if tree_text: # 'None' means 'text concat' without a memory travel
+            with open(fdata, 'w') as fw:
+                fw.write(tree_text)
+
+        with open(self._dtv.join(f'eval.{self.epoch}.rpt'), 'w') as fw:
+            scores = discodop_eval(fhead, fdata, self._discodop_prm, fw)
+
+        scores['N'] = self._bid_offset
+        tp, tr, tf, dp, dr, df = (scores[k] for k in ('TP', 'TR', 'TF', 'DP', 'DR', 'DF'))
+        desc_for_screen = f'Evalb({tp:.2f}/{tr:.2f}/' + byte_style(f'{tf:.2f}', underlined = True)
+        desc_for_screen += f'|{dp:.2f}/{dr:.2f}/' + byte_style(f'{df:.2f}', underlined = True) + ')'
+        desc_for_logger = f'N: {self._bid_offset} Evalb({tp:.2f}/{tr:.2f}/{tf:.2f}|{dp:.2f}/{dr:.2f}/{df:.2f})'
+        return scores, desc_for_screen, desc_for_logger, dm
+
+    @property
+    def save_tensors(self):
+        return False
+
+    @property
+    def length_bins(self):
+        return None

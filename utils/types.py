@@ -102,9 +102,9 @@ valid_size      = lambda x: isinstance(x, int) and x > 0
 valid_odd_size  = lambda x: valid_size(x) and x % 2 == 1
 valid_even_size = lambda x: valid_size(x) and x % 2 == 0
 valid_epoch     = lambda x: isinstance(x, int) and x >= 0
-beam_size_exp  = BaseType(0, as_index = True, default_set = range(100))
 false_type     = BaseType(False, as_exception = True)
 true_type      = BaseType(True,  as_exception = True)
+frac_0         = BaseType(0.0, validator = frac_open_1)
 frac_1         = BaseType(0.1, validator = frac_open_1)
 frac_2         = BaseType(0.2, validator = frac_open_1)
 frac_3         = BaseType(0.3, validator = frac_open_1)
@@ -116,19 +116,22 @@ rate_5         = BaseType(0.5, validator = frac_close)
 distance_type  = BaseType(3.1, validator = lambda d: d > 0)
 non0_5         = BaseType(0.5, validator = frac_open_0)
 none_type      = BaseType(None)
-num_ctx_layer = BaseType(8, validator = lambda x: isinstance(x, int) and 0 <= x <= 24)
+num_ctx_layer = BaseType(6, validator = lambda x: isinstance(x, int) and 0 <= x <= 24)
 num_ori_layer = BaseType(1, validator = lambda x: isinstance(x, int) and 1 <= x <= 4)
+num_ctx_layer_0 = BaseType(0, validator = lambda x: isinstance(x, int) and 0 <= x <= 24)
 vocab_size = BaseType(None, validator = lambda x: isinstance(x, int) and 2 < x, as_exception = True)
 word_dim   = BaseType(300, validator = valid_even_size)
 orient_dim = BaseType(64,  validator = valid_even_size)
+chunk_dim  = BaseType(200,  validator = valid_even_size)
 hidden_dim = BaseType(200, validator = valid_size)
+half_hidden_dim = BaseType(100, validator = valid_size)
 train_batch_size = BaseType(80, validator = valid_size)
 train_bucket_len = BaseType(4, validator = valid_epoch)
 tune_epoch_type  = BaseType(None, as_exception = True, validator = valid_epoch)
 train_max_len    = BaseType(None, validator = valid_size, as_exception = True)
-fill_placeholder = '//FILL//THIS//'
-trapezoid_height = BaseType(None, valid_size, as_exception = True)
+trapezoid_height = BaseType(-1, valid_size, (None, 0, 1), as_index = True)
 combine_static = BaseType(0, as_index = True, default_set = (None, 'add', 'scalar_add', 'vector_add'))
+fill_placeholder = '//FILL//THIS//'
 
 from utils.str_ops import strange_to
 def strange_validator(x):
@@ -159,13 +162,13 @@ E_CNF = O_LFT, O_RGT
 import os
 num_threads = (os.cpu_count() - 2) if os.cpu_count() > 2 else 1
 
-frac_7 = BaseType(0.7, frac_close)
-frac_1 = BaseType(0.1, frac_close)
-frac_3 = BaseType(0.3, frac_close)
-binarization = {O_LFT: frac_7,
-                O_RGT: frac_1,
-                O_MIN: frac_1,
-                O_MOT: frac_1}
+frac_00 = BaseType(0.0, frac_close)
+frac_85 = BaseType(0.85, frac_close)
+frac_15 = BaseType(0.15, frac_close)
+binarization = {O_LFT: frac_85,
+                O_RGT: frac_15,
+                O_MIN: frac_00,
+                O_MOT: frac_00}
 frac_close_0 = BaseType(0.0, frac_close)
 frac_close_2 = BaseType(0.2, frac_close)
 frac_close_1 = BaseType(1.0, frac_close)

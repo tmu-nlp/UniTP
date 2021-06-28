@@ -1,4 +1,4 @@
-from data.delta import preproc_cnf, Tree, defaultdict
+from data.delta import preproc_cnf, Tree, defaultdict, add_efficient_subs
 from data.cross import _read_dpenn, draw_str_lines as _draw_str_lines
 from data.mp import DM
 
@@ -32,42 +32,6 @@ class MaryDM(DM):
         start = seg_id * seg_size
         if start < batch_size:
             return args[:1] + tuple(x[start: (seg_id + 1) * seg_size] for x in args[1:])
-
-def add_efficient_subs(stretched_tree, sub = '_', max_range = None):
-    if stretched_tree.height() > 3:
-        parent_label = stretched_tree.label()
-        modified = False
-        children = []
-        for t in stretched_tree:
-            m, t = add_efficient_subs(t, sub, max_range)
-            modified |= m
-            children.append(t)
-        heights = set(t.height() for t in children)
-        if max_range is None:
-            upper = max(heights)
-        else:
-            upper = min(heights) + max_range
-            upper = min(upper, max(heights))
-        for ht in range(min(heights), upper):
-            new_children = []
-            for child in children:
-                if not new_children or child.height() > ht:
-                    new_children.append([child])
-                else:
-                    if new_children[-1][-1].height() > ht:
-                        new_children.append([child])
-                    else:
-                        new_children[-1].append(child)
-            children = []
-            for group in new_children:
-                if len(group) == 1:
-                    children.append(group.pop())
-                else:
-                    modified = True
-                    children.append(Tree(sub + parent_label, group))
-        if modified:
-            return True, Tree(parent_label, children)
-    return False, stretched_tree
 
 def clear_label(label, umark = '+', fmark = '@'):
     '''Most unaries are introduce by preproc_cnf/remove trace'''

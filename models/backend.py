@@ -10,7 +10,7 @@ stem_config = dict(orient_dim   = orient_dim,
                    num_layers   = num_ori_layer,
                    rnn_drop_out = frac_2,
                    drop_out     = frac_4,
-                   trainable_initials = true_type)
+                   trainable_initials = false_type)
 
 from models.utils import condense_helper, condense_left
 from itertools import count

@@ -16,7 +16,7 @@ train_type = dict(loss_weight = dict(tag    = BaseType(0.2, validator = frac_ope
                                      orient = BaseType(0.5, validator = frac_open_0)),
                   learning_rate = BaseType(0.001, validator = frac_open_0),
                   label_freq_as_loss_weight = false_type,
-                  multiprocessing_decode = false_type,
+                  multiprocessing_decode = true_type,
                   orient_hinge_loss = true_type,
                   tune_pre_trained = dict(from_nth_epoch = tune_epoch_type,
                                           lr_factor = frac_06))
