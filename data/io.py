@@ -146,10 +146,11 @@ def check_vocab(fname, expected_size = None):
         return False
     return True
 
-def split_dict(tr, vl, ts):
-    return dict(train_set = tr,
-                devel_set = vl,
-                test_set  = ts)
+def split_dict(tr, vl, ts, **kwargs):
+    kwargs['train_set'] = tr
+    kwargs['devel_set'] = vl
+    kwargs['test_set' ] = ts
+    return kwargs
 
 from random import randint
 class SourcePool:

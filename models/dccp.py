@@ -1,3 +1,4 @@
+from nltk.util import pad_sequence
 import torch
 from torch import nn, Tensor
 from models.types import activation_type, logit_type
@@ -28,23 +29,23 @@ class DiscoOrient(BaseWrapper):
     #     return self._type[comp]
 
 disco_orient_type = []
-for i in range((1 << 3 )+ 2):
+for i in range(4 + 8 + 2):
     hinge = []
     crsen = []
-    if i < 8:
+    if i < 12:
         (crsen if i & 1 else hinge).append('j')
-        (crsen if i & 2 else hinge).append('d')
-        (crsen if i & 4 else hinge).append('r')
+        (crsen if i & 2 else hinge).append('r')
+        if i < 8:
+            (crsen if i & 4 else hinge).append('d')
         if hinge:
-            if crsen:
-                do_type = 'hinge.' + ''.join(hinge) + ';bce.' + ''.join(crsen)
-                do_type = 'hinge.' + ''.join(hinge) + ';bce.' + ''.join(crsen)
-            else:
-                do_type = 'hinge.' + ''.join(hinge)
+            do_type = 'hinge.' + ''.join(hinge)
+            if crsen: do_type += ';'
         else:
-            do_type = 'bce.' + ''.join(crsen)
+            do_type = ''
+        if crsen:
+            do_type += 'bce.' + ''.join(crsen)
     else:
-        do_type = ('hinge' if i & 1 else 'bce') + '.j;ce.dr' # hinge.jl;ce.dr;
+        do_type = ('hinge' if i & 1 else 'bce') + '.j;ce.dr'
     disco_orient_type.append(DiscoOrient(do_type))
 disco_orient_type = BaseType(-1, as_index = True, as_exception = True, default_set = disco_orient_type)
 
@@ -154,19 +155,24 @@ class DiscoStem(nn.Module):
         self._orient_type = orient_type = disco_orient_to_dict(orient_type)
         self._jnt_score, joint_loss = (hinge_score, hinge_loss) if orient_type['j'] == 'hinge' else (nn.Sigmoid(), binary_cross_entropy)
         if 'ce' in orient_type.values():
+            assert orient_type.keys() == set('jdr')
             orient_bits = 3
             self._orient_scores = convert32
             # right_inv = direc_inv = inv_sigmoid
             self._loss_fns = joint_loss
         else:
-            orient_bits = 2
-            direc_act, direc_loss = (hinge_score, hinge_loss) if orient_type['d'] == 'hinge' else (nn.Sigmoid(), binary_cross_entropy)
             right_act, right_loss = (hinge_score, hinge_loss) if orient_type['r'] == 'hinge' else (nn.Sigmoid(), binary_cross_entropy)
+            with_direc = 'd' in orient_type.keys()
+            orient_bits = 1 + with_direc
+            if with_direc:
+                direc_act, direc_loss = (hinge_score, hinge_loss) if orient_type['d'] == 'hinge' else (nn.Sigmoid(), binary_cross_entropy)
+            else:
+                direc_act = direc_loss = None
             self._rgt_act = right_act
             self._dir_act = direc_act
             def orient_scores(right_direc):
                 right = right_act(right_direc[:, :, 0])
-                direc = direc_act(right_direc[:, :, 1])
+                direc = direc_act(right_direc[:, :, 1]) if with_direc else None
                 return right, direc
             self._orient_scores = orient_scores
             self._loss_fns = right_loss, direc_loss, joint_loss
@@ -392,7 +398,7 @@ class DiscoStem(nn.Module):
         right_score, joint_score, direc_score = self.get_stem_score(right_direc, joint)
 
         right = right_score > self._raw_threshold.right
-        direc = direc_score > self._raw_threshold.direc
+        direc = direc_score > self._raw_threshold.direc if direc_score is not None else None
         joint = joint_score > self._raw_threshold.joint
         if get_score:
             return right, joint, direc, right_score, joint_score, direc_score
@@ -411,16 +417,23 @@ class DiscoStem(nn.Module):
         if right_direc_logits is None:
             return None, None, None
         right_loss, direc_loss, joint_loss = self._loss_fns
+        with_direc = direc_loss is not None
         right_logits = right_direc_logits[:, :, 0]
-        direc_logits = right_direc_logits[:, :, 1]
-        if undirect_orient == 0:
-            direc_weight = gold_direc
-        elif undirect_orient < 1:
-            direc_weight = gold_direc * (1 - undirect_orient) + undirect_orient
-            direc_weight *= gold['existence']
+        direc_logits = right_direc_logits[:, :, 1] if with_direc else None
+        if with_direc:
+            if undirect_orient == 0:
+                direc_weight = gold_direc
+            elif undirect_orient < 1:
+                direc_weight = gold_direc * (1 - undirect_orient) + undirect_orient
+                direc_weight *= gold['existence']
+            else:
+                direc_weight = gold['existence']
+            right_loss = right_loss(right_logits, gold_right, direc_weight)
+            direc_loss = direc_loss(direc_logits, gold_direc, None)
         else:
-            direc_weight = gold['existence']
-        return right_loss(right_logits, gold_right, direc_weight), joint_loss(joint_logits, gold_joint, None), direc_loss(direc_logits, gold_direc, None)
+            right_loss = right_loss(right_logits, gold_right, gold_direc)
+
+        return right_loss, joint_loss(joint_logits, gold_joint, None), direc_loss
 
 multi_class = dict(hidden_dim = hidden_dim,
                    activation = activation_type,

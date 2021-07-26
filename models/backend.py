@@ -1,7 +1,7 @@
 import torch
 from torch import nn, Tensor
 from utils.math_ops import s_index
-from utils.types import BaseType, true_type, frac_4, frac_2, BaseWrapper
+from utils.types import BaseType, true_type, frac_4, frac_2
 from utils.types import orient_dim, num_ori_layer, false_type
 
 from models.combine import get_combinator, combine_type

@@ -34,7 +34,7 @@ class DiscoOperator(Operator):
         if has_discodop():
             prompt = 'Use discodop evalb (detected)'
             if train_config.multiprocessing_decode:
-                prompt += ' + with multiprocessing_decode'
+                prompt += ' +> with multiprocessing_decode'
             color = '2'
             self._discodop_prm = evalb_lcfrs_prm
         else:
@@ -104,7 +104,7 @@ class DiscoOperator(Operator):
                                       Tag = fraction(tag_match,    tag_weight),
                                       Label = fraction(label_match, gold_exists),
                                       Right = fraction(right_match, gold_direcs),
-                                      Direc = fraction(direcs == gold_direcs),
+                                      Direc = fraction(direcs == gold_direcs) if direcs is not None else None,
                                       Joint = fraction(joints == gold_joints))
 
             if self._train_config.label_freq_as_loss_weight:
@@ -134,16 +134,18 @@ class DiscoOperator(Operator):
                 total_loss = self._train_config.loss_weight.label * label_loss + total_loss
                 total_loss = self._train_config.loss_weight.joint * joint_loss + total_loss
                 total_loss = self._train_config.loss_weight._right * right_loss + total_loss
-                total_loss = self._train_config.loss_weight._direc * direc_loss + total_loss
                 if shuffled_joint_loss is not None:
                     total_loss = self._train_config.loss_weight.joint * shuffled_joint_loss * shuffled + total_loss
                     total_loss = self._train_config.loss_weight._right * shuffled_right_loss * shuffled + total_loss
-                    total_loss = self._train_config.loss_weight._direc * shuffled_direc_loss * shuffled + total_loss
                     tb_loss_kwargs['ShuffledRight'] = shuffled_right_loss
-                    tb_loss_kwargs['ShuffledDirec'] = shuffled_direc_loss
                     tb_loss_kwargs['ShuffledJoint'] = shuffled_joint_loss
+                    if shuffled_direc_loss is not None:
+                        tb_loss_kwargs['ShuffledDirec'] = shuffled_direc_loss
+                        total_loss = self._train_config.loss_weight._direc * shuffled_direc_loss * shuffled + total_loss
                 tb_loss_kwargs['Right'] = right_loss
-                tb_loss_kwargs['Direc'] = direc_loss
+                if direc_loss is not None:
+                    tb_loss_kwargs['Direc'] = direc_loss
+                    total_loss = self._train_config.loss_weight._direc * direc_loss + total_loss
             total_loss.backward()
             
             if hasattr(self._model, 'tensorboard'):
@@ -167,12 +169,15 @@ class DiscoOperator(Operator):
                 tag_scores,     tags = self._model.get_decision_with_value(tag_logits)
                 label_scores, labels = self._model.get_decision_with_value(label_logits)
                 rights, joints, direcs, right_scores, joint_scores, direc_scores = self._model.get_stem_prediction(right_direc_logits, joint_logits, get_score = True)
+                if direc_scores is None: direc_scores = torch.ones_like(right_scores)
                 extra = mpc_token, mpc_label, tag_scores, label_scores, right_scores, joint_scores, direc_scores
             else:
                 tags    = self._model.get_decision(tag_logits  )
                 labels  = self._model.get_decision(label_logits)
                 rights, joints, direcs = self._model.get_stem_prediction(right_direc_logits, joint_logits)
                 extra = None
+            if direcs is None:
+                direcs = torch.ones_like(rights)
             if pending_heads:
                 b_head = tuple(batch[x] for x in 'segments seq_len token tag label right joint direc'.split())
                 b_data = (segment, seq_len, tags, labels, rights, joints, direcs)
@@ -535,7 +540,7 @@ class ParallelVis(BaseVis):
         self._discodop_prm = discodop_prm
         self._v_errors = {}
         self._dm = dm
-        self._bid_offset = 0
+        self._bid_offset = 1
 
     def _before(self):
         if self._dm:
@@ -556,7 +561,6 @@ class ParallelVis(BaseVis):
         
         dm = self._dm
         tree_text = dm.batched()
-        import pdb; pdb.set_trace()
         if tree_text: # 'None' means 'text concat' without a memory travel
             with open(fdata, 'w') as fw:
                 fw.write(tree_text)

@@ -425,7 +425,8 @@ class MxDM(DM):
             bid_offset += 1
 
     @staticmethod
-    def arg_segment_fn(seg_id, seg_size, batch_size, args):
+    def arg_segment_fn(seg_id, seg_size, batch_size, t_args):
+        bid_offset, segments = t_args[:2]
         start = seg_id * seg_size
         if start < batch_size:
-            return args[:2] + tuple(x[start: (seg_id + 1) * seg_size] for x in args[2:])
+            return (bid_offset + start, segments) + tuple(x[start: (seg_id + 1) * seg_size] for x in t_args[2:])

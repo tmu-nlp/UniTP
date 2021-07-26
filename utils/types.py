@@ -38,10 +38,10 @@ class BaseType:
                 assert as_index
                 assert isinstance(default_val, int) or default_val is None
                 if as_exception: # (nn.LSTM, nn.GRU)
-                    names_set = tuple(x.name for x in default_set)
+                    validate_set = [x.identical for x in default_set]
                     if default_val is None:
-                        names_set = (None,) + names_set
-                    self._valid = lambda x: x in names_set
+                        validate_set.append(lambda x: x is None)
+                    self._valid = lambda x: any(fn(x) for fn in validate_set)
                 else: # ('CV', 'NV')
                     self._valid = lambda x: x in default_set
         else:

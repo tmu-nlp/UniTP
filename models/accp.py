@@ -1,7 +1,7 @@
 import torch
 from torch import nn
 
-from utils.types import chunk_dim, hidden_dim, half_hidden_dim, num_ori_layer, BaseWrapper, BaseType
+from utils.types import chunk_dim, hidden_dim, half_hidden_dim, num_ori_layer
 from utils.types import frac_2, frac_4, frac_5, true_type, false_type
 from utils.param_ops import HParams
 from random import random

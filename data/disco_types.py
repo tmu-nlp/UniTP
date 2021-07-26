@@ -3,6 +3,7 @@ C_DPTB = 'dptb'
 C_ABSTRACT = 'disco'
 E_DISCO = C_TGR, C_DPTB
 
+from data.delta import add_efficient_subs
 from data.io import make_call_fasttext, check_fasttext, check_vocab, split_dict
 build_params = {C_DPTB: split_dict(   '2-21',          '22',          '23'),
                 C_TGR:  split_dict('1-40474', '40475-45474', '45475-50474')}
@@ -18,6 +19,7 @@ dccp_data_config = dict(vocab_size     = vocab_size,
                         bucket_len     = train_bucket_len,
                         min_gap        = tune_epoch_type,
                         shuffle_swap   = swapper,
+                        add_efficient_subs = true_type,
                         unify_sub      = true_type,
                         sort_by_length = false_type)
 
@@ -40,9 +42,10 @@ xccp_data_config = dict(vocab_size     = vocab_size,
 # tree = '/Users/zchen/KK/corpora/tiger_release_aug07.corrected.16012013.xml'
 
 from utils.shell_io import byte_style
+from time import sleep, time
 def select_and_split_corpus(corp_name, corp_path,
                             train_set, devel_set, test_set,
-                            binary = True, read_dep = True):
+                            binary = True, read_dep = None):
     from utils.str_ops import strange_to
     from data.cross.binary import read_tiger_graph, read_disco_penn
     from data.cross.multib import TreeKeeper
@@ -76,7 +79,7 @@ def select_and_split_corpus(corp_name, corp_path,
         if read_dep:
             print(byte_style('Acquiring PTB head info from Stanford CoreNLP ...', '3'), file = stderr)
             start = time()
-            dep_root = StanfordDependencies(parpath(save_to_dir), print_func = lambda x: print(byte_style(x, dim = True), file = stderr)).convert_corpus(dtrees)
+            dep_root = StanfordDependencies(read_dep, print_func = lambda x: print(byte_style(x, dim = True), file = stderr)).convert_corpus(dtrees)
             start = time() - start
             print('  finished in ' + byte_style(f'{start:.0f}', 3) + ' sec. (' + byte_style(f'{len(corpus) / start:.2f}', '3')+ ' sents/sec.)', file = stderr)
             for duet, dep in zip(corpus, dep_root):
@@ -133,7 +136,6 @@ def build(save_to_dir,
     from multiprocessing import Process, Queue
     from utils.types import E_ORIF5_HEAD, M_TRAIN, M_DEVEL, M_TEST, num_threads
     from contextlib import ExitStack
-    from time import sleep, time
     from data.delta import logits_to_xtype
 
     class WorkerX(Process):
@@ -189,7 +191,7 @@ def build(save_to_dir,
             q.put(bundle)
 
     (corpus, in_train_set, in_devel_set, in_test_set,
-     read_func) = select_and_split_corpus(corp_name, corp_path, train_set, devel_set, test_set)
+     read_func) = select_and_split_corpus(corp_name, corp_path, train_set, devel_set, test_set, read_dep = parpath(save_to_dir))
 
     num_threads = min(num_threads, len(corpus))
     workers = distribute_jobs(corpus, num_threads)

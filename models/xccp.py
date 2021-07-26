@@ -11,6 +11,7 @@ except:
     print(byte_style('[HINT] CUDA module xccp_decode', '3'), 'is not compiled for full discontinuity matrix parallelism.', file = stderr)
     print('    -> try', byte_style('\'cd cuda; python setup.py install\''), file = stderr)
     xccp_decode = None
+xccp_decode = None
 
 def continuous_fence(bbt_zeros, continuous, fence_logits):
     batch_dim, con_min, con_max = bool_start_end(continuous)

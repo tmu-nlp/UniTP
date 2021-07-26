@@ -1,15 +1,4 @@
-
-def locations(node, bottom, top_down, consumed_top_down):
-    locs = []
-    children = consumed_top_down[node] if node in consumed_top_down else top_down[node].children
-    for cid in children:
-        if cid in bottom:
-            locs.append(bottom.index(cid))
-        else:
-            locs.extend(locations(cid, bottom, top_down, consumed_top_down))
-    return locs
-
-from random import random
+from random import random, randint
 def _positional_right(cid, num_children, factor):
     position = 1 - (cid + 0.5) / num_children
     if position == factor == 0.5:
@@ -23,6 +12,48 @@ def _new_dep(dependency, d_node, h_node, new_node):
     head.children.update(dependency.pop(d_node).children)
     dependency[new_node] = head
 
+def _new_sub_id(group, sub_suffix):
+    sub_id = 0
+    for name in group:
+        x = name.rfind(sub_suffix)
+        if x < 0:
+            continue
+        sub_id = max(int(name[x + 1:]), sub_id)
+    return f'{sub_suffix}{sub_id + 1}'
+
+def locations(node, bottom, top_down, consumed_top_down):
+    children = consumed_top_down[node] if node in consumed_top_down else top_down[node].children
+    for cid in children:
+        if cid in bottom:
+            yield bottom.index(cid)
+        else:
+            yield from locations(cid, bottom, top_down, consumed_top_down)
+
+def _extend_soft_right(soft_right, td_children, bottom, top_down, consumed_top_down):
+    existing_nodes = []
+    shadow_locations = []
+    for node in td_children:
+        if node in bottom:
+            existing_nodes.append(node)
+        else:
+            shadow_locations.extend(locations(node, bottom, top_down, consumed_top_down))
+    for node in existing_nodes:
+        loc = bottom.index(node)
+        candidates = []
+        for sloc in shadow_locations:
+            diff = sloc - loc
+            candidates.append((diff if diff > 0 else -diff, diff))
+        # import pdb; pdb.set_trace()
+        if len(candidates) > 1:
+            candidates.sort()
+            if candidates[0][0] == candidates[1][0]:
+                closest = candidates[randint(0, 1)][1]
+            else:
+                closest = candidates[0][1]
+        else:
+            closest = candidates[0][1]
+        soft_right[node] = closest > 0
+
 from utils.math_ops import lr_gen
 def binary_hash(bottom,
                 top_down,
@@ -35,42 +66,20 @@ def binary_hash(bottom,
                 dependency):
     bottom_up = {}
     right_hash = {}
-    swappable_locations = []
     joint_rset = []
-    bottom_flag = [True for _ in bottom]
     soft_right = {}
     consumed_top_down = {}
+    swappable_groups = []
+    bottom_flag = [True for _ in bottom]
     depend_on = lambda d_node, h_node: dependency[d_node].label in dependency[h_node].children
     for p_node, td in top_down.items():
         p_node_complete = p_node in completed_nodes
         not_enough_child = not some_or_all(node in bottom for node in td.children)
+        # if p_node == 'n_506':
+        #     import pdb; pdb.set_trace()
         if p_node_complete or not_enough_child:
             if get_soft_right and not p_node_complete and not_enough_child:
-                existing_nodes = []
-                shadow_locations = []
-                for node in td.children:
-                    # import pdb; pdb.set_trace()
-                    if node in bottom:
-                        existing_nodes.append(node)
-                    else:
-                        shadow_locations.extend(locations(node, bottom, top_down, consumed_top_down))
-                for node in existing_nodes:
-                    loc = bottom.index(node)
-                    candidates = []
-                    for sloc in shadow_locations:
-                        diff = sloc - loc
-                        candidates.append((diff if diff > 0 else -diff, diff))
-                    # import pdb; pdb.set_trace()
-                    if len(candidates) > 1:
-                        candidates.sort()
-                        if candidates[0][0] == candidates[1][0]:
-                            closest = candidates[randint(0, 1)][1]
-                        else:
-                            closest = candidates[0][1]
-                    else:
-                        closest = candidates[0][1]
-                    soft_right[node] = closest > 0
-                # import pdb; pdb.set_trace()
+                _extend_soft_right(soft_right, td.children, bottom, top_down, consumed_top_down)
             continue
         
         location = []
@@ -79,7 +88,7 @@ def binary_hash(bottom,
             if flag and node in td.children:
                 location.append(nid)
                 location_children.append((nid, node))
-        swappable_locations.append(location)
+        swappable_groups.append(location)
 
         num_children = len(location_children)
         for cid, (nid, node) in enumerate(location_children):
@@ -120,11 +129,13 @@ def binary_hash(bottom,
                             new_node = p_node
                             completed_nodes.add(p_node)
                         else:
-                            sub_id = 0
-                            new_node = str(p_node)
-                            while new_node + f'{sub_suffix}{sub_id}' in group:
-                                sub_id += 1
-                            new_node += f'{sub_suffix}{sub_id}'
+                            new_node = p_node.rfind(sub_suffix)
+                            new_node = p_node if new_node < 0 else p_node[:new_node]
+                            new_node += _new_sub_id(group, sub_suffix)
+                            # sub_id = 0
+                            # while new_node + f'{sub_suffix}{sub_id}' in group:
+                            #     sub_id += 1
+                            # new_node += f'{sub_suffix}{sub_id}'
                         if dependency and node in dependency and last_node in dependency:
                             if depend_on(last_node, node): # dep -> head
                                 _new_dep(dependency, last_node, node, new_node)
@@ -139,7 +150,7 @@ def binary_hash(bottom,
             right_hash[node] = last_right = right
             last_nid = nid
             last_node = node
-    return right_hash, joint_rset, swappable_locations, bottom_up, soft_right
+    return right_hash, joint_rset, swappable_groups, bottom_up, soft_right
 
 def binary_signals(bottom,
                    bottom_up,
@@ -148,7 +159,6 @@ def binary_signals(bottom,
                    bottom_unary,
                    right_hash,
                    joint_rset,
-                   soft_right,
                    swap_rhs_priority,
                    factor,
                    sub_prefix,
@@ -198,13 +208,14 @@ def binary_signals(bottom,
                     last_node = new_bottom.pop()
                     new_bottom += [node, last_node]
                     swap_distance = 0
-                else: # [<]o[≤≥]
-                    right = soft_right.get(node, factor > 0.5)
+                else:
+                    right = factor > 0.5
                     new_bottom.append(node)
             else: # [≤≥]o[≤≥] TODO undetermined right
-                right = soft_right.get(node, factor > 0.5)
+                right = factor > 0.5
                 new_bottom.append(node)
             directional = False
+
         right_layer.append(right)
         direc_layer.append(directional)
         last_direc = directional
@@ -216,13 +227,16 @@ def binary_signals(bottom,
             joint_layer.append(is_joint)
         
         if sub_suffix in node:
-            label_layer.append(sub_prefix + top_down[node.split('.')[0]].label)
+            label = top_down[node.split('.')[0]].label
+            if label[0] != sub_prefix: # for efficient sub
+                label = sub_prefix + label
         elif node in bottom_unary:
-            label_layer.append(bottom_unary[node])
+            label = bottom_unary[node]
         elif node in node2tag:
-            label_layer.append(pos_prefix + node2tag[node])
+            label = pos_prefix + node2tag[node]
         else:
-            label_layer.append(top_down[node].label)
+            label = top_down[node].label
+        label_layer.append(label)
 
     assert len(right_layer) == len(label_layer) == len(direc_layer), 'unmatched layers'
     assert len(right_layer) - 1 == len(joint_layer), 'unmatched joint layers'
@@ -234,7 +248,7 @@ def cross_signals(bottom, node2tag, bottom_unary, top_down, factor,
                   dependency = None,
                   aggressive = True,
                   swap_rhs_priority = None,
-                  get_soft_right = False,
+                  get_soft_right = True,
                   lean_joint = False,
                   sub_prefix = '_',
                   pos_prefix = '#'):
@@ -253,7 +267,7 @@ def cross_signals(bottom, node2tag, bottom_unary, top_down, factor,
     layers_of_swaps = []
     completed_nodes = set()
     while len(bottom) > 1:
-        (right_hash, joint_rset, swappable_locations, bottom_up,
+        (right_hash, joint_rset, swappable_groups, bottom_up,
          soft_right) = binary_hash(bottom,
                                    top_down,
                                    completed_nodes,
@@ -263,7 +277,7 @@ def cross_signals(bottom, node2tag, bottom_unary, top_down, factor,
                                    sub_suffix,
                                    get_soft_right,
                                    dependency)
-
+        right_hash.update(soft_right)
         (new_bottom, right_layer, joint_layer, label_layer,
          direc_layer) = binary_signals(bottom,
                                         bottom_up,
@@ -272,7 +286,6 @@ def cross_signals(bottom, node2tag, bottom_unary, top_down, factor,
                                         bottom_unary,
                                         right_hash,
                                         joint_rset,
-                                        soft_right,
                                         swap_rhs_priority,
                                         factor,
                                         sub_prefix,
@@ -285,7 +298,7 @@ def cross_signals(bottom, node2tag, bottom_unary, top_down, factor,
         layers_of_joint.append(joint_layer)
         layers_of_label.append(label_layer)
         layers_of_direc.append(direc_layer)
-        layers_of_swaps.append(swappable_locations)
+        layers_of_swaps.append(swappable_groups)
 
     if top_down or len(node2tag) == len(bottom) == 1:
         layers_of_right.append([factor > 0.5])
@@ -295,12 +308,15 @@ def cross_signals(bottom, node2tag, bottom_unary, top_down, factor,
 
 from utils.types import E_ORIF5, O_RGT, O_HEAD
 from copy import deepcopy
-def read_tiger_graph(graph, dep_head = None):
+from data.cross import add_efficient_subs
+def read_tiger_graph(graph, dep_head = None, add_subs = False):
     bottom_info, top_down, root_id = _read_graph(graph)
     lines = draw_str_lines(bottom_info, top_down)
     word, bottom, node2tag, bottom_unary = _pre_proc(bottom_info, top_down)
     bottom_tag = [node2tag[t] for t in bottom]
     gap = gap_degree(bottom, top_down, root_id)
+    if add_subs:
+        top_down = add_efficient_subs(top_down, root_id)
     cnf_layers = {}
     if dep_head:
         dep_head = {node: TopDown(head, set([node])) for node, head in dep_head.items()}
@@ -310,12 +326,14 @@ def read_tiger_graph(graph, dep_head = None):
         cnf_layers[cnf_factor] = cross_signals(bottom, node2tag, bottom_unary, new_top_down, (oid + 0.5) / 5)
     return word, bottom_tag, cnf_layers, gap, lines#, bottom_info, ret_top_down, root_id
 
-def read_disco_penn(tree, dep_head = None):
+def read_disco_penn(tree, dep_head = None, add_subs = False):
     bottom_info, top_down, root_id = _read_dpenn(tree)
     lines = draw_str_lines(bottom_info, top_down)
     word, bottom, node2tag, bottom_unary = _pre_proc(bottom_info, top_down)
     bottom_tag = [node2tag[t] for t in bottom]
     gap = gap_degree(bottom, top_down, root_id)
+    if add_subs:
+        top_down = add_efficient_subs(top_down, root_id)
     cnf_layers = {}
     if dep_head:
         dep_head = {node: TopDown(f'n_{head}', set(['n_{node}'])) for node, head in dep_head.items()}
@@ -325,8 +343,6 @@ def read_disco_penn(tree, dep_head = None):
         cnf_layers[cnf_factor] = cross_signals(bottom, node2tag, bottom_unary, new_top_down, (oid + 0.5) / 5)
     return word, bottom_tag, cnf_layers, gap, lines
 
-from data.cross.evalb_lcfrs import DiscoEvalb
-from random import randint
 class MidinTreeKeeper:
     @classmethod
     def from_graph(cls, graph):
@@ -338,6 +354,8 @@ class MidinTreeKeeper:
 
     def __init__(self, bottom_info, top_down, root_id):
         # print('\n'.join(draw_str_lines(bottom_info, top_down)))
+        # from data.cross.evalb_lcfrs import DiscoEvalb
+        # from data.cross import bracketing
         # g_brackets = bracketing(bottom_info, top_down, root_id)
         # self._evalb = DiscoEvalb(), set(bottom_info), g_brackets
         word, bottom, node2tag, bottom_unary = _pre_proc(bottom_info, top_down)
@@ -362,14 +380,18 @@ class MidinTreeKeeper:
     def __str__(self):
         lines = ''
         # evalb, g_tags, g_brackets = self._evalb
+        # from data.cross import bracketing
         for i in range(self._max_sub - 1):
             factor = (i + 1) / self._max_sub
             args = cross_signals(*self._args, deepcopy(self._top_down), factor)[:4]
-            # evalb_args = disco_tree(self._word, self._bottom_tags, *args)[:3]
+            evalb_args = disco_tree(self._word, self._bottom_tags, *args)[:3]
             args = disco_tree(self._word, self._bottom_tags, *args, perserve_sub = True)[:2]
             lines += f'factor = {factor}\n  '
             lines += '\n  '.join(draw_str_lines(*args))
             lines += '\n'
+            # p_tags = set(evalb_args[0])
+            # p_brackets = bracketing(*evalb_args)
+            # evalb.add(p_brackets, p_tags, g_brackets, g_tags)
         if self._dep:
             args = cross_signals(*self._args, deepcopy(self._top_down), 0.5, self._dep)
             # evalb_args = disco_tree(self._word, self._bottom_tags, *args)[:3]
@@ -377,9 +399,6 @@ class MidinTreeKeeper:
             lines += f'factor = dependency\n  '
             lines += '\n  '.join(draw_str_lines(*args))
             lines += '\n'
-        #     p_tags = set(evalb_args[0])
-        #     p_brackets = bracketing(*evalb_args)
-        #     evalb.add(p_brackets, p_tags, g_brackets, g_tags)
         # lines += str(evalb.summary())
         # assert sum(evalb.summary()[:3]) == 300, evalb.summary()
         return lines
@@ -634,6 +653,7 @@ class BxDM(DM):
     @staticmethod
     def arg_segment_fn(seg_id, seg_size, batch_size, args):
         # import pdb; pdb.set_trace()
+        bid_offset, segment = args[:2]
         start = seg_id * seg_size
         if start < batch_size:
-            return args[:2] + tuple(x[start: (seg_id + 1) * seg_size] for x in args[2:])
+            return (bid_offset + start, segment) + tuple(x[start: (seg_id + 1) * seg_size] for x in args[2:])

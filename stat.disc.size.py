@@ -4,7 +4,13 @@ from collections import defaultdict
 from os.path import join
 from tqdm import tqdm
 
-_, base_path = argv
+if len(argv) == 2:
+    _, base_path = argv
+    min_len = 0
+else:
+    _, base_path, min_len = argv
+    min_len = int(min_len)
+    assert min_len > 0
 
 def to_csv(corp_name, factors):
     ratios = {fct: defaultdict(int) for fct in factors}
@@ -15,10 +21,11 @@ def to_csv(corp_name, factors):
         for factor in factors:
             with open(join(base_path, 'data', corp_name, f'{mode}.index.{factor}')) as fr:
                 for lid, line in tqdm(enumerate(fr), desc = f'{corp_name}.{factor}'):
-                    if line == '\n':
+                    lengths = (int(x) for x in line.split())
+                    lengths = tuple(x for x in lengths if x > min_len)
+                    if not lengths:
                         finish = True
                         continue
-                    lengths = tuple(int(x) for x in line.split())
                     for sizes in zip(lengths, lengths[1:]):
                         ratios[factor][sizes] += 1
 

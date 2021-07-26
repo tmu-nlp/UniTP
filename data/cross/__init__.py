@@ -386,7 +386,7 @@ def height_gen(top_down, root_id):
                     max_height = height
         yield root_id, max_height + 1
 
-def add_efficient_subs(top_down, root_id, sub_prefix = '_'):
+def add_efficient_subs(top_down, root_id, sub_prefix = '_', sub_suffix = '.'):
     new_top_down = {}
     height_cache = {}
     for node, height in height_gen(top_down, root_id):
@@ -413,8 +413,8 @@ def add_efficient_subs(top_down, root_id, sub_prefix = '_'):
                 ftags = []
                 while sub_heights:
                     ftags += h_children.pop(sub_heights.pop()).values()
-                new_node = node + f'.{sub_start}'
-                h_children[h_level + 1][new_node] = '.'.join(x for x in ftags if x)
+                new_node = node + f'{sub_suffix}{sub_start}'
+                h_children[h_level + 1][new_node] = sub_suffix.join('' for x in ftags) # artificial
                 new_children[new_node] = TopDown(sub_prefix + p_label, sub_children)
                 sub_start += 1
         if new_children:
