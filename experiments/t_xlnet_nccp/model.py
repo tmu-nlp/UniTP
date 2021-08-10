@@ -1,17 +1,9 @@
-from models.nccp import BaseRnnTree, model_type, torch, nn, Tensor
-from utils.types import word_dim, num_ctx_layer_0, frac_0, true_type
-from models.plm import subword_proc, XLNetLeaves
+from models.nccp import BaseRnnTree, model_type
+from utils.types import word_dim
+from models.plm import XLNetLeaves, plm_leaves_config
 
-from models.types import rnn_module_type, activation_type
-xlnt_leaves_config = dict(contextual   = rnn_module_type,
-                          num_layers   = num_ctx_layer_0,
-                          drop_out     = frac_0,
-                          rnn_drop_out = frac_0,
-                          activation   = activation_type,
-                          subword_proc = subword_proc,
-                          sum_weighted_layers = true_type)
 model_type = model_type.copy()
-model_type['input_layer'] = xlnt_leaves_config
+model_type['input_layer'] = plm_leaves_config
 model_type['model_dim']   = word_dim
 
 class ContinuousXLNetTree(BaseRnnTree):

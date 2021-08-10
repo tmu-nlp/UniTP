@@ -1,7 +1,8 @@
 
 from datetime import datetime
+from subprocess import call
 from utils.file_io import join, create_join, listdir, isdir, isfile, remove, rm_rf, rename
-from utils.file_io import DelayedKeyboardInterrupt, copy_with_prefix_and_rename, basename
+from utils.file_io import DelayedKeyboardInterrupt, copy_with_prefix_and_rename, link, basename
 from utils.yaml_io import load_yaml, save_yaml
 from utils.param_ops import zip_nt_params, dict_print, change_key, unzip_nt_params
 from sys import stderr
@@ -58,7 +59,8 @@ class Recorder:
             else:
                 instance_dir = instance
             instance_dir = create_join(task_dir, instance_dir)
-            config_dict_or_instance['results'] = {}
+            if 'results' not in config_dict_or_instance:
+                config_dict_or_instance['results'] = {}
             sv_file, sv_lock = _sv_file_lock(instance_dir)
             save_yaml(config_dict_or_instance, sv_file, sv_lock)
         else:
@@ -91,47 +93,82 @@ class Recorder:
         _, instance_dir = self._instance_dir
         specs          = load_yaml(*self._sv_file_lock, wait_lock = False)
         results        = specs.pop('results')
+        best_model     = max(results, key = lambda x: results[x]);
+        best_score     = results.pop(best_model)
+        specs['results'] = {best_model: best_score}
         trial_name     = specs_update_fn(specs, trial)
-        best_model     = max(results, key = lambda x: results[x])
         child_recorder = Recorder(create_join(instance_dir, 'trials'), self._module, specs, trial_name, 1, self._evalb)
         _, child_dir   = child_recorder._instance_dir
-        self.log(f'New trial {child_dir} from best model {best_model}')
-        copy_with_prefix_and_rename(join(instance_dir, 'models', best_model), child_dir, 'checkpoint')
+        link(join(instance_dir, 'models', best_model), join(child_dir, 'models', best_model))
+        child_dir = basename(child_dir)
+        trial.set_user_attr('dir', child_dir)
+        self.log(f'⌙→ Trial [{child_dir}] on best model {best_model}')
         return child_recorder
 
     def summary_trials(self): # should only be a super_recorder
-        if self._sv_unlock is None: # inactive recorder should only leave to the active one
-            return False
+        assert callable(self._sv_unlock), 'Not main recorder?'
         _, instance_dir = self._instance_dir
-        children = load_yaml(*_rt_file_lock(instance_dir))
-        best_child = max(children, key = lambda cid: children[cid]['key'])
-        for fname in listdir(join(instance_dir, 'trials')):
+        fpath = join(instance_dir, 'trials')
+        rt_file = join(fpath, _rt_file)
+        rt_lock = join(fpath, _rt_lock)
+        # some other can be empty: if v and 'key' in v
+        children = load_yaml(rt_file, rt_lock, wait_lock = False)
+        children = ((k, v) for k, v in children.items() if v and 'key' in v)
+        best_trial, best_result = max(children, key = lambda x: x[1]['key'])
+        for fname in listdir(fpath):
             if '.' in fname:
-                thatsit = fname.split('.')[0] == best_child
+                match = fname.split('.')[0] == best_trial
             else:
-                thatsit = fname == best_child
-            if thatsit:
-                child_specs = load_yaml(*_sv_file_lock(join(instance_dir, 'trials', fname)))
-                child_results = child_specs['results']
-                best_model = max(child_results, key = lambda x: child_results[x])
-                best_fpath = join(instance_dir, 'trials', fname, 'models', best_model)
-                
+                match = fname == best_trial
+            if match:
                 specs = load_yaml(*self._sv_file_lock, wait_lock = False)
                 results = specs['results']
-                results[best_model] = child_results[best_model]
-                copy_with_prefix_and_rename(best_model, self._model_dir, best_model)
-                
-                weakest_model = min(results, key = lambda x: results[x])
-                remove(join(self._model_dir, weakest_model))
-                results.pop(weakest_model)
-
-                self.log(' Replace the worst model', weakest_model, 'with the best model from trial', best_child, best_model)
+                for x in (x for x in results if x[0] == 'O'):
+                    results.pop(x)
+                    remove(join(instance_dir, 'models', x))
+                    
+                sv_file = join(fpath, fname, _sv_file)
+                sv_lock = join(fpath, fname, _sv_lock)
+                trial_specs = load_yaml(sv_file, sv_lock)['results']
+                best_model = max(trial_specs, key = trial_specs.get)
+                if best_model in results: break
+                best_trial = f'O{best_trial}-{best_model}'
+                link(join(fpath, fname, 'models', best_model),
+                     join(instance_dir, 'models', best_trial))
+                try:
+                    results[best_trial] = trial_specs['key']
+                except:
+                    import pdb; pdb.set_trace()
                 save_yaml(specs, *self._sv_file_lock, wait_lock = False)
-                return True
-        return False
+                break
+        return best_result
+        # for fname in listdir(join(instance_dir, 'trials')):
+        #     if '.' in fname:
+        #         thatsit = fname.split('.')[0] == best_child
+        #     else:
+        #         thatsit = fname == best_child
+        #     if thatsit:
+        #         child_specs = load_yaml(*_sv_file_lock(join(instance_dir, 'trials', fname)))
+        #         child_results = child_specs['results']
+        #         best_model = max(child_results, key = lambda x: child_results[x])
+        #         best_fpath = join(instance_dir, 'trials', fname, 'models', best_model)
+                
+        #         specs = load_yaml(*self._sv_file_lock, wait_lock = False)
+        #         results = specs['results']
+        #         results[best_model] = child_results[best_model]
+        #         copy_with_prefix_and_rename(best_model, self._model_dir, best_model)
+                
+        #         weakest_model = min(results, key = lambda x: results[x])
+        #         remove(join(self._model_dir, weakest_model))
+        #         results.pop(weakest_model)
+
+        #         self.log(' Replace the worst model', weakest_model, 'with the best model from trial', best_child, best_model)
+        #         save_yaml(specs, *self._sv_file_lock, wait_lock = False)
+        #         return True
+        # return False
 
     def detach(self):
-        if self._sv_unlock is not None:
+        if callable(self._sv_unlock):
             self._sv_unlock()
 
     def delete_all(self):
@@ -332,7 +369,7 @@ class Recorder:
     def register_test_scores(self, scores):
         instance, _ = self._instance_dir
         rt = load_yaml(*self._rt_file_lock)
-        rt[instance] = scores
+        rt[instance] = dict(scores)
         save_yaml(rt, *self._rt_file_lock)
 
     @staticmethod

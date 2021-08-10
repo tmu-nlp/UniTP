@@ -25,7 +25,6 @@ train_type = dict(loss_weight = dict(tag    = BaseType(0.3, validator = frac_ope
                                      _undirect_orient = BaseType(0.9, validator = frac_close)),
                   learning_rate = BaseType(0.001, validator = frac_open_0),
                   multiprocessing_decode = true_type,
-                  label_freq_as_loss_weight = false_type,
                   tune_pre_trained = dict(from_nth_epoch = tune_epoch_type,
                                           lr_factor = frac_06))
 
@@ -107,16 +106,16 @@ class DiscoOperator(Operator):
                                       Direc = fraction(direcs == gold_direcs) if direcs is not None else None,
                                       Joint = fraction(joints == gold_joints))
 
-            if self._train_config.label_freq_as_loss_weight:
-                label_mask = self._train_config.label_log_freq_inv[batch['label']]
-            else:
-                label_mask = None
+            # if self._train_config.label_freq_as_loss_weight:
+            #     label_mask = self._train_config.label_log_freq_inv[batch['label']]
+            # else:
+            #     label_mask = None
 
             batch['existence'] = gold_exists
             shuffled = self._train_config.loss_weight.shuffled
             tb_loss_kwargs = {}
-            losses = self._model.get_losses(batch, label_mask, tag_logits, top3_label_logits, label_logits, right_direc_logits, joint_logits, shuffled_right_direc, shuffled_joint, self._train_config.loss_weight._undirect_orient)
-            if self._model.has_fewer_losses:
+            losses = self._model.get_losses(batch, None, tag_logits, top3_label_logits, label_logits, right_direc_logits, joint_logits, shuffled_right_direc, shuffled_joint, self._train_config.loss_weight._undirect_orient)
+            if self._model.orient_bits == 3:
                 tag_loss, label_loss, orient_loss, joint_loss, shuffled_orient_loss, shuffled_joint_loss = losses
                 total_loss = self._train_config.loss_weight.tag * tag_loss
                 total_loss = self._train_config.loss_weight.label * label_loss + total_loss
@@ -275,72 +274,53 @@ class DiscoOperator(Operator):
         scores['key'] = scores.get('TF', 0.0)
         return scores
         
-    def optuna_model(self, train_params):
-        import optuna
-        from optuna.trial import TrialState
+    def _get_optuna_fn(self, train_params):
         import numpy as np
         from utils.types import E_ORIF5_HEAD
-        from utils.train_ops import train
+        from utils.train_ops import train, get_optuna_params
+        from utils.str_ops import height_ratio
+
+        optuna_params = get_optuna_params(train_params)
 
         def obj_fn(trial):
             def spec_update_fn(specs, trial):
-                data = specs['data']
-                data = data['tiger' if 'tiger' in data else 'dptb']
                 loss_weight = specs['train']['loss_weight']
                 loss_weight['tag']   = t = trial.suggest_float('tag',   0.0, 1.0)
                 loss_weight['label'] = l = trial.suggest_float('label', 0.1, 1.0)
                 loss_weight['joint'] = j = trial.suggest_float('joint', 0.1, 1.0)
-                if self._model.has_fewer_losses:
+                loss_str = f'L={height_ratio(t)}{height_ratio(l)}{height_ratio(j)}'
+                if self._model.orient_bits == 3:
                     loss_weight['orient'] = o = trial.suggest_float('orient', 0.1, 1.0)
-                    loss_str = f'L={t:.1f},{l:.1f},{j:.1f};{o:.1f};'
+                    loss_str += f'T{height_ratio(o)}'
                 else:
                     loss_weight['_right'] = r = trial.suggest_float('_right', 0.1, 1.0)
-                    loss_weight['_direc'] = d = trial.suggest_float('_direc', 0.1, 1.0)
-                    loss_weight['_undirect_orient'] = u = trial.suggest_float('_undirect_orient', 0.1, 1.0)
-                    loss_str = f'L={t:.1f},{l:.1f},{j:.1f},{r:.1f},{d:.1f},{u:.1f};'
+                    if self._model.orient_bits == 2:
+                        loss_weight['_direc'] = d = trial.suggest_float('_direc', 0.1, 1.0)
+                        loss_weight['_undirect_orient'] = u = trial.suggest_float('_undirect_orient', 0.1, 1.0)
+                        loss_str += f'D{height_ratio(r)}{height_ratio(d)}{height_ratio(u)}'
+                    else:
+                        loss_str += f'S{height_ratio(r)}'
+
+                data = specs['data']
+                data = data['tiger' if 'tiger' in data else 'dptb']
                 if data['shuffle_swap'] is not None:
                     loss_weight['shuffled'] = s = trial.suggest_float('shuffled', 0.0, 1.0)
-                    loss_str += f'{s:.1f}'
+                    loss_str += f'X{height_ratio(s)}'
+                
                 binarization = np.array([trial.suggest_loguniform(x, 1e-5, 1e5) for x in E_ORIF5_HEAD])
                 binarization /= np.sum(binarization)
                 data['binarization'] = bz = {k:float(v) for k, v in zip(E_ORIF5_HEAD, binarization)}
                 specs['train']['learning_rate'] = lr = trial.suggest_loguniform('learning_rate', 1e-6, 1e-3)
                 self._train_config._nested.update(specs['train'])
                 self._train_materials = bz, self._train_materials[1] # for train/train_initials(max_epoch>0)
-                bin_str = 'bin=' + ','.join(f'{x:.2f}' for x in binarization)
+                bin_str = 'bin=' + ''.join(height_ratio(x) for x in binarization)
                 return bin_str + ';' + loss_str + f';lr={lr:.1e}'
 
             self._mode_trees = [], [] # force init
-            base_devel_score = self.setup_optuna_mode(spec_update_fn, trial)
-
-            optuna_params = {} # change train_params
-            optuna_params['fine_validation_at_nth_wander'] = 1
-            optuna_params['stop_at_nth_wander'] = train_params.stop_at_nth_wander
-            optuna_params['fine_validation_each_nth_epoch'] = 5
-
-            optuna_params['max_epoch'] = 100
-            optuna_params['update_every_n_batch'] = train_params.update_every_n_batch
-            optuna_params['test_with_validation'] = False
-            optuna_params['optuna_trials'] = 0
-            train(optuna_params, self)
-            return self._recorder.key_score # child score
-
-        fpath = join(self._recorder.create_join(), 'trials.db')
-        study = optuna.create_study(direction  = 'maximize',
-                                    study_name = 'dccp-hyper',
-                                    storage    = 'sqlite:///' + fpath,
-                                    load_if_exists = True)
-        n_trials = train_params.optuna_trials
-        for tid in reversed(range(len(study.trials))):
-            t = study.trials[tid]
-            if t.state in (TrialState.PRUNED, TrialState.COMPLETE):
-                n_trials -= 1
-            else:
-                study.trials.pop(tid)
-        if n_trials > 0:
-            self._recorder.log(f'{n_trials} trials left to explore ...')
-            study.optimize(obj_fn, n_trials = n_trials) # core
-            self.restore_recorder()
+            self.setup_optuna_mode(spec_update_fn, trial)
+            
+            return train(optuna_params, self)['key']
+        return obj_fn
 
 
 from utils.vis import BaseVis, VisRunner

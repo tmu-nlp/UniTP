@@ -180,6 +180,7 @@ class DiscoStem(nn.Module):
         self._raw_threshold = raw_threshold = DiscoThresholds(**threshold)
         assert 0 < raw_threshold.joint < 1
         assert 0 < raw_threshold.direc < 1
+        self._orient_bits = orient_bits
         # self._thresholds = DiscoThresholds(*(fn(x) for fn, x in zip(bias_fns, raw_threshold)))
         
         self._is_sa = is_sa = orient_module in (SAL, LSA)
@@ -386,8 +387,8 @@ class DiscoStem(nn.Module):
         return existence, embeddings, right_direc, joint, shuffled_right_direc, shuffled_joint, segment, seg_length
 
     @property
-    def has_fewer_losses(self):
-        return callable(self._loss_fns)
+    def orient_bits(self):
+        return self._orient_bits
 
     def get_stem_score(self, right_direc, joint):
         right_score, direc_score = self._orient_scores(right_direc)
@@ -408,7 +409,7 @@ class DiscoStem(nn.Module):
         gold_right = gold['right']
         gold_direc = gold['direc']
         gold_joint = gold['joint']
-        if self.has_fewer_losses:
+        if self._orient_bits == 3:
             if right_direc_logits is None: # shuffled
                 return None, None
             gold_bit = convert23_gold(gold_right, gold_direc)

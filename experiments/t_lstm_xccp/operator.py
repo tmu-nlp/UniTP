@@ -223,6 +223,45 @@ class DiscoMultiOperator(DiscoOperator):
         vis.before()
         self._vis_mode = vis, use_test_set, final_test, pending_heads, serial
 
+    def _get_optuna_fn(self, train_params):
+        import numpy as np
+        from utils.train_ops import train, get_optuna_params
+        optuna_params = get_optuna_params(train_params)
+        from data.cross.multib import F_LEFT, F_RANDOM, F_RIGHT
+        E_MED = F_LEFT, F_RANDOM, F_RIGHT
+
+        def obj_fn(trial):
+            def spec_update_fn(specs, trial):
+                loss_weight = specs['train']['loss_weight']
+                loss_weight['tag']   = t = trial.suggest_float('tag',   0.0, 1.0)
+                loss_weight['label'] = l = trial.suggest_float('label', 0.1, 1.0)
+                loss_weight['fence'] = f = trial.suggest_float('fence', 0.1, 1.0)
+                loss_weight['disco_1d'] = d1 = trial.suggest_float('disco_1d', 0.1, 1.0)
+                loss_weight['disco_2d'] = d2 = trial.suggest_float('disco_2d', 0.1, 1.0)
+                loss_str = f'L={height_ratio(t)}{height_ratio(l)}{height_ratio(f)}{height_ratio(d1)}{height_ratio(d2)}'
+                if specs['train']['disco_2d_negrate']:
+                    loss_weight['disco_2d_neg'] = d2n = trial.suggest_float('disco_2d_neg', 1e-6, 1.0)
+                    loss_str = f'N{height_ratio(d2n)}'
+
+                medium_factor = specs['data']
+                medium_factor = specs['data']['tiger' if 'tiger' in medium_factor else 'dptb']
+                medium_factor = medium_factor['medium_factor']
+                medium_factor['balanced'] = bz = trial.suggest_float('balanced', 0.0, 1.0)
+                med = np.array([trial.suggest_loguniform(x, 1e-5, 1e5) for x in E_MED])
+                med /= np.sum(med)
+                for k, v in zip(E_MED, med):
+                    medium_factor['others'][k] = float(v)
+                self._train_materials = medium_factor, self._train_materials[1]
+                specs['train']['learning_rate'] = lr = trial.suggest_loguniform('learning_rate', 1e-6, 1e-3)
+                self._train_config._nested.update(specs['train'])
+                med_str = f'med={height_ratio(bz)}M' + ''.join(height_ratio(x) for x in med)
+                return med_str + ';' + loss_str + f';lr={lr:.1e}'
+
+            self._mode_trees = [], [] # force init
+            self.setup_optuna_mode(spec_update_fn, trial)
+
+            return train(optuna_params, self)['key']
+        return obj_fn
 
 from utils.vis import BaseVis, VisRunner
 from utils.file_io import join, isfile, listdir, remove, isdir

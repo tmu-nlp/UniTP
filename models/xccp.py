@@ -10,7 +10,7 @@ except:
     from utils.shell_io import byte_style
     print(byte_style('[HINT] CUDA module xccp_decode', '3'), 'is not compiled for full discontinuity matrix parallelism.', file = stderr)
     print('    -> try', byte_style('\'cd cuda; python setup.py install\''), file = stderr)
-    xccp_decode = None
+    # xccp_decode = None
 xccp_decode = None
 
 def continuous_fence(bbt_zeros, continuous, fence_logits):
@@ -290,6 +290,8 @@ class DiscoMultiStem(MultiStem):
             else:
                 in_dim = space_dim
                 out_dim = model_dim
+                if in_dim != out_dim:
+                    assert disco_indie_io, 'Cannot use \'disco_indie_io = True\' for \'state_unit.dot\' when \'model_dim != space_dim\''
             self._disco_2d_i = d2di = nn.Linear(in_dim, disco_linear_dim, bias = disco_indie_io)
             self._disco_2d_o = nn.Linear(out_dim, disco_linear_dim) if disco_indie_io else d2di
             self._disco_2d_b = nn.Parameter(torch.zeros(1), requires_grad = True)
@@ -333,7 +335,7 @@ class DiscoMultiStem(MultiStem):
         hidden = self._disco_2d_act(hidden)
         return self._disco_2d_o(hidden).squeeze(dim = 3)
 
-    def forward(self, unit_emb, existence, supervision = None, disco_2d_negative = 0.1, **kw_args):
+    def forward(self, unit_emb, existence, supervision = None, disco_2d_negative = 0, **kw_args):
         batch_size, seg_len, model_dim = unit_emb.shape
         h0c0 = self.get_h0c0(batch_size)
         max_iter_n = seg_len << 2 # 4 times

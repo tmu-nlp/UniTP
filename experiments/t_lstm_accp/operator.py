@@ -17,7 +17,6 @@ train_type = dict(loss_weight = dict(tag   = BaseType(0.2, validator = frac_open
                                      fence = BaseType(0.5, validator = frac_open_0)),
                   fence_hinge_loss = true_type,
                   learning_rate = BaseType(0.001, validator = frac_open_0),
-                  label_freq_as_loss_weight = false_type,
                   multiprocessing_decode = true_type,
                   tune_pre_trained = dict(from_nth_epoch = tune_epoch_type,
                                           lr_factor = frac_06))
@@ -100,12 +99,12 @@ class MultiOperator(PennOperator):
             label_weight = (label_mis | existences)
             extended_gold_fences = extend_fence_idx(gold_fences)
 
-            if self._train_config.label_freq_as_loss_weight:
-                label_mask = self._train_config.label_log_freq_inv[batch['label']]
-            else:
-                label_mask = None
+            # if self._train_config.label_freq_as_loss_weight:
+            #     label_mask = self._train_config.label_log_freq_inv[batch['label']]
+            # else:
+            #     label_mask = None
             
-            tag_loss, label_loss = self._model.get_losses(batch, label_mask, tag_logits, label_logits)
+            tag_loss, label_loss = self._model.get_losses(batch, None, tag_logits, label_logits)
             if self._train_config.fence_hinge_loss:
                 fence_loss = hinge_loss(fence_logits, extended_gold_fences, None)
             else:

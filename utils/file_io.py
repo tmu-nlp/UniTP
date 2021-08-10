@@ -1,4 +1,4 @@
-from os import remove, mkdir, rmdir, walk, listdir, rename
+from os import remove, mkdir, rmdir, walk, listdir, rename, link
 from os.path import join, isdir, isfile, abspath, sep, basename, dirname
 from shutil import copy
 from array import array

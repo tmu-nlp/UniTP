@@ -174,9 +174,6 @@ class NerOperator(Operator):
         scores['key'] = scores.get('F1', 0)
         return scores
 
-    def optuna_model(self):
-        pass
-
 import numpy as np
 from data.ner_types import bio_to_tree, ner_to_tree, recover_bio_prefix
 def batch_trees(b_length, b_word, b_pos, b_bio, b_ner, b_fence, i2vs, b_weight = None, t2vs = None, **kw_args):

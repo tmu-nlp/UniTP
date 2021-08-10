@@ -87,26 +87,23 @@ class Operator:
         (ds_total, ds_names, ds_iters), devel_icon = self._validate_materials
         scores, ds_logg, from_start = self.validation_or_test(M_DEVEL, ds_total, ds_names, ds_iters, devel_icon, epoch)
         self._recorder.log(timestamp(epoch, 'Validation ') + f' - {ds_logg} ({from_start} from start)', end = '.')
+        betterment = self._recorder.check_betterment(epoch, falling, self._global_step, self._model, self._optimizer, scores['key'])
+
         if self._optuna_mode is not None:
             super_recorder, trial, trial_step = self._optuna_mode
             trial.report(scores['key'], trial_step)
-            if trial.should_prune():
-                import optuna
-                self._recorder.register_test_scores(dict(key = self._recorder.key_score, step = trial_step))
-                super_recorder.log(f'  (got pruned at the {trial_step}-th step)')
-                raise optuna.exceptions.TrialPruned()
             self._optuna_mode = super_recorder, trial, trial_step + 1
-        return self._recorder.check_betterment(epoch, falling, self._global_step, self._model, self._optimizer, scores['key'])
+            if trial.should_prune():
+                super_recorder.log(f'  (got pruned at the {trial_step}-th step)')
+                # self._recorder.register_test_scores(dict(key = self._recorder.key_score, step = trial_step))
+                self._recorder.test_model()
+                import optuna; raise optuna.exceptions.TrialPruned()
+        return betterment
 
     def test_model(self, epoch = None):
         ds_total, ds_names, ds_iters = self._test_materials
         final_test = epoch is None
         if final_test:
-            if self._optuna_mode is not None:
-                super_recorder, trial, trial_step = self._optuna_mode
-                super_recorder.log(f'  (finished after {trial_step + 1} steps)')
-                self._recorder.register_test_scores(dict(key = self._recorder.key_score, step = trial_step))
-                return # dead end: optuna_mode should not nest
             prefix = 'Test ' # final label
             epoch, self._global_step = self._recorder.initial_or_restore(self._model, restore_from_best_validation = True)
         else:
@@ -115,11 +112,15 @@ class Operator:
         scores['epoch'] = epoch
         self._recorder.log(timestamp(epoch, prefix) + f' - {ds_logg} ({from_start} from start).')
         if final_test:
+            if self._optuna_mode is not None:
+                super_recorder, _, trial_step = self._optuna_mode
+                super_recorder.log(f'  (finished after {trial_step + 1} steps: {scores["key"]:.2f})')
+                self._recorder.register_test_scores(scores)
             if hasattr(self._model, 'message'):
                 message = self._model.message
                 if message:
                     self._recorder.log(message)
-            return dict(scores)
+            return scores
 
     def validation_or_test(self, mode, ds_total, ds_names, ds_iters, icon, epoch, final_test = False):
         ds_desc   = []
@@ -157,14 +158,6 @@ class Operator:
             super_recorder = self._optuna_mode[0]
         self._optuna_mode = super_recorder, trial, 0
         self._recorder = super_recorder.new_trial_recorder(spec_update_fn, trial)
-        return super_recorder.key_score
-
-    def restore_recorder(self):
-        assert self._optuna_mode
-        self._recorder.detach() # previous trail
-        self._recorder = self._optuna_mode[0]
-        self._optuna_mode = None
-        self._recorder.summary_trials()
 
     def optuna_model(self, train_params):
         '''Set objective function with argument trial.
@@ -200,6 +193,34 @@ class Operator:
         optuna.visualization.plot_slice(study)
         optuna.visualization.plot_contour(study, params=['n_estimators', 'max_depth'])
         '''
+        import optuna
+        # from optuna.trial import TrialState
+        from os.path import join
+        from utils.file_io import DelayedKeyboardInterrupt
+
+        n_trials = train_params.optuna_trials
+        # for tid in reversed(range(len(study.trials))):
+        #     t = study.trials[tid]
+        #     if t.state in (TrialState.PRUNED, TrialState.COMPLETE):
+        #         n_trials -= 1
+        #     else:
+        #         study.trials.pop(tid)
+        assert n_trials > 0, 'Optuna with n_trials == 0'
+        fpath = join(self._recorder.create_join(), 'trials.db')
+        study = optuna.create_study(direction  = 'maximize',
+                                    study_name = 'hyper-tune',
+                                    storage    = 'sqlite:///' + fpath,
+                                    load_if_exists = True)
+        self._recorder.log(f'Start optuna with {n_trials} trials ...')
+        study.optimize(self._get_optuna_fn(train_params), n_trials = n_trials) # core
+        with DelayedKeyboardInterrupt(True):
+            self._recorder.detach() # 1 operator vs. 2 recorders (super + trial)
+            self._recorder = self._optuna_mode[0]
+            self._optuna_mode = None
+            return self._recorder.summary_trials()
+
+    def _get_optuna_fn(self, train_params):
+        raise NotImplementedError()
 
     def _schedule(self, epoch, wander_ratio):
         pass

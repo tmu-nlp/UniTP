@@ -15,7 +15,6 @@ train_type = dict(loss_weight = dict(tag    = BaseType(0.2, validator = frac_ope
                                      label  = BaseType(0.3, validator = frac_open_0),
                                      orient = BaseType(0.5, validator = frac_open_0)),
                   learning_rate = BaseType(0.001, validator = frac_open_0),
-                  label_freq_as_loss_weight = false_type,
                   multiprocessing_decode = true_type,
                   orient_hinge_loss = true_type,
                   tune_pre_trained = dict(from_nth_epoch = tune_epoch_type,
@@ -85,17 +84,17 @@ class PennOperator(Operator):
             tag_weight    = (   tag_mis | bottom_existence)
             label_weight  = ( label_mis | existences)
 
-            if self._train_config.label_freq_as_loss_weight:
-                label_mask = self._train_config.label_log_freq_inv[batch['label']]
-            else:
-                label_mask = None
+            # if self._train_config.label_freq_as_loss_weight:
+            #     label_mask = self._train_config.label_log_freq_inv[batch['label']]
+            # else:
+            #     label_mask = None
 
             if trapezoid_info is None:
                 height_mask = s_index(batch_len - batch['length'])[:, None, None]
             else:
                 height_mask = batch['mask_length'] # ?? negative effect ???
 
-            tag_loss, label_loss = self._model.get_losses(batch, tag_logits, top3_label_logits, label_logits, height_mask, label_mask)
+            tag_loss, label_loss = self._model.get_losses(batch, tag_logits, top3_label_logits, label_logits, height_mask, None)
 
             if self._train_config.orient_hinge_loss:
                 orient_loss = hinge_loss(orient_logits, gold_orients, orient_weight)

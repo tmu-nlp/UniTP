@@ -33,10 +33,11 @@ def get_configs(recorder = None):
                               None,
                               CharTextHelper if model.use.char_rnn else None)
     
-    def get_datasets(mode):
+    def get_datasets(mode, new_medium_factor = None):
         datasets = {}
         if mode == M_TRAIN:
-            datasets[corp_name] = reader.batch(M_TRAIN, penn.batch_size, penn.bucket_len, penn.medium_factor._nested,
+            datasets[corp_name] = reader.batch(M_TRAIN, penn.batch_size, penn.bucket_len,
+                                               new_medium_factor or penn.medium_factor._nested,
                                                max_len = penn.max_len,
                                                min_gap = penn.min_gap,
                                                sort_by_length = penn.sort_by_length)
@@ -54,5 +55,5 @@ def get_configs(recorder = None):
     model_config['space_layer']['continuous_fence_only'] = penn.continuous_fence_only
     model = DiscoMultiRnnTree(**model_config, **task_params)
     model.to(reader.device)
-    train_config.create(label_log_freq_inv = reader.frequency('label', log_inv = True))
+    # train_config.create(label_log_freq_inv = reader.frequency('label', log_inv = True))
     return DiscoMultiOperator(model, get_datasets, recorder, reader.i2vs, train_config, recorder.evalb)

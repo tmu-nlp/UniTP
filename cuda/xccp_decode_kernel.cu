@@ -137,6 +137,18 @@ __global__ void kernel_fan_in(
   }
 }
 
+template <typename index_t, typename scalar_t>
+__global__ void kernel_write_2d_pad(
+  const torch::PackedTensorAccessor32<index_t,1,torch::RestrictPtrTraits> dis_length,
+  torch::PackedTensorAccessor32<scalar_t,3,torch::RestrictPtrTraits> hard_matrix) {
+  const int bid = blockIdx.x;
+  const int yid = blockIdx.y;
+  const int xid = blockIdx.z;
+  const int length = dis_length[bid];
+  if (xid < length and yid < length) return;
+  hard_matrix[bid][yid][xid] = 1.1;
+}
+
 template <typename index_t>
 __global__ void kernel_catch_invalid_each(
   const torch::PackedTensorAccessor32<bool,2,torch::RestrictPtrTraits> comp_check,
@@ -334,29 +346,57 @@ std::vector<torch::Tensor> predict_disco_sections_cuda(
   //       comp_id_y.packed_accessor32<index_t,2,torch::RestrictPtrTraits>(),
   //       comp_check.packed_accessor32<bool,2,torch::RestrictPtrTraits>());
   // }));
-
-  // const auto &invalid = torch::where(comp_check);
-  // std::tuple<torch::Tensor, torch::Tensor> thresholds_obj = (dis_matrix - threshold).sort();
-  // const torch::Tensor &thresholds = std::get<1>(thresholds_obj);
-
   // comp_check &= comp_id_x == comp_id_y;
 
-  if (catch_any_invalid)
-    AT_DISPATCH_INDEX_TYPES(dis_length.scalar_type(), "kernel_catch_invalid_each", ([&] {
-      kernel_catch_invalid_each<index_t><<<batch_square_dim3, 1>>>(
-          comp_check.packed_accessor32<bool,2,torch::RestrictPtrTraits>(),
-          dis_length.packed_accessor32<index_t,1,torch::RestrictPtrTraits>(),
-          comp_id_x.packed_accessor32<index_t,2,torch::RestrictPtrTraits>(),
-          bool_matrix_x.packed_accessor32<bool,3,torch::RestrictPtrTraits>());
-    }));
-  else
-    AT_DISPATCH_INDEX_TYPES(dis_length.scalar_type(), "kernel_catch_invalid_all", ([&] {
-      kernel_catch_invalid_all<index_t><<<batch_square_dim3, 1>>>(
-          comp_check.packed_accessor32<bool,2,torch::RestrictPtrTraits>(),
-          dis_length.packed_accessor32<index_t,1,torch::RestrictPtrTraits>(),
-          comp_id_x.packed_accessor32<index_t,2,torch::RestrictPtrTraits>(),
-          bool_matrix_x.packed_accessor32<bool,3,torch::RestrictPtrTraits>());
-    }));
+  const auto &invalid = torch::where(comp_check.all(1).logical_not());
+  const auto &invalid_batch = invalid[0];
+  const auto invalid_size = invalid_batch.size(0);
+  // not comp_check.all().item<bool>()
+  // std::cout << invalid << std::endl;
+
+  if (invalid_size) {
+    auto hard_matrix = dis_matrix.index({invalid_batch});
+    auto hard_length = dis_length.index({invalid_batch});
+
+    if (hard_length.dtype() == torch::kLong) 
+      AT_DISPATCH_ALL_TYPES(hard_matrix.scalar_type(), "kernel_write_2d_pad", ([&] {
+        kernel_write_2d_pad<long, scalar_t><<<batch_square_dim3, 1>>>(
+            hard_length.packed_accessor32<long,1,torch::RestrictPtrTraits>(),
+            hard_matrix.packed_accessor32<scalar_t,3,torch::RestrictPtrTraits>());
+      }));
+    else
+      AT_DISPATCH_ALL_TYPES(hard_matrix.scalar_type(), "kernel_write_2d_pad", ([&] {
+        kernel_write_2d_pad<int, scalar_t><<<batch_square_dim3, 1>>>(
+            hard_length.packed_accessor32<int,1,torch::RestrictPtrTraits>(),
+            hard_matrix.packed_accessor32<scalar_t,3,torch::RestrictPtrTraits>());
+      }));
+
+    auto seq_threshold = hard_matrix.reshape({invalid_size, -1});
+    auto seq_distances = seq_threshold - threshold;
+    auto seq_indices = torch::arange(invalid_size).unsqueeze(-1);
+    seq_distances *= seq_distances;
+    std::tuple<torch::Tensor, torch::Tensor> thresholds_obj = seq_distances.sort();
+    seq_threshold = seq_threshold.index({seq_indices, std::get<1>(thresholds_obj)})
+    // std::cout <<  << std::endl;
+    // const torch::Tensor &thresholds = ;
+
+    if (catch_any_invalid)
+      AT_DISPATCH_INDEX_TYPES(dis_length.scalar_type(), "kernel_catch_invalid_each", ([&] {
+        kernel_catch_invalid_each<index_t><<<batch_square_dim3, 1>>>(
+            comp_check.packed_accessor32<bool,2,torch::RestrictPtrTraits>(),
+            dis_length.packed_accessor32<index_t,1,torch::RestrictPtrTraits>(),
+            comp_id_x.packed_accessor32<index_t,2,torch::RestrictPtrTraits>(),
+            bool_matrix_x.packed_accessor32<bool,3,torch::RestrictPtrTraits>());
+      }));
+    else
+      AT_DISPATCH_INDEX_TYPES(dis_length.scalar_type(), "kernel_catch_invalid_all", ([&] {
+        kernel_catch_invalid_all<index_t><<<batch_square_dim3, 1>>>(
+            comp_check.packed_accessor32<bool,2,torch::RestrictPtrTraits>(),
+            dis_length.packed_accessor32<index_t,1,torch::RestrictPtrTraits>(),
+            comp_id_x.packed_accessor32<index_t,2,torch::RestrictPtrTraits>(),
+            bool_matrix_x.packed_accessor32<bool,3,torch::RestrictPtrTraits>());
+      }));
+  }
 
   AT_DISPATCH_INDEX_TYPES(dis_length.scalar_type(), "kernel_sort_comp_id", ([&] {
     kernel_sort_comp_id<index_t><<<batch_size, 1>>>(

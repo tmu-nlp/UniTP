@@ -2,6 +2,16 @@ from utils.types import BaseType
 E_SUB = S_LFT, S_RGT, S_AVG, S_SGT = 'leftmost rightmost average selfgate'.split()
 subword_proc = BaseType(0, as_index = True, default_set = E_SUB)
 
+from utils.types import num_ctx_layer_0, frac_0, true_type
+from models.types import rnn_module_type, activation_type
+plm_leaves_config = dict(contextual   = rnn_module_type,
+                         num_layers   = num_ctx_layer_0,
+                         drop_out     = frac_0,
+                         rnn_drop_out = frac_0,
+                         activation   = activation_type,
+                         subword_proc = subword_proc,
+                         sum_weighted_layers = true_type)
+
 from models.utils import condense_helper, condense_left
 from models.backend import torch, nn, init, math
 class PreLeaves(nn.Module):
@@ -50,7 +60,7 @@ class PreLeaves(nn.Module):
             init.uniform_(self._eos, -bound, bound)
 
         if sum_weighted_layers:
-            n_layer = self._pre_model.n_layer
+            n_layer = getattr(self._pre_model, 'n_layer', 12)
             layer_weights = torch.empty(n_layer + 1, 1, 1, 1) # TODO: better to use layers[n:]?
             self._layer_weights = nn.Parameter(layer_weights, requires_grad = True)
             self._softmax = nn.Softmax(dim = 0)
@@ -71,10 +81,6 @@ class PreLeaves(nn.Module):
 
     def forward(self, word_idx, offset, plm_idx, plm_start, tune_pre_trained = False):
         batch_size, batch_len = word_idx.shape # just provide shape and nil info
-        if isinstance(offset, int):
-            temp = torch.ones(batch_size, dtype = word_idx.dtype, device = word_idx.device)
-            temp *= offset
-            offset = temp
 
         if tune_pre_trained:
             plm_outputs = self._pre_model(plm_idx, output_hidden_states = True)
@@ -86,7 +92,7 @@ class PreLeaves(nn.Module):
         if self._layer_weights is None:
             xl_hidden = plm_outputs.last_hidden_state
         else:
-            layer_weights = self._softmax(self._layer_weights)
+            layer_weights = self._softmax(self._layer_weights) # [13, b, s, 768]
             xl_hidden = torch.stack(plm_outputs.hidden_states)
             xl_hidden = (xl_hidden * layer_weights).sum(dim = 0)
 

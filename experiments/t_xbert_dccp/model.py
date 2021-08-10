@@ -1,14 +1,6 @@
-from models.dccp import torch, BaseRnnTree, model_type
-from utils.types import word_dim, num_ctx_layer, frac_2, frac_4
-from models.plm import subword_proc
-
-from models.types import rnn_module_type, activation_type
-plm_leaves_config = dict(contextual   = rnn_module_type,
-                         num_layers   = num_ctx_layer,
-                         drop_out     = frac_4,
-                         rnn_drop_out = frac_2,
-                         activation   = activation_type,
-                         subword_proc = subword_proc)
+from models.dccp import BaseRnnTree, model_type
+from utils.types import word_dim
+from models.plm import plm_leaves_config
 
 model_type = model_type.copy()
 model_type['input_layer'] = plm_leaves_config
