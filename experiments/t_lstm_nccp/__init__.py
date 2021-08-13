@@ -27,9 +27,13 @@ def get_configs(recorder = None):
                                         penn.data_splits.test_set)
         data_splits = {k:v for k,v in zip((M_TRAIN, M_DEVEL, M_TEST), specs[-1])}
         trapezoid_specs = specs[:-1] + (data_splits, penn.trapezoid_height, get_sole_key(data_config) == C_KTB)
+        from data.trapezoid import TrapezoidalDM
+        dm_cls = TrapezoidalDM
         prompt = f'Use trapezoidal data (stratifying height: {penn.trapezoid_height})', '2'
     else:
         trapezoid_specs = None
+        from data.triangle import TriangularDM
+        dm_cls = TriangularDM
         prompt = f'Use triangular data (stratifying height: +inf)', '3'
     print(byte_style(*prompt))
 
@@ -62,7 +66,8 @@ def get_configs(recorder = None):
     model = ContinuousRnnTree(**model_config, **task_params)
     model.to(reader.device)
     train_config.create(label_log_freq_inv = reader.frequency('label', log_inv = True))
-    return PennOperator(model, get_datasets, recorder, reader.i2vs, recorder.evalb, train_config)
+    get_dm = lambda i2vs, num_threads: dm_cls(penn.batch_size << 1, i2vs, num_threads)
+    return PennOperator(model, get_datasets, recorder, reader.i2vs, get_dm, recorder.evalb, train_config)
         
 # def get_datasets_for_tagging(ptb = None, ctb = None, ktb = None):
 #     if not (ptb or ctb or ktb):

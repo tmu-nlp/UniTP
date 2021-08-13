@@ -17,7 +17,6 @@ train_type = dict(loss_weight = dict(tag   = BaseType(0.2, validator = frac_open
                                      fence = BaseType(0.5, validator = frac_open_0)),
                   fence_hinge_loss = true_type,
                   learning_rate = BaseType(0.001, validator = frac_open_0),
-                  multiprocessing_decode = true_type,
                   tune_pre_trained = dict(from_nth_epoch = tune_epoch_type,
                                           lr_factor = frac_06))
                 #   keep_low_attention_rate = BaseType(1.0, validator = frac_close),
@@ -62,8 +61,8 @@ def unpack_fence_vote(fence_vote, batch_size, segment):
     return layers
 
 class MultiOperator(PennOperator):
-    def __init__(self, model, get_datasets, recorder, i2vs, evalb, train_config):
-        super().__init__(model, get_datasets, recorder, i2vs, evalb, train_config)
+    def __init__(self, model, get_datasets, recorder, i2vs, get_dm, evalb, train_config):
+        super().__init__(model, get_datasets, recorder, i2vs, get_dm, evalb, train_config)
 
     def _step(self, mode, ds_name, batch, batch_id = None):
 
@@ -140,22 +139,18 @@ class MultiOperator(PennOperator):
             if fence_vote is not None and draw_weights:
                 fence_vote = fence_vote.type(torch.float16).cpu().numpy()
             if serial:
-                b_size = (batch_len,)
                 b_head = tuple((batch[x].type(torch.uint8) if x in ('tag', 'label', 'fence') else batch[x]).cpu().numpy() for x in 'token tag label fence'.split())
                 b_head = b_head + (batch['segment'].cpu().numpy(), batch['seg_length'].cpu().numpy())
-                # batch_len, length, token, tag, label, fence, segment, seg_length
+                # length, token, tag, label, fence, segment, seg_length
 
                 weight = mean_stdev(weights).cpu().numpy() if draw_weights else None
                 b_data = (tags, labels, fences, fence_vote, weight, segment, seg_length)
             else:
-                b_size = (batch_size,)
-                b_head = (batch['token'].cpu().numpy(),)
-                # batch_size, segment, token, tag, label, fence, seg_length
+                b_head = (batch_id, batch['token'].cpu().numpy())
+                # segment, token, tag, label, fence, seg_length
                 b_data = (tags, labels, fences, segment, seg_length)
 
-            # tag, label, fence, segment, seg_length
-            tensors = b_size + b_head + b_data
-            vis.process(tensors)
+            vis.process(b_head + b_data)
         return batch_size, batch_len
 
     def _before_validation(self, ds_name, epoch, use_test_set = False, final_test = False):
@@ -186,7 +181,7 @@ class MultiOperator(PennOperator):
             self._initial_run = False, test_init
 
         work_dir = self.recorder.create_join(folder)
-        serial = draw_weights or flush_heads or not self._mp_decode
+        serial = draw_weights or flush_heads or self.dm is None
         if serial:
             async_ = True
             vis = MultiVis(epoch,
@@ -200,19 +195,18 @@ class MultiOperator(PennOperator):
                           flush_heads)
         else:
             async_ = False
-            vis = ParallelVis(epoch, work_dir, self._evalb, self.i2vs, self.recorder.log, self._dm)
+            vis = ParallelVis(epoch, work_dir, self._evalb, self.recorder.log, self.dm)
         vis = VisRunner(vis, async_ = async_) # wrapper
         vis.before()
         self._vis_mode = vis, use_test_set, final_test, serial, draw_weights
 
     def _after_validation(self, ds_name, count, seconds):
         vis, use_test_set, final_test, serial, _ = self._vis_mode
-        scores, desc, logg, length_bins_dm = vis.after()
         devel_bins, test_bins = self._mode_length_bins
         if serial:
-            length_bins = length_bins_dm
+            scores, desc, logg, length_bins = vis.after()
         else:
-            self._dm = length_bins_dm
+            scores, desc, logg = vis.after()
             length_bins = None
 
         if length_bins is not None:
@@ -246,10 +240,7 @@ class MultiOperator(PennOperator):
 
         logg += f' @{speed_outer} ◇ {speed_inner}{speed_dm} sps. (sym:nn {rate:.2f}; {seconds:.3f}{dmt} sec.)'
         scores['speed'] = speed_outer
-        if final_test:
-            if self._dm:
-                self._dm.close()
-        else:
+        if not final_test:
             self.recorder.tensorboard(self.global_step, 'TestSet/%s' if use_test_set else 'DevelSet/%s',
                                       F1 = scores.get('F1', 0), SamplePerSec = speed_outer)
         self._vis_mode = None
@@ -330,7 +321,7 @@ class MultiVis(BaseVis):
             remove(self._draw_file)
 
     def _process(self, batch):
-        (batch_len, h_token, h_tag, h_label, h_fence, h_segment, h_seg_length,
+        (h_token, h_tag, h_label, h_fence, h_segment, h_seg_length,
          d_tag, d_label, d_fence, d_fence_vote, d_weight, d_segment, d_seg_length) = batch
 
         if self._is_anew:
@@ -369,7 +360,7 @@ class MultiVis(BaseVis):
                     try:
                         fw.write('\n'.join(draw_str_lines(tree, 2)) + '\n\n')
                     except Exception as err:
-                        print('FAILING DRAWING:', err, file = stderr)
+                        print('  FAILING DRAWING:', err, file = stderr)
                         fw.write('FAILING DRAWING\n\n')
         tee_trees(self._join_fn, f'data.{self.epoch}', d_seg_length[:, 0], trees, None, bin_size)
 
@@ -423,31 +414,23 @@ class MultiVis(BaseVis):
         desc_for_logger = f'N: {scores["N"]} {desc}{key_score})'
         return scores, desc_for_screen, desc_for_logger, self.length_bins
 
-from data.multib import MaryDM
-from utils.types import num_threads
 class ParallelVis(BaseVis):
-    def __init__(self, epoch, work_dir, evalb, i2vs, logger, dm):
+    def __init__(self, epoch, work_dir, evalb, logger, dm):
         super().__init__(epoch)
         self._join = lambda fname: join(work_dir, fname)
         self._fdata = self._join(f'data.{self.epoch}.tree')
-        self._args = evalb, i2vs, logger
-        self._dm = dm
+        self._args = dm, evalb, logger
 
     def _before(self):
-        if self._dm:
-            self._dm.timeit()
+        self._args[0].timeit()
 
     def _process(self, batch):
-        batch_size, h_token, d_tag, d_label, d_fence, d_segment, d_seg_length = batch
-        evalb, i2vs, logger = self._args
-        
-        if self._dm is None:
-            self._dm = MaryDM(batch_size, i2vs, num_threads)
-        self._dm.batch(d_segment, h_token, d_tag, d_label, d_fence, d_seg_length)
+        batch_id, h_token, d_tag, d_label, d_fence, d_segment, d_seg_length = batch
+        dm, _, _ = self._args
+        dm.batch(batch_id, d_segment, h_token, d_tag, d_label, d_fence, d_seg_length)
     
     def _after(self):
-        evalb, i2vs, logger = self._args
-        dm = self._dm
+        dm, evalb, logger = self._args
         fhead = self._join(f'head.tree')
         fdata = self._fdata
 
@@ -476,7 +459,7 @@ class ParallelVis(BaseVis):
         key_score = f'{scores["F1"]:.2f}'
         desc_for_screen = desc + byte_style(key_score, underlined = True) + ')'
         desc_for_logger = f'N: {scores["N"]} {desc}{key_score})'
-        return scores, desc_for_screen, desc_for_logger, dm
+        return scores, desc_for_screen, desc_for_logger
 
     @property
     def save_tensors(self):

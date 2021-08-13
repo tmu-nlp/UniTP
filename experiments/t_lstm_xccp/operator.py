@@ -4,11 +4,10 @@ from utils.operator import Operator
 from utils.param_ops import get_sole_key
 from time import time
 from utils.math_ops import is_bin_times
-from utils.types import M_TRAIN, BaseType, frac_open_0, true_type, false_type, tune_epoch_type, frac_06, frac_close
-from models.utils import PCA, fraction, hinge_score, mean_stdev
+from utils.types import M_TRAIN, BaseType, frac_open_0, true_type, tune_epoch_type, frac_06, frac_close
+from models.utils import PCA, fraction, mean_stdev
 from models.loss import binary_cross_entropy, hinge_loss
 from experiments.t_lstm_dccp.operator import DiscoOperator, DiscoVis, inner_score, ParallelVis as BinaryParallelVis
-from utils.shell_io import has_discodop, discodop_eval, byte_style
 
 train_type = dict(loss_weight = dict(tag   = BaseType(0.2, validator = frac_open_0),
                                      label = BaseType(0.3, validator = frac_open_0),
@@ -18,7 +17,6 @@ train_type = dict(loss_weight = dict(tag   = BaseType(0.2, validator = frac_open
                                      disco_2d_neg = BaseType(0.5, validator = frac_open_0)),
                   learning_rate = BaseType(0.001, validator = frac_open_0),
                   disco_2d_negrate = BaseType(0.05, validator = frac_close),
-                  multiprocessing_decode = true_type,
                   binary_hinge_loss = true_type,
                   tune_pre_trained = dict(from_nth_epoch = tune_epoch_type,
                                           lr_factor = frac_06))
@@ -204,7 +202,7 @@ class DiscoMultiOperator(DiscoOperator):
         if self._optuna_mode:
             draw_trees = False
         work_dir = self.recorder.create_join(folder)
-        serial = draw_trees or not head_trees or not self._train_config.multiprocessing_decode
+        serial = draw_trees or not head_trees or self.dm is None
         if serial:
             async_ = True
             vis = DiscoMultiVis(epoch,
@@ -217,7 +215,7 @@ class DiscoMultiOperator(DiscoOperator):
                                 draw_trees)
         else:
             async_ = False
-            vis = ParallelVis(epoch, work_dir, self.i2vs, self.recorder.log, self._evalb_lcfrs_kwargs, self._discodop_prm, self._dm)
+            vis = ParallelVis(epoch, work_dir, self.i2vs, self.recorder.log, self._evalb_lcfrs_kwargs, self._discodop_prm, self.dm)
         pending_heads = vis._pending_heads
         vis = VisRunner(vis, async_ = async_) # wrapper
         vis.before()
@@ -294,7 +292,6 @@ def batch_trees(b_word, b_tag, b_label, b_space, b_segment, b_seg_length, i2vs, 
         yield disco_tree(wd, tg, layers_of_label, layers_of_space, fb_label, layers_of_weight)
 
 
-from data.cross.evalb_lcfrs import DiscoEvalb, ExportWriter, read_param
 from utils.file_io import isfile, remove, isdir, mkdir, listdir, join
 from utils.str_ops import cat_lines, height_ratio, space_height_ratio
 class DiscoMultiVis(DiscoVis):
@@ -425,16 +422,10 @@ class DiscoMultiVis(DiscoVis):
                         fw.write(lines)
 
 
-from data.cross.multib import MxDM
-from utils.types import num_threads
 class ParallelVis(BinaryParallelVis):
     _draw_trees = False
     
     def _process(self, batch_id, batch):
         (batch_len, h_token, d_tag, d_label, d_space, d_weight, d_disco_2d, d_segment, d_seg_length) = batch
-        batch_size = h_token.shape[0]
-        
-        if self._dm is None:
-            self._dm = MxDM(batch_size, self._dtv.vocabs, num_threads)
-        self._dm.batch(self._bid_offset, d_segment, d_seg_length, h_token, d_tag, d_label, d_space)
-        self._bid_offset += batch_size
+        self._args[0].batch(batch_id, self._bid_offset, d_segment, d_seg_length, h_token, d_tag, d_label, d_space)
+        self._bid_offset += h_token.shape[0]

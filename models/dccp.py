@@ -290,7 +290,7 @@ class DiscoStem(nn.Module):
                 supervised_joint = None,
                 **kw_args):
         batch_size, seg_len = existence.shape
-        max_iter_n = seg_len << 2 # 4 times
+        max_iter_n = seg_len << 1 # 2 times
         h0c0 = self.get_h0c0(batch_size)
         # existence.squeeze_(dim = 2) # in-place is a pandora box
 

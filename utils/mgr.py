@@ -1,3 +1,6 @@
+import multiprocessing
+
+
 def check_select(select):
     if ':' in select: # 3/ptb:annotate
         i = select.index(':')
@@ -28,7 +31,8 @@ def check_train(train_str):
                  fine_validation_each_nth_epoch = 4,
                  update_every_n_batch = 1,
                  optuna_trials = 0,
-                 max_epoch = 1000)
+                 max_epoch = 1000,
+                 multiprocessing_decode = False)
     assert ' ' not in train_str
     for group in train_str.split(','):
         if group.startswith('fine='):
@@ -54,6 +58,9 @@ def check_train(train_str):
     
         elif group == '!':
             train['test_with_validation'] = True
+
+        elif group == 'mp':
+            train['multiprocessing_decode'] = True
 
         elif group.startswith('optuna='):
             train['optuna_trials'] = n = int(group[7:])

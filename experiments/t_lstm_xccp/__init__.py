@@ -56,4 +56,6 @@ def get_configs(recorder = None):
     model = DiscoMultiRnnTree(**model_config, **task_params)
     model.to(reader.device)
     # train_config.create(label_log_freq_inv = reader.frequency('label', log_inv = True))
-    return DiscoMultiOperator(model, get_datasets, recorder, reader.i2vs, train_config, recorder.evalb)
+    from data.cross.multib import MxDM
+    get_dm = lambda i2vs, num_threads: MxDM(penn.batch_size << 1, i2vs, num_threads)
+    return DiscoMultiOperator(model, get_datasets, recorder, reader.i2vs, get_dm, train_config, recorder.evalb)

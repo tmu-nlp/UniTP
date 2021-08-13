@@ -55,4 +55,6 @@ def get_configs(recorder = None):
     model = MultiRnnTree(**model_config, **task_params)
     model.to(reader.device)
     train_config.create(label_log_freq_inv = reader.frequency('label', log_inv = True))
-    return MultiOperator(model, get_datasets, recorder, reader.i2vs, recorder.evalb, train_config)
+    from data.multib import MaryDM
+    get_dm = lambda i2vs, num_threads: MaryDM(penn.batch_size << 1, i2vs, num_threads)
+    return MultiOperator(model, get_datasets, recorder, reader.i2vs, get_dm, recorder.evalb, train_config)

@@ -1,3 +1,4 @@
+from numpy import byte
 from utils.types import M_TRAIN, M_DEVEL, M_TEST
 from numpy.random import choice
 from tqdm import tqdm
@@ -12,7 +13,7 @@ class Operator:
     '''An (abstract) Operator operate a customized nn.Module for training, validation and testing.
     To operator, it feeds the model with multi-tasking batch from the customized get_datasets function,
     uses the environmental Recorder to record the results of the model, and i2vs to help a Vis to visualize them.'''
-    def __init__(self, model, get_datasets, recorder, i2vs):
+    def __init__(self, model, get_datasets, recorder, i2vs, get_dm = None):
         assert isinstance(model, nn.Module)
         assert callable(get_datasets)
         assert isinstance(recorder, Recorder)
@@ -27,6 +28,8 @@ class Operator:
         self._test_materials = (_, ds_names, _) = self._get_materials(M_TEST)
         self._ds_icons = {ds_name: icon for ds_name, icon in zip(ds_names, '⚀⚁⚂⚃⚄⚅')}
         self._optuna_mode = None
+        self._dm = None
+        self._get_dm = get_dm
         self._epoch_start = time()
 
     def _get_materials(self, mode):
@@ -36,7 +39,7 @@ class Operator:
         ds_total = sum(ds_freqs)
         return ds_total, ds_names, ds_iters
 
-    def train_initials(self, with_train_set):
+    def train_initials(self, with_train_set, multiprocessing_decode):
         if self._train_materials is None: # single run
             train_icon, devel_icon = get_train_validation_pair()
             self._validate_materials = self._get_materials(M_DEVEL), devel_icon
@@ -44,6 +47,16 @@ class Operator:
         else: # from optuna
             train_cnf, train_icon = self._train_materials
             self._train_materials = self._get_datasets(M_TRAIN, train_cnf), train_icon
+
+        if with_train_set and multiprocessing_decode:
+            from utils.shell_io import byte_style
+            from sys import stderr
+            if callable(self._get_dm):
+                from utils.types import num_threads
+                self._dm = self._get_dm(self._i2vs, num_threads)
+                print(byte_style('+ multiprocessing_decode', '2') + f': {self._dm}', file = stderr)
+            else:
+                print(byte_style('[WARNING] multiprocessing_decode is not for the task', '3'), file = stderr)
 
         (epoch, fine_validation, global_step) = self._recorder.initial_or_restore(self._model)
         self._optimizer = self._build_optimizer(epoch)
@@ -96,8 +109,7 @@ class Operator:
             if trial.should_prune():
                 super_recorder.log(f'  (got pruned at the {trial_step}-th step)')
                 # self._recorder.register_test_scores(dict(key = self._recorder.key_score, step = trial_step))
-                self._recorder.test_model()
-                import optuna; raise optuna.exceptions.TrialPruned()
+                self.test_model(); import optuna; raise optuna.exceptions.TrialPruned()
         return betterment
 
     def test_model(self, epoch = None):
@@ -250,8 +262,16 @@ class Operator:
         return self._i2vs
 
     @property
+    def dm(self):
+        return self._dm
+
+    @property
     def global_step(self):
         return self._global_step
+
+    def close(self):
+        if self._dm is not None:
+            self._dm.close()
     
     @staticmethod
     def combine_scores_and_decide_key(epoch, ds_scores):

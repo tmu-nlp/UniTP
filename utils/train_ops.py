@@ -11,11 +11,13 @@ def get_optuna_params(train_params):
     optuna_params['test_with_validation'] = False
     optuna_params['optuna_trials'] = 0
 
+    optuna_params['multiprocessing_decode'] = train_params.multiprocessing_decode
+
     return optuna_params
 
 def train(train_params, operator):
     train_params = HParams(train_params)
-    epoch_cnt, fine_validation = operator.train_initials(train_params.max_epoch > 0)
+    epoch_cnt, fine_validation = operator.train_initials(train_params.max_epoch > 0, train_params.multiprocessing_decode)
     if train_params.fine_validation_at_nth_wander == 0: fine_validation = True
     nth_wander = train_params.fine_validation_at_nth_wander if fine_validation else 0
     validation_each_nth_epoch = train_params.fine_validation_each_nth_epoch

@@ -1,9 +1,13 @@
 from multiprocessing import Process, Queue, TimeoutError
 from math import ceil
 from time import time, sleep
+
+from sys import stderr
+
+from numpy import byte
 from data.backend import before_to_seq
 from os.path import join, dirname
-from utils.shell_io import concatenate
+from utils.shell_io import concatenate, byte_style
 
 t_sleep_deep = 0.1
 t_sleep_shallow = 0.001
@@ -68,13 +72,12 @@ class DM:
             d2t.start()
             q_workers.append((in_q, d2t))
         self._mp_workers = q_workers, ceil(batch_size / num_workers), batch_size, fdata, cat_files
-        self._batch_id = 0
         self._timer = time()
 
     def timeit(self):
         self._timer = time()
 
-    def batch(self, *args): # split a batch for many workers
+    def batch(self, batch_id, *args): # split a batch for many workers
         q_workers, seg_size, batch_size, fdata, cat_files = self._mp_workers
         # import pdb; pdb.set_trace()
         rin_q, rout_q, tr = self._q_receiver
@@ -86,8 +89,7 @@ class DM:
         for seg_id, (in_q, _) in enumerate(q_workers):
             major_args = self.arg_segment_fn(seg_id, seg_size, batch_size, args)
             if major_args:
-                in_q.put(((self._batch_id, seg_id), major_args))
-        self._batch_id += 1
+                in_q.put(((batch_id, seg_id), major_args))
 
     def batched(self):
         q_workers, _, _, fdata, _ = self._mp_workers
@@ -102,7 +104,6 @@ class DM:
         self._timer = trees_time - self._timer
         tr.join()
         self._q_receiver = rin_q, rout_q, None
-        self._batch_id = 0
         return trees
 
     @property
@@ -111,13 +112,44 @@ class DM:
 
     def close(self):
         q_workers, _, _, _, _ = self._mp_workers
+        good_end = bad_end = 0
+        for in_q, _ in q_workers:
+            in_q.put(-1) # let them response
         for in_q, d2t in q_workers:
-            in_q.put(-1)
             try:
                 d2t.join(timeout = 0.5)
+                good_end += 1
             except TimeoutError:
-                print('terminate', d2t)
-                d2t.terminate()
+                bad_end += 1
+            d2t.terminate()
+        _, _, tr = self._q_receiver
+        force_tr = False
+        if tr is not None:
+            try:
+                tr.join(timeout = 0.5)
+                good_end += 1
+            except TimeoutError:
+                bad_end += 1
+                force_tr = True
+            tr.terminate()
+        good_end = byte_style(str(good_end), '2')
+        if bad_end:
+            bad_end = str(bad_end)
+            if force_tr:
+                bad_end += ' (TR)'
+            bad_end = byte_style(bad_end, '1')
+            bad_end = f'Terminate {bad_end} processes by force; '
+        else:
+            bad_end = ''
+        print(bad_end + f'{good_end} processes naturally ended.', file = stderr)
+
+    def __str__(self):
+        q_workers, seg_size, batch_size, fdata, cat_files = self._mp_workers
+        line = self.__class__.__name__
+        line += f' with {len(q_workers)} workers for seg_size ({seg_size}) of batch_size ({batch_size})'
+        if fdata:
+            line += ' to \'' + fdata + '\''
+        return line
 
 
 class TR(Process):

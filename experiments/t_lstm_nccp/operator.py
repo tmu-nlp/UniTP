@@ -15,26 +15,22 @@ train_type = dict(loss_weight = dict(tag    = BaseType(0.2, validator = frac_ope
                                      label  = BaseType(0.3, validator = frac_open_0),
                                      orient = BaseType(0.5, validator = frac_open_0)),
                   learning_rate = BaseType(0.001, validator = frac_open_0),
-                  multiprocessing_decode = true_type,
                   orient_hinge_loss = true_type,
                   tune_pre_trained = dict(from_nth_epoch = tune_epoch_type,
                                           lr_factor = frac_06))
 
 class PennOperator(Operator):
-    def __init__(self, model, get_datasets, recorder, i2vs, evalb, train_config):
-        super().__init__(model, get_datasets, recorder, i2vs)
+    def __init__(self, model, get_datasets, recorder, i2vs, get_dm, evalb, train_config):
+        super().__init__(model, get_datasets, recorder, i2vs, get_dm)
         self._evalb = evalb
         self._sigmoid = nn.Sigmoid()
         self._mode_length_bins = None, None
         self._initial_run = True, True
         self._train_config = train_config
         self._tune_pre_trained = False
-        self._mp_decode = False
-        self._dm = None
 
     def _build_optimizer(self, start_epoch):
         # self._loss_weights_of_tag_label_orient = 0.3, 0.1, 0.6 betas = (0.9, 0.98), weight_decay = 0.01, eps = 1e-6
-        self._mp_decode = self._train_config.multiprocessing_decode
         self._schedule_lr = hp = WarmOptimHelper.adam(self._model, self._train_config.learning_rate)
         if start_epoch > 0:
             fpath = self.recorder.create_join('penn_devel')
@@ -161,7 +157,7 @@ class PennOperator(Operator):
                 b_head = tuple(batch[x] for x in 'offset length token'.split())
                 tags   = self._model.get_decision(tag_logits  ).type(torch.uint8)
                 labels = self._model.get_decision(label_logits).type(torch.uint8)
-                if self._mp_decode:
+                if self.dm:
                     b_data = (tags, labels, orients)
                     if trapezoid_info is not None:
                         d_seg, d_seg_len = trapezoid_info
@@ -205,7 +201,7 @@ class PennOperator(Operator):
         if hasattr(self._model, 'update_static_pca'):
             self._model.update_static_pca()
         work_dir = self.recorder.create_join(folder)
-        serial = save_tensors or flush_heads or not self._mp_decode
+        serial = save_tensors or flush_heads or self.dm is None
         if serial:
             async_ = True
             vis = SerialVis(epoch,
@@ -219,7 +215,7 @@ class PennOperator(Operator):
                             flush_heads)
         else:
             async_ = False
-            vis = ParallelVis(epoch, work_dir, self._evalb, self.i2vs, self.recorder.log, self._dm)
+            vis = ParallelVis(epoch, work_dir, self._evalb, self.recorder.log, self.dm)
         vis = VisRunner(vis, async_ = async_) # wrapper
         vis.before()
         if final_test:
@@ -232,9 +228,7 @@ class PennOperator(Operator):
 
     def _after_validation(self, ds_name, count, seconds):
         vis, use_test_set, final_test, serial, c_vis = self._vis_mode
-        scores, desc, logg, dm = vis.after()
-        if dm and self._dm is None:
-            self._dm = dm
+        scores, desc, logg = vis.after()
         length_bins = vis.length_bins
         devel_bins, test_bins = self._mode_length_bins
         if length_bins is not None:
@@ -251,17 +245,14 @@ class PennOperator(Operator):
         if serial:
             dmt = speed_dm = ''
         else:
-            dmt = self._dm.duration
+            dmt = self.dm.duration
             speed_dm = f' ◇ {count / dmt:.1f}'
             dmt = f' ◇ {dmt:.3f}'
             desc += byte_style(speed_dm + 'sps.', '2')
 
         logg += f' @{speed_outer} ◇ {speed_inner}{speed_dm} sps. (sym:nn {rate:.2f}; {seconds:.3f}{dmt} sec.)'
         scores['speed'] = speed_outer
-        if final_test:
-            if self._dm:
-                self._dm.close()
-        else:
+        if not final_test:
             self.recorder.tensorboard(self.global_step, 'TestSet/%s' if use_test_set else 'DevelSet/%s',
                                       F1 = scores.get('F1', 0), SamplePerSec = speed_outer)
         self._vis_mode = None
@@ -417,7 +408,7 @@ class SerialVis(BaseVis):
         key_score = f'{scores["F1"]:.2f}'
         desc_for_screen = desc + byte_style(key_score, underlined = True) + ')'
         desc_for_logger = f'N: {scores["N"]} {desc}{key_score})'
-        return scores, desc_for_screen, desc_for_logger, None
+        return scores, desc_for_screen, desc_for_logger
 
 class ScatterVis(BaseVis):
     def __init__(self, epoch, work_dir, dim = 10):
@@ -443,39 +434,30 @@ class ScatterVis(BaseVis):
         pass
 
 
-from data.triangle import TriangularDM
-from data.trapezoid import TrapezoidalDM
-from utils.types import num_threads
 class ParallelVis(BaseVis):
-    def __init__(self, epoch, work_dir, evalb, i2vs, logger, dm):
+    def __init__(self, epoch, work_dir, evalb, logger, dm):
+        assert dm
         super().__init__(epoch)
+        self._args = dm, evalb, logger
         self._join = lambda fname: join(work_dir, fname)
         self._fdata = self._join(f'data.{self.epoch}.tree')
-        self._args = evalb, i2vs, logger, dm
 
     def _before(self):
-        _, _, _, dm = self._args
-        if dm: dm.timeit()
+        self._args[0].timeit()
 
     def _process(self, batch, d_trapezoid_info):
-        (_, batch_size, _, h_offset, h_length, h_token,
+        (batch_id, _, _, h_offset, h_length, h_token,
          d_tag, d_label, d_right) = batch
-        evalb, i2vs, logger, dm = self._args
+        dm, _, _ = self._args
         
         if d_trapezoid_info:
-            if dm is None:
-                dm = TrapezoidalDM(batch_size, i2vs, num_threads)
-                self._args = evalb, i2vs, logger, dm
             d_segment, d_seg_length = d_trapezoid_info
-            dm.batch(d_segment, h_offset, h_length, h_token, d_tag, d_label, d_right, d_seg_length)
+            dm.batch(batch_id, d_segment, h_offset, h_length, h_token, d_tag, d_label, d_right, d_seg_length)
         else:
-            if dm is None:
-                dm = TriangularDM(batch_size, i2vs, num_threads)
-                self._args = evalb, i2vs, logger, dm
-            dm.batch(h_offset, h_length, h_token, d_tag, d_label, d_right)
+            dm.batch(batch_id, h_offset, h_length, h_token, d_tag, d_label, d_right)
     
     def _after(self):
-        evalb, i2vs, logger, dm = self._args
+        dm, evalb, logger = self._args
         fhead = self._join(f'head.tree')
         fdata = self._fdata
 
@@ -504,7 +486,7 @@ class ParallelVis(BaseVis):
         key_score = f'{scores["F1"]:.2f}'
         desc_for_screen = desc + byte_style(key_score, underlined = True) + ')'
         desc_for_logger = f'N: {scores["N"]} {desc}{key_score})'
-        return scores, desc_for_screen, desc_for_logger, dm
+        return scores, desc_for_screen, desc_for_logger
 
     @property
     def save_tensors(self):

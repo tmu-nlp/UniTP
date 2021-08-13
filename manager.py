@@ -377,6 +377,7 @@ class Manager:
                 continue
 
             if train_or_resume_training:
+                operator = None
                 try:
                     operator = module.get_configs(recorder)
                     recorder.register_test_scores(train(train_params, operator))
@@ -389,6 +390,8 @@ class Manager:
 
                     if input('Remove recorder ? [Any key or n]').lower() != 'n':
                         recorder.delete_all()
+                if operator:
+                    operator.close()
             else:
                 recorder.register_test_scores(module.get_configs(recorder).test_model())
             recorder.detach()
