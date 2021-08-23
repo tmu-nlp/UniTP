@@ -355,14 +355,18 @@ class DiscoMultiVis(DiscoVis):
                     for lid, l_disco_2d in enumerate(d_disco_2d):
                         if sid in l_disco_2d:
                             new_lines = f'#{lid + 1}'
-                            mat, comp, fallback = l_disco_2d[sid]
-                            n_comps, = comp.shape
+                            mat, _, _, n_comps, fallback, thresh, n_trial = l_disco_2d[sid]
                             if fallback:
                                 new_lines += '**'
                                 has_n_fallback += 1
-                            elif n_comps > 1:
-                                new_lines += f'*{n_comps}'
-                                has_n_comps = max(has_n_comps, n_comps)
+                            else:
+                                if n_comps > 1:
+                                    new_lines += f'*{n_comps}'
+                                    has_n_comps = max(has_n_comps, n_comps)
+                                if thresh != 0.5:
+                                    new_lines += f'!{thresh:0.2f}'
+                            if n_trial > 1:
+                                new_lines += f'@{n_trial}'
                             new_lines = [new_lines]
                             for row in mat:
                                 new_lines.append(''.join(space_height_ratio(val) for val in row) + ' | ')

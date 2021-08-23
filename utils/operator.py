@@ -52,9 +52,10 @@ class Operator:
             from utils.shell_io import byte_style
             from sys import stderr
             if callable(self._get_dm):
-                from utils.types import num_threads
-                self._dm = self._get_dm(self._i2vs, num_threads)
-                print(byte_style('+ multiprocessing_decode', '2') + f': {self._dm}', file = stderr)
+                if self._dm is None:
+                    from utils.types import num_threads
+                    self._dm = self._get_dm(self._i2vs, num_threads)
+                    print(byte_style('+ multiprocessing_decode', '2') + f': {self._dm}', file = stderr)
             else:
                 print(byte_style('[WARNING] multiprocessing_decode is not for the task', '3'), file = stderr)
 

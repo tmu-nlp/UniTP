@@ -135,10 +135,7 @@ class Recorder:
                 best_trial = f'O{best_trial}-{best_model}'
                 link(join(fpath, fname, 'models', best_model),
                      join(instance_dir, 'models', best_trial))
-                try:
-                    results[best_trial] = trial_specs['key']
-                except:
-                    import pdb; pdb.set_trace()
+                results[best_trial] = trial_specs[best_model]
                 save_yaml(specs, *self._sv_file_lock, wait_lock = False)
                 break
         return best_result

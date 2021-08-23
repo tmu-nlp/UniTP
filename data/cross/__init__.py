@@ -236,7 +236,32 @@ def trace_dst_gen(trace_src, trace_dst):
         else:
             yield tds[0]
 
-def _read_dpenn(tree, convert_id_to_str = True):
+E_PENN_PUNCT = ',', '.', '``', "''", ':', '-RRB-', '-LRB-'
+def sort_leftover(lhs, rhs, leftover_gen):
+    def dist(x):
+        if x < lhs:
+            return lhs - x
+        elif x > rhs:
+            return x - rhs
+        return 0
+    leftover = [(x, dist(x)) for x in leftover_gen]
+    leftover.sort(key = lambda x: x[1])
+    leftover_x = []
+    for x, y in leftover:
+        if y == 0:
+            leftover_x.append(x)
+        elif x == lhs - 1:
+            lhs = x
+            leftover_x.append(x)
+        elif x == rhs + 1:
+            rhs = x
+            leftover_x.append(x)
+        else:
+            break
+    return leftover_x
+
+
+def _read_dpenn(tree, convert_id_to_str = True, adjust_punct = True):
     bottom = []
     top_down = {}
     pd_args = {}
@@ -320,12 +345,14 @@ def _read_dpenn(tree, convert_id_to_str = True):
 
     # cross trace along the bottom (ordered and reversed for bottom.pop(i) stability)
     history = {}
+    bottom_history = []
     for _, tid, d_pid, d_cid, d_bid in trace_dst:
         s_pid, s_cid, lhs, rhs = trace_src.pop(tid)
         d_pid = history.pop(d_cid, d_pid)
         s_ftag = top_down[s_pid].children.pop(s_cid)
         d_ftag = top_down[d_pid].children.pop(d_cid)
         v_bid, v_wd, v_tg = bottom.pop(d_bid)
+        bottom_history.append(d_bid)
         assert v_wd.endswith(tid)
         assert (d_bid, '-NONE-') == (v_bid, v_tg)
         if s_ftag and d_ftag:
@@ -333,6 +360,13 @@ def _read_dpenn(tree, convert_id_to_str = True):
         else:
             ftag = s_ftag or d_ftag
         top_down[d_pid].children[s_cid] = ftag
+        # for better continuity
+        if adjust_punct:
+            leftover_x = (x for x in top_down[s_pid].children.keys() - set({d_pid}) if x < 500)
+            leftover_x = sort_leftover(lhs, rhs, leftover_x)
+            if leftover_x and all(bottom[x - sum(y < x for y in bottom_history)][2] in E_PENN_PUNCT for x in leftover_x):
+                for x in leftover_x:
+                    top_down[d_pid].children[x] = top_down[s_pid].children.pop(x)
         history[s_cid] = d_pid
         if lhs <= d_bid <= rhs:
             for s_ccid in top_down[s_cid].children:

@@ -6,13 +6,14 @@
 
 std::vector<torch::Tensor> predict_disco_sections_cuda(
     torch::Tensor dis_matrix, // float
-    const float threshold,
-    const bool catch_any_invalid,
     torch::Tensor dis_length, // long
     torch::Tensor dis_bid,    // long
     torch::Tensor dis_sid,    // long
     torch::Tensor con_fence,  // bool
-    torch::Tensor dis_score); // float
+    torch::Tensor dis_score,  // float
+    const float threshold,
+    const bool catch_any_invalid,
+    int n_parallel);
 
 std::vector<torch::Tensor> blocky_max_cuda(
     torch::Tensor sections, // long
@@ -30,13 +31,14 @@ std::vector<torch::Tensor> blocky_max_cuda(
 
 std::vector<torch::Tensor> predict_disco_sections(
     torch::Tensor dis_matrix, // float
-    const float threshold,
-    const bool catch_any_invalid,
     torch::Tensor dis_length, // long
     torch::Tensor dis_bid,    // long
     torch::Tensor dis_sid,    // long
     torch::Tensor con_fence,  // bool
-    torch::Tensor dis_score) {// float
+    torch::Tensor dis_score,  // float
+    const float threshold,
+    const bool catch_any_invalid,
+    int n_parallel) {
   CHECK_INPUT(dis_matrix);
   CHECK_INPUT(dis_length);
   CHECK_INPUT(dis_bid);
@@ -47,13 +49,14 @@ std::vector<torch::Tensor> predict_disco_sections(
   // TORCH_CHECK(dis_matrix.size(0) == dis_length.size(0))
 
   return predict_disco_sections_cuda(dis_matrix,
-                                     threshold,
-                                     catch_any_invalid,
                                      dis_length,
                                      dis_bid,
                                      dis_sid,
                                      con_fence,
-                                     dis_score);
+                                     dis_score,
+                                     threshold,
+                                     catch_any_invalid,
+                                     n_parallel);
 }
 
 std::vector<torch::Tensor> blocky_max(

@@ -2,16 +2,42 @@ from models.accp import torch, nn, MultiStem
 from models.utils import condense_helper, condense_left, blocky_softmax, blocky_max, bool_start_end
 from sys import stderr
 from time import time
+from utils.shell_io import byte_style
 
 try:
     import xccp_decode
     import numpy as np
+    print(byte_style('Use our cuda::xccp_decode✨', '2'))
+    def predict_disco_sections_(disco_2d, layer_fence, dis_batch, dis_length, dis_indice, head_by = 'max_in'):
+        if head_by == 'max_in':
+            head_score = disco_2d.sum(dim = 1)
+        elif head_by == 'max_out':
+            head_score = disco_2d.sum(dim = 2)
+        else:
+            if head_by == 'leftmost':
+                head_score = seq.flip(0)
+            elif head_by == 'rightmost':
+                head_score = seq
+            else:
+                raise ValueError('Unknown head_by = ' + head_by)
+            head_score += 1 # +1 for blocky_max
+            head_score = head_score[None].repeat(dis_size, 1)
+
+        (sections, comp_id, component, comp_check, final_thresholds,
+         trials) = xccp_decode.predict_disco_sections(disco_2d, dis_length, dis_batch, dis_indice.contiguous(), layer_fence.contiguous(), head_score, 0.5, True, -1)
+        disco_2d = (x.cpu().numpy() for x in (dis_batch, dis_length, disco_2d, comp_id, component, comp_check, final_thresholds, trials))
+        layer_2d_logits = {}
+        for bid, dis_len, clear_2d, cid, comps, check, thresh, trial in zip(*disco_2d):
+            cid = cid[:dis_len]
+            n_comps = np.unique(cid).shape[0]
+            comps = comps[:n_comps, :dis_len]
+            clear_2d = clear_2d[:dis_len, :dis_len]
+            layer_2d_logits[int(bid)] = clear_2d, cid, comps, n_comps, bool(thresh < 0), thresh, trial
+        return sections, layer_2d_logits
 except:
-    from utils.shell_io import byte_style
     print(byte_style('[HINT] CUDA module xccp_decode', '3'), 'is not compiled for full discontinuity matrix parallelism.', file = stderr)
     print('    -> try', byte_style('\'cd cuda; python setup.py install\''), file = stderr)
-    # xccp_decode = None
-xccp_decode = None
+    xccp_decode = None
 
 def continuous_fence(bbt_zeros, continuous, fence_logits):
     batch_dim, con_min, con_max = bool_start_end(continuous)
@@ -27,189 +53,87 @@ def continuous_fence(bbt_zeros, continuous, fence_logits):
                                    torch.where(fl_left < fl_right, fl_left, fl_right)),
                        fl_left + fl_right) # oppo sign
 
-# def discontinuous_hidden(dis_batch, seq_idx, discontinuous):
-    # 012345678
-    # 001132432
-    # 10101_11_1 (sup 1_1)
-    # 1111001001 -> 101011
-    # 1111100100 -> 101011
-    # 101011 (min or avg)
-    # 111100100
-    # 1111100100
-    #     ^cz
-    # 1111001001
-    # 001132324 (sup)
-    # 012345678
-    # 01238 4567 (con_indice & dis_indice)
-    # 028   56 (blocky_max: boolean positions; lft|max) | 014   23 (cumsum & take out| concatenated & sorted)
-    # 001112334 <- 112223445
-    #     3232 (@4567)
-    # 001132324 (sup)
-
-def predict_disco_sections(disco_2d, layer_fence, dis_batch, dis_length, dis_indice, head_by = 'max_in'):
-
-    dis_size, dis_max_children, _ = disco_2d.shape
+def predict_disco_sections(disco_2d, layer_fence, dis_batch, dis_length, dis_indice, head_by = 'max_in', debug = False):
+    _, dis_max_children, _ = disco_2d.shape
     seq = torch.arange(dis_max_children, device = dis_batch.device)
     disco_2d[:, seq, seq] = 1
-        
-    layer_2d_logits = {}
+
     if disco_2d.is_cuda and xccp_decode is not None:
+        cuda_sections, cuda_layer_2d_logits = predict_disco_sections_(disco_2d, layer_fence, dis_batch, dis_length, dis_indice, head_by)
+        if debug:
+            fb_comps = torch.ones(1, dis_max_children, dtype = torch.bool, device = dis_batch.device)
+            fb_comp_idx = torch.zeros(dis_max_children, dtype = dis_batch.dtype, device = dis_batch.device)
 
-        if head_by == 'max_in':
-            head_score = disco_2d.sum(dim = 1)
-        elif head_by == 'max_out':
-            head_score = disco_2d.sum(dim = 2)
-        else:
-            if head_by == 'leftmost':
-                head_score = seq.flip(0)
-            elif head_by == 'rightmost':
-                head_score = seq
-            else:
-                raise ValueError('Unknown head_by = ' + head_by)
-            head_score += 1 # +1 for blocky_max
-            head_score = head_score[None].repeat(dis_size, 1)
-
-        (sections, comp_id, components,
-         comp_check) = xccp_decode.predict_disco_sections(disco_2d, 0.5, False, dis_length, dis_batch, dis_indice.contiguous(), layer_fence.contiguous(), head_score)
-        disco_2d = (x.cpu().numpy() for x in (dis_batch, dis_length, disco_2d, comp_id, comp_check))
-        for bid, dis_len, clear_2d, cid, check in zip(*disco_2d):
-            cid = np.unique(cid[:dis_len])
-            clear_2d = clear_2d[:dis_len, :dis_len]
-            check = bool(check.all())
-            layer_2d_logits[int(bid)] = clear_2d, cid, check
-        return sections, layer_2d_logits
-
-    # dis_max_parents = dis_max_children >> 1
-    # if dis_max_parents > 7:
-    #     dis_max_parents = 7
-    # dis_max_parents += 1 # make room for comparison [base, comp, comp, |]
-    # # TODO - Q: How many components statistically are? Q: density of disco signals (layerwisely)
-    # # CharLSTM; VisVote; map_ vmap?
-    # start = time()
-    # dis_u, dis_d, dis_v = torch.svd_lowrank(disco_2d, dis_max_parents) # [b, mp, mc], [b, mp]
-    # dis_d_diff = dis_d[:, :dis_max_parents - 1] - dis_d[:, 1:dis_max_parents] # [b, mp]
-    # dis_d_diff_argmax = dis_d_diff.argmax(dim = 1, keepdim = True)
-    # seq_idx = torch.arange(dis_max_parents, device = dis_batch.device)
-    # dis_d[dis_d_diff_argmax < seq_idx[None]] = 0
-    # clear_3d = torch.bmm(dis_d.unsqueeze(dim = 1) * dis_u, dis_v.transpose(1, 2))
-    # svd_time = time() - start
-
-    dis_comps = []
-    fb_comps = torch.ones(1, dis_max_children, dtype = torch.bool, device = dis_batch.device)
-    fb_comp_idx = torch.zeros(dis_max_children, dtype = dis_batch.dtype, device = dis_batch.device)
-
-    for clear_2d, dis_len, bid, indice in zip(disco_2d, dis_length, dis_batch, dis_indice):
-        #                                       final      first     final      first
-        # 4578
-        # 1010 (7); 0101 (5) | *****1*1*
-        # (32) -> 3030; 0202 -> 3232
-        # 001112334 -> ****3232*
-        threshold = 0.5
-        clear_2d = clear_2d[:dis_len, :dis_len] # no way: need var sizes
-        b_clear_2d = clear_2d > threshold # clear_2d.mean() # mean ? softer? bad for ones; CPU or GPU?  inclusion matrix for comp
-        in_deg  = b_clear_2d.sum(dim = 0)
-        out_deg = b_clear_2d.sum(dim = 1)
-        # import pdb; pdb.set_trace()
-        fallback = False
-        if (in_deg != out_deg).any():
-            comps = fb_comps[:, :dis_len]
-            comp_idx = fb_comp_idx[:dis_len]
-            fallback = True
-        else:
-            comps, comp_idx = b_clear_2d.unique(dim = 0, return_inverse = True) # no way: map_fn
-            while not (comps.sum(dim = 0) == 1).all():
-                if (clear_2d > threshold).any():
-                    threshold = clear_2d[clear_2d > threshold].min()
-                    b_clear_2d = clear_2d > threshold
-                    comps, comp_idx = b_clear_2d.unique(dim = 0, return_inverse = True)
-                else:
-                    threshold = None
-                    break
-            if threshold is None:
+            dis_comps = []
+            layer_2d_logits = {}
+            for clear_2d, dis_len, bid, indice in zip(disco_2d, dis_length, dis_batch, dis_indice):
+                threshold = 0.5
+                clear_2d = clear_2d[:dis_len, :dis_len] # no way: need var sizes
+                b_clear_2d = clear_2d > threshold # clear_2d.mean() # mean ? softer? bad for ones; CPU or GPU?  inclusion matrix for comp
+                in_deg  = b_clear_2d.sum(dim = 0)
+                out_deg = b_clear_2d.sum(dim = 1)
                 # import pdb; pdb.set_trace()
-                comps = fb_comps[:, :dis_len]
-                comp_idx = fb_comp_idx[:dis_len]
-                fallback = True
-        layer_2d_logits[int(bid)] = clear_2d.cpu().numpy(), comp_idx.unique().cpu().numpy(), fallback
+                fallback = False
+                n_trails = 1
+                if (in_deg != out_deg).any():
+                    comps = fb_comps[:, :dis_len]
+                    comp_idx = fb_comp_idx[:dis_len]
+                    fallback = True
+                else:
+                    comps, comp_idx = b_clear_2d.unique(dim = 0, return_inverse = True) # no way: map_fn
+                    trials = list(clear_2d.storage())
+                    trials.sort(key = lambda x: abs(x - threshold), reverse = True)
+                    while not (comps.sum(dim = 0) == 1).all():
+                        n_trails += 1
+                        if trials:
+                            threshold = trials.pop()
+                            b_clear_2d = clear_2d > threshold
+                            comps, comp_idx = b_clear_2d.unique(dim = 0, return_inverse = True)
+                        else:
+                            threshold = -1.0
+                            break
+                    if threshold < 0:
+                        # import pdb; pdb.set_trace()
+                        comps = fb_comps[:, :dis_len]
+                        comp_idx = fb_comp_idx[:dis_len]
+                        fallback = True
+                        n_trails += 1
+                temp = tuple(x.cpu().numpy() for x in (clear_2d, comp_idx, comps))
+                n_comps = np.unique(temp[1]).shape[0]
+                temp = temp + (n_comps, fallback, threshold, n_trails)
+                layer_2d_logits[int(bid)] = temp
 
-        # num_comps, _ = comps.shape
-        # comp_idx = (comp_dim[:num_comps, None] * comps).sum(dim = 0) # 0101 (or 1010)
-        if head_by == 'max_in':
-            head_score = clear_2d.sum(dim = 0)
-        elif head_by == 'max_out':
-            head_score = clear_2d.sum(dim = 1)
-        elif head_by == 'leftmost':
-            head_score = seq[:dis_len].flip(0) + 1 # +1 for blocky_max
-        elif head_by == 'rightmost':
-            head_score = seq[:dis_len] + 1 # +1 for blocky_max
+                if head_by == 'max_in':
+                    head_score = clear_2d.sum(dim = 0)
+                elif head_by == 'max_out':
+                    head_score = clear_2d.sum(dim = 1)
+                elif head_by == 'leftmost':
+                    head_score = seq[:dis_len].flip(0) + 1 # +1 for blocky_max
+                elif head_by == 'rightmost':
+                    head_score = seq[:dis_len] + 1 # +1 for blocky_max
+                else:
+                    raise ValueError('Unknown head_by = ' + head_by)
+
+                dis_b_max = blocky_max(comp_idx, head_score[:dis_len], False) # 0110 (for 57)
+                comp_max_idx = comp_idx[dis_b_max] # 0101 -> 01 or 10
+                indice = indice[:dis_len]
+                dis_max_idx = indice[dis_b_max] # 4578 -> 57
+                layer_fence[bid, dis_max_idx] = True # 00101_11_1 -> 
+                dis_comps.append((bid, dis_max_idx, comps, comp_max_idx, indice))
+            sections = layer_fence.cumsum(dim = 1) # 0011123444
+            for bid, dis_max_idx, comps, comp_max_idx, indice in dis_comps:
+                order = sections[bid, dis_max_idx][comp_max_idx]
+                sections[bid, indice] = (order[:, None] * comps).sum(dim = 0)
+            if (sections != cuda_sections).any():
+                diff = (sections != cuda_sections).any(1)
+                print(f'{diff.sum():d}')
+                print(sections[diff])
+                print('Cuda:')
+                print(cuda_sections[diff])
+                breakpoint()
         else:
-            raise ValueError('Unknown head_by = ' + head_by)
-
-        dis_b_max = blocky_max(comp_idx, head_score[:dis_len], False) # 0110 (for 57)
-        comp_max_idx = comp_idx[dis_b_max] # 0101 -> 01 or 10
+            sections, layer_2d_logits = cuda_sections, cuda_layer_2d_logits
         
-        indice = indice[:dis_len]
-        dis_max_idx = indice[dis_b_max] # 4578 -> 57
-        layer_fence[bid, dis_max_idx] = True # 00101_11_1 -> 
-        dis_comps.append((bid, dis_max_idx, comps, comp_max_idx, indice))
-        # print(dis_max_idx)
-    
-    # dis_comps = [None] * dis_size
-    # def disco_inject(dis_bid, con_bid, dis_len):
-    #     clear_2d = clear_3d[dis_bid, :dis_len, :dis_len]
-    #     b_clear_2d = clear_2d > 0.5
-    #     in_deg  = b_clear_2d.sum(dim = 0)
-    #     out_deg = b_clear_2d.sum(dim = 1)
-    #     if (in_deg != out_deg).any() or (in_deg <= 1).any() or (out_deg <= 1).any():
-    #         comps = fb_comps[:, :dis_len]
-    #         comp_idx = fb_comp_idx[:dis_len]
-    #     else:
-    #         comps, comp_idx = b_clear_2d.unique(dim = 0, return_inverse = True) # no way: map_fn
-    #         if not (comps.sum(dim = 0) == 1).all():
-    #             comps = fb_comps[:, :dis_len]
-    #             comp_idx = fb_comp_idx[:dis_len]
-
-    #     dis_b_max = blocky_max(comp_idx, clear_2d.sum(dim = 0), False)
-    #     comp_max_idx = comp_idx[dis_b_max] # 0101 -> 01 or 10
-    #     dis_max_idx = dis_indice[dis_bid, :dis_len][dis_b_max]
-    #     layer_fence[con_bid, dis_max_idx] = True # 00101_11_1 -> 
-    #     dis_comps[dis_bid] = dis_max_idx, comps, comp_max_idx
-    #     return dis_bid
-
-    # dis_idx = torch.arange(dis_size, device = dis_batch.device)
-    # dis_idx.map2_(dis_batch, dis_length, disco_inject)
-
-    # print(layer_fence * 1)
-    sections = layer_fence.cumsum(dim = 1) # 0011123444
-    # min_sec, _ = sections.min(1)
-    # if (min_sec > 1).any():
-    #     print(torch.where(min_sec > 1))
-    #     import pdb; pdb.set_trace()
-    # print(sections)
-    # print('sec')
-
-    # def disco_assign(dis_bid, con_bid, dis_len):
-    #     indice = dis_indice[dis_bid, :dis_len]
-    #     dis_max_idx, comps, comp_max_idx = dis_comps[dis_bid]
-    #     order = sections[con_bid, dis_max_idx][comp_max_idx]
-    #     # print(con_bid, sections[con_bid, dis_max_idx])
-    #     # print(comp_max_idx, sections[con_bid, dis_max_idx])
-    #     # print((order[:, None] * comps).sum(dim = 0))
-    #     sections[con_bid, indice] = (order[:, None] * comps).sum(dim = 0) # 3232 for 0101
-    #     # print()
-    #     return dis_bid
-    # dis_idx.map2_(dis_batch, dis_length, disco_assign)
-
-    for bid, dis_max_idx, comps, comp_max_idx, indice in dis_comps:
-        # 0:0101  23 2
-        # 1:1010  01 3 3232
-        # 0:1010     3
-        # 1:0101  10 2 3232
-        order = sections[bid, dis_max_idx][comp_max_idx]
-        sections[bid, indice] = (order[:, None] * comps).sum(dim = 0) # 3232 for 0101
-    # cate_time = time() - start - svd_time
-    # with open('svd_time.csv', 'a+') as fw:
-    #     fw.write(f'{dis_size},{dis_max_children},{svd_time},{cate_time}\n')
     return sections, layer_2d_logits
 
 
@@ -611,3 +535,103 @@ class BaseRnnTree(DiscoMultiStem):
         tag_loss   = get_loss(self._tag_layer,   self._logit_max, tag_logits,   batch, 'tag')
         label_loss = get_loss(self._label_layer, self._logit_max, label_logits, batch, False, height_mask, None, 'label')
         return tag_loss, label_loss
+
+
+
+
+
+# def discontinuous_hidden(dis_batch, seq_idx, discontinuous):
+    # 012345678
+    # 001132432
+    # 10101_11_1 (sup 1_1)
+    # 1111001001 -> 101011
+    # 1111100100 -> 101011
+    # 101011 (min or avg)
+    # 111100100
+    # 1111100100
+    #     ^cz
+    # 1111001001
+    # 001132324 (sup)
+    # 012345678
+    # 01238 4567 (con_indice & dis_indice)
+    # 028   56 (blocky_max: boolean positions; lft|max) | 014   23 (cumsum & take out| concatenated & sorted)
+    # 001112334 <- 112223445
+    #     3232 (@4567)
+    # 001132324 (sup)
+
+    # dis_max_parents = dis_max_children >> 1
+    # if dis_max_parents > 7:
+    #     dis_max_parents = 7
+    # dis_max_parents += 1 # make room for comparison [base, comp, comp, |]
+    # # TODO - Q: How many components statistically are? Q: density of disco signals (layerwisely)
+    # # CharLSTM; VisVote; map_ vmap?
+    # start = time()
+    # dis_u, dis_d, dis_v = torch.svd_lowrank(disco_2d, dis_max_parents) # [b, mp, mc], [b, mp]
+    # dis_d_diff = dis_d[:, :dis_max_parents - 1] - dis_d[:, 1:dis_max_parents] # [b, mp]
+    # dis_d_diff_argmax = dis_d_diff.argmax(dim = 1, keepdim = True)
+    # seq_idx = torch.arange(dis_max_parents, device = dis_batch.device)
+    # dis_d[dis_d_diff_argmax < seq_idx[None]] = 0
+    # clear_3d = torch.bmm(dis_d.unsqueeze(dim = 1) * dis_u, dis_v.transpose(1, 2))
+    # svd_time = time() - start
+
+        #                                       final      first     final      first
+        # 4578
+        # 1010 (7); 0101 (5) | *****1*1*
+        # (32) -> 3030; 0202 -> 3232
+        # 001112334 -> ****3232*
+        # print(dis_max_idx)
+    
+    # dis_comps = [None] * dis_size
+    # def disco_inject(dis_bid, con_bid, dis_len):
+    #     clear_2d = clear_3d[dis_bid, :dis_len, :dis_len]
+    #     b_clear_2d = clear_2d > 0.5
+    #     in_deg  = b_clear_2d.sum(dim = 0)
+    #     out_deg = b_clear_2d.sum(dim = 1)
+    #     if (in_deg != out_deg).any() or (in_deg <= 1).any() or (out_deg <= 1).any():
+    #         comps = fb_comps[:, :dis_len]
+    #         comp_idx = fb_comp_idx[:dis_len]
+    #     else:
+    #         comps, comp_idx = b_clear_2d.unique(dim = 0, return_inverse = True) # no way: map_fn
+    #         if not (comps.sum(dim = 0) == 1).all():
+    #             comps = fb_comps[:, :dis_len]
+    #             comp_idx = fb_comp_idx[:dis_len]
+
+    #     dis_b_max = blocky_max(comp_idx, clear_2d.sum(dim = 0), False)
+    #     comp_max_idx = comp_idx[dis_b_max] # 0101 -> 01 or 10
+    #     dis_max_idx = dis_indice[dis_bid, :dis_len][dis_b_max]
+    #     layer_fence[con_bid, dis_max_idx] = True # 00101_11_1 -> 
+    #     dis_comps[dis_bid] = dis_max_idx, comps, comp_max_idx
+    #     return dis_bid
+
+    # dis_idx = torch.arange(dis_size, device = dis_batch.device)
+    # dis_idx.map2_(dis_batch, dis_length, disco_inject)
+
+    # print(layer_fence * 1)
+        # num_comps, _ = comps.shape
+        # comp_idx = (comp_dim[:num_comps, None] * comps).sum(dim = 0) # 0101 (or 1010)
+    # min_sec, _ = sections.min(1)
+    # if (min_sec > 1).any():
+    #     print(torch.where(min_sec > 1))
+    #     import pdb; pdb.set_trace()
+    # print(sections)
+    # print('sec')
+
+    # def disco_assign(dis_bid, con_bid, dis_len):
+    #     indice = dis_indice[dis_bid, :dis_len]
+    #     dis_max_idx, comps, comp_max_idx = dis_comps[dis_bid]
+    #     order = sections[con_bid, dis_max_idx][comp_max_idx]
+    #     # print(con_bid, sections[con_bid, dis_max_idx])
+    #     # print(comp_max_idx, sections[con_bid, dis_max_idx])
+    #     # print((order[:, None] * comps).sum(dim = 0))
+    #     sections[con_bid, indice] = (order[:, None] * comps).sum(dim = 0) # 3232 for 0101
+    #     # print()
+    #     return dis_bid
+    # dis_idx.map2_(dis_batch, dis_length, disco_assign)
+ # 3232 for 0101
+        # 0:0101  23 2
+        # 1:1010  01 3 3232
+        # 0:1010     3
+        # 1:0101  10 2 3232
+    # cate_time = time() - start - svd_time
+    # with open('svd_time.csv', 'a+') as fw:
+    #     fw.write(f'{dis_size},{dis_max_children},{svd_time},{cate_time}\n')

@@ -10,18 +10,14 @@ from os import mkdir, listdir
 from os.path import isdir, isfile, join, abspath
 from utils.yaml_io import save_yaml, load_yaml
 from utils.file_io import create_join, DelayedKeyboardInterrupt
-from utils.types import valid_size, fill_placeholder
-from utils.param_ops import zip_nt_params, unzip_nt_params, iter_zipped_nt_params, change_key, dict_print
+from utils.types import fill_placeholder
+from utils.param_ops import zip_nt_params, iter_zipped_nt_params, change_key
 from utils.str_ops import strange_to
-from utils.shell_io import call_fasttext, byte_style
+from utils.shell_io import byte_style
 from collections import defaultdict
-from datetime import datetime
-import pdb
 
 _mfile = 'manager.yaml'
 _lfile = 'manager.lock'
-_rfile = 'register_and_results.yaml'
-_rlock = 'register_and_results.lock'
 _data_basic_info = {'source_path': fill_placeholder,
                     'local_path' : None,
                     'valid_sizes': None}

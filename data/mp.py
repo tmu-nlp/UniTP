@@ -145,7 +145,7 @@ class DM:
 
     def __str__(self):
         q_workers, seg_size, batch_size, fdata, cat_files = self._mp_workers
-        line = self.__class__.__name__
+        line = self.__class__.__name__ + f' ({id(self):X})'
         line += f' with {len(q_workers)} workers for seg_size ({seg_size}) of batch_size ({batch_size})'
         if fdata:
             line += ' to \'' + fdata + '\''

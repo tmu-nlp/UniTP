@@ -30,9 +30,11 @@ __global__ void kernel_block_max(
     sec2max[bid][i] = idx_max[bid][sections[bid][i]];
   }
 
-  idx = 0;
-  do { bool_max[bid][idx_max[bid][idx++]] = true; }
-  while (idx < num_sections and idx_max[bid][idx] >= 0);
+  for (int i = 0; i < num_sections; i++) {
+    idx = idx_max[bid][i];
+    if (idx >= 0)
+      bool_max[bid][idx] = true;
+  }
 }
 
 std::vector<torch::Tensor> blocky_max_cuda(
@@ -52,8 +54,7 @@ std::vector<torch::Tensor> blocky_max_cuda(
   const auto &val_options = torch::TensorOptions().dtype(values.scalar_type()).device(device);
 
   auto bool_max = torch::zeros({batch_size, batch_len}, bool_options);
-  auto idx_max = torch::zeros({batch_size, section_volume}, int_options); idx_max -= 1;
-  // auto idx_max = torch::full({batch_size, section_volume}, int_options, -1);
+  auto idx_max = torch::full({batch_size, section_volume}, -1, int_options);
   auto val_max = torch::empty({batch_size, section_volume}, val_options);
   auto sec2max = torch::empty({batch_size, batch_len}, int_options);
 
@@ -99,8 +100,7 @@ __global__ void kernel_fan_in(
     for (xid = 0; xid < max_comp_seq; xid++) {
       symmetric_lhs = bool_matrix[bid][yid][xid];
       if (symmetric_lhs != bool_matrix[bid][xid][yid]) {
-        comp_check[bid][yid] = false;
-        // std::printf("Asymmetric %d, %d\n", bid, yid);
+        comp_check[bid][yid] = false; // std::printf("Asymmetric %d, %d\n", bid, yid);
         return;
       }
       if (symmetric_lhs) {
@@ -108,12 +108,10 @@ __global__ void kernel_fan_in(
         triggered = s_comp_id < max_comp_batch;
 
         if (triggered and not bool_matrix[bid][s_comp_id][xid]) {
-          // std::printf("Diff.0 %d, %d\n", bid, yid);
           comp_check[bid][yid] = false;
           return; // 
         }
       } else if (triggered and bool_matrix[bid][s_comp_id][xid]) {
-        // std::printf("Diff.1 %d, %d\n", bid, yid);
         comp_check[bid][yid] = false;
         return;
       }
@@ -146,7 +144,57 @@ __global__ void kernel_write_2d_pad(
   const int xid = blockIdx.z;
   const int length = dis_length[bid];
   if (xid < length and yid < length) return;
-  hard_matrix[bid][yid][xid] = 1.1;
+  hard_matrix[bid][yid][xid] = 127.0; // upper bound is not so okay..
+}
+
+template <typename index_t, typename scalar_t>
+__global__ void kernel_write_choice(
+  torch::PackedTensorAccessor32<bool,2,torch::RestrictPtrTraits> hard_check,
+  const torch::PackedTensorAccessor32<index_t,1,torch::RestrictPtrTraits> batch_idx,
+  const torch::PackedTensorAccessor32<scalar_t,2,torch::RestrictPtrTraits> hard_threshold,
+  torch::PackedTensorAccessor32<scalar_t,1,torch::RestrictPtrTraits> threshold,
+  torch::PackedTensorAccessor32<index_t,1,torch::RestrictPtrTraits> trials) {
+  const int n_instances = hard_check.size(1);
+  const int bid = blockIdx.x;
+  const int jid = batch_idx[bid];
+  bool found = false;
+  for(int i = 0; i < n_instances; i++)
+    if (hard_check[bid][i])
+      if (found)
+        hard_check[bid][i] = false;
+      else {
+        found = true;
+        trials[jid] += i + 1;
+        threshold[jid] = hard_threshold[bid][i];
+      }
+  if (not found) trials[jid] += n_instances;
+}
+
+template <typename index_t>
+__global__ void kernel_write_back(
+  const torch::PackedTensorAccessor32<index_t,2,torch::RestrictPtrTraits> hard_choice,
+  const torch::PackedTensorAccessor32<bool,4,torch::RestrictPtrTraits> hard_bool_matrices,
+  const torch::PackedTensorAccessor32<index_t,3,torch::RestrictPtrTraits> hard_comp_id,
+  const torch::PackedTensorAccessor32<index_t,1,torch::RestrictPtrTraits> hard_length,
+  const torch::PackedTensorAccessor32<index_t,1,torch::RestrictPtrTraits> batch_idx,
+  torch::PackedTensorAccessor32<bool,3,torch::RestrictPtrTraits> bool_matrix,
+  torch::PackedTensorAccessor32<index_t,2,torch::RestrictPtrTraits> comp_id,
+  torch::PackedTensorAccessor32<bool,2,torch::RestrictPtrTraits> comp_check) {
+  const int cid = blockIdx.x;
+  const int yid = blockIdx.y;
+  const int bid = hard_choice[cid][0]; // 0
+  const int length = hard_length[bid];
+  // std::printf("K.bid=%d .yid=%d len=%d\n", bid, yid, length);
+  if (yid >= length) return;
+  // std::printf("In:%d %d\n", cid, yid);
+  const int iid = hard_choice[cid][1]; // 1
+  // std::printf("  %d\n", iid);
+  const int jid = batch_idx[bid]; // 1
+  // std::printf(" %d:%d\n", iid, jid);
+  comp_id[jid][yid] = hard_comp_id[bid][iid][yid];
+  comp_check[jid][yid] = true;
+  for(int xid = 0; xid < length; xid ++)
+    bool_matrix[jid][yid][xid] = hard_bool_matrices[bid][iid][yid][xid];
 }
 
 template <typename index_t>
@@ -194,6 +242,17 @@ __global__ void kernel_catch_invalid_all(
     comp_id[bid][yid] = length;
     bool_matrix[bid][yid][xid] = checked_x == checked_y;
   }
+}
+
+template <typename index_t, typename scalar_t>
+__global__ void kernel_write_errors(
+  const torch::PackedTensorAccessor32<bool,1,torch::RestrictPtrTraits> check,
+  torch::PackedTensorAccessor32<index_t,1,torch::RestrictPtrTraits> trials,
+  torch::PackedTensorAccessor32<scalar_t,1,torch::RestrictPtrTraits> threshold) {
+  const int bid = blockIdx.x;
+  if (not check[bid]) {
+    threshold[bid] = -1.0;
+    trials[bid] += 1; }
 }
 
 template <typename index_t>
@@ -305,13 +364,14 @@ __global__ void kernel_connect_discontinuity(
 
 std::vector<torch::Tensor> predict_disco_sections_cuda(
     torch::Tensor dis_matrix, // float
-    const float threshold,
-    const bool catch_any_invalid,
     torch::Tensor dis_length, // long
     torch::Tensor dis_bid,    // long
     torch::Tensor dis_sid,    // long
     torch::Tensor con_fence,  // bool
-    torch::Tensor dis_score) {// float
+    torch::Tensor dis_score,  // float
+    const float threshold,
+    const bool group_all_invalid,
+    int n_parallel) {
 
   const int batch_size = dis_matrix.size(0); // each batch unit is independent without shared SM memory
   const int max_comp_per_batch = dis_matrix.size(1); // max(any fan_out) < 512
@@ -321,6 +381,7 @@ std::vector<torch::Tensor> predict_disco_sections_cuda(
   const auto &device = dis_length.device();
   const auto &int_options = torch::TensorOptions().dtype(dis_length.dtype()).device(device);
   const auto &bool_options = torch::TensorOptions().dtype(con_fence.dtype()).device(device);
+  const auto &scalar_options = torch::TensorOptions().dtype(dis_matrix.dtype()).device(device);
 
   auto bool_matrix_x = dis_matrix > threshold;
   auto bool_matrix_y = torch::transpose(bool_matrix_x, 1, 2);
@@ -330,6 +391,8 @@ std::vector<torch::Tensor> predict_disco_sections_cuda(
   auto comp_id_map = torch::zeros({batch_size, max_comp_per_batch, 2}, int_options);
   auto comp_check = torch::ones({batch_size, max_comp_per_batch}, bool_options);
   auto components = torch::zeros({batch_size, max_comp_per_batch, max_comp_per_batch}, bool_options);
+  auto final_thresholds = torch::full({batch_size}, threshold, scalar_options);
+  auto trials = torch::ones({batch_size}, int_options);
 
   AT_DISPATCH_INDEX_TYPES(dis_length.scalar_type(), "kernel_fan_in", ([&] {
     kernel_fan_in<index_t><<<batch_size, max_comp_per_batch>>>(
@@ -348,49 +411,146 @@ std::vector<torch::Tensor> predict_disco_sections_cuda(
   // }));
   // comp_check &= comp_id_x == comp_id_y;
 
-  const auto &invalid = torch::where(comp_check.all(1).logical_not());
-  const auto &invalid_batch = invalid[0];
-  const auto invalid_size = invalid_batch.size(0);
-  // not comp_check.all().item<bool>()
-  // std::cout << invalid << std::endl;
+  auto hard_batch = comp_check.all(1).logical_not();
+  if (hard_batch.any().item<bool>()) {
+    const bool long_index = dis_length.dtype() == torch::kLong;
 
-  if (invalid_size) {
-    auto hard_matrix = dis_matrix.index({invalid_batch});
-    auto hard_length = dis_length.index({invalid_batch});
+    if (n_parallel != 0) {
+      auto hard_length = dis_length.index({hard_batch}).contiguous(); // copy if necessary
+      auto hlm = hard_length.max();
+      int max_comp_per_hard_batch = long_index ? hlm.item<long>() : hlm.item<int>();
 
-    if (hard_length.dtype() == torch::kLong) 
-      AT_DISPATCH_ALL_TYPES(hard_matrix.scalar_type(), "kernel_write_2d_pad", ([&] {
-        kernel_write_2d_pad<long, scalar_t><<<batch_square_dim3, 1>>>(
+      auto hard_slice = torch::indexing::Slice(0, max_comp_per_hard_batch);
+      auto hard_matrix = dis_matrix.index({hard_batch, hard_slice, hard_slice}).contiguous();
+      
+      auto hbs = hard_batch.sum();
+      int hard_batch_size = long_index ? hbs.item<long>() : hbs.item<int>();
+      auto hard_batch_square_dim3 = dim3(hard_batch_size, max_comp_per_hard_batch, max_comp_per_hard_batch);
+
+      auto batch_idx = torch::arange(batch_size, int_options).index({hard_batch}).contiguous();
+
+      if (n_parallel < 0) {n_parallel = 512 / hard_batch_size;}
+      int sq = max_comp_per_hard_batch * max_comp_per_hard_batch;
+      int wt = sq / n_parallel;
+      if (sq % n_parallel) wt ++;
+
+      if (long_index)
+        AT_DISPATCH_FLOATING_TYPES_AND_HALF(hard_matrix.scalar_type(), "kernel_write_2d_pad", ([&] {
+          kernel_write_2d_pad<long, scalar_t><<<hard_batch_square_dim3, 1>>>(
             hard_length.packed_accessor32<long,1,torch::RestrictPtrTraits>(),
             hard_matrix.packed_accessor32<scalar_t,3,torch::RestrictPtrTraits>());
-      }));
-    else
-      AT_DISPATCH_ALL_TYPES(hard_matrix.scalar_type(), "kernel_write_2d_pad", ([&] {
-        kernel_write_2d_pad<int, scalar_t><<<batch_square_dim3, 1>>>(
+        }));
+      else
+        AT_DISPATCH_FLOATING_TYPES_AND_HALF(hard_matrix.scalar_type(), "kernel_write_2d_pad", ([&] {
+          kernel_write_2d_pad<int, scalar_t><<<hard_batch_square_dim3, 1>>>(
             hard_length.packed_accessor32<int,1,torch::RestrictPtrTraits>(),
             hard_matrix.packed_accessor32<scalar_t,3,torch::RestrictPtrTraits>());
+        }));
+
+      auto seq_threshold = hard_matrix.reshape({hard_batch_size, -1}); // shorter dis_length seq_threshold.index_put_({seq_threshold <= 0}, 1); 
+      auto seq_distances = seq_threshold - threshold; seq_distances *= seq_distances;
+      std::tuple<torch::Tensor, torch::Tensor> thresholds_obj = seq_distances.sort();
+      auto seq_indices = torch::arange(hard_batch_size, int_options).unsqueeze(-1);
+      seq_threshold = seq_threshold.index({seq_indices, std::get<1>(thresholds_obj)});
+
+      for (int i = 0; i < wt; i++) {
+        auto thres = seq_threshold.index({torch::indexing::Slice(), torch::indexing::Slice(i*n_parallel, (i+1)*n_parallel)});
+        auto hard_bool_matrices = hard_matrix.unsqueeze(1) > thres.unsqueeze(-1).unsqueeze(-1);
+        const int n_instances = hard_bool_matrices.size(1);
+        auto hard_bool_matrices_flatten = hard_bool_matrices.reshape({-1, max_comp_per_hard_batch, max_comp_per_hard_batch});
+        auto hard_length_flatten = hard_length.unsqueeze(-1).expand({hard_batch_size, n_instances}).reshape(-1).contiguous(); // [b*n]
+        auto hard_comp_id_x = torch::zeros({hard_batch_size * n_instances, max_comp_per_hard_batch}, int_options);
+        auto hard_comp_check = torch::ones({hard_batch_size * n_instances, max_comp_per_hard_batch}, bool_options);
+
+        AT_DISPATCH_INDEX_TYPES(dis_length.scalar_type(), "kernel_fan_in", ([&] {
+          kernel_fan_in<index_t><<<hard_batch_size * n_instances, max_comp_per_hard_batch>>>(
+            hard_bool_matrices_flatten.packed_accessor32<bool,3,torch::RestrictPtrTraits>(),
+            hard_length_flatten.packed_accessor32<index_t,1,torch::RestrictPtrTraits>(),
+            hard_comp_id_x.packed_accessor32<index_t,2,torch::RestrictPtrTraits>(),
+            hard_comp_check.packed_accessor32<bool,2,torch::RestrictPtrTraits>());
+        }));
+
+        auto hard_check = hard_comp_check.reshape({hard_batch_size, n_instances, max_comp_per_hard_batch}).all(-1); // [b, i]
+        auto hard_check_batch = hard_check.any(-1);
+        auto next_hard_batch = hard_check_batch.logical_not(); hbs = next_hard_batch.sum();
+        const int next_hard_batch_size = long_index ? hbs.item<long>() : hbs.item<int>();
+
+        if (next_hard_batch_size == hard_batch_size) // not found a single solution
+          trials += torch::zeros_like(trials).index_put_({batch_idx}, n_instances);
+        else { // find solutions to some batches
+          if (long_index)
+            AT_DISPATCH_FLOATING_TYPES_AND_HALF(hard_matrix.scalar_type(), "kernel_write_choice", ([&] {
+              kernel_write_choice<long, scalar_t><<<hard_batch_size, 1>>>(
+                hard_check.packed_accessor32<bool,2,torch::RestrictPtrTraits>(),
+                batch_idx.packed_accessor32<long,1,torch::RestrictPtrTraits>(),
+                thres.packed_accessor32<scalar_t,2,torch::RestrictPtrTraits>(),
+                final_thresholds.packed_accessor32<scalar_t,1,torch::RestrictPtrTraits>(),
+                trials.packed_accessor32<long,1,torch::RestrictPtrTraits>());
+            }));
+          else
+            AT_DISPATCH_FLOATING_TYPES_AND_HALF(hard_matrix.scalar_type(), "kernel_write_choice", ([&] {
+              kernel_write_choice<int, scalar_t><<<hard_batch_size, 1>>>(
+                hard_check.packed_accessor32<bool,2,torch::RestrictPtrTraits>(),
+                batch_idx.packed_accessor32<int,1,torch::RestrictPtrTraits>(),
+                thres.packed_accessor32<scalar_t,2,torch::RestrictPtrTraits>(),
+                final_thresholds.packed_accessor32<scalar_t,1,torch::RestrictPtrTraits>(),
+                trials.packed_accessor32<int,1,torch::RestrictPtrTraits>());
+            }));
+          auto hard_choice = hard_check.nonzero();
+          hard_comp_id_x = hard_comp_id_x.view({hard_batch_size, n_instances, max_comp_per_hard_batch});
+
+          AT_DISPATCH_INDEX_TYPES(dis_length.scalar_type(), "kernel_write_back", ([&] {
+            kernel_write_back<index_t><<<dim3(hard_choice.size(0), max_comp_per_hard_batch), 1>>>(
+              hard_choice.packed_accessor32<index_t,2,torch::RestrictPtrTraits>(),
+              hard_bool_matrices.packed_accessor32<bool,4,torch::RestrictPtrTraits>(),
+              hard_comp_id_x.packed_accessor32<index_t,3,torch::RestrictPtrTraits>(),
+              hard_length.packed_accessor32<index_t,1,torch::RestrictPtrTraits>(),
+              batch_idx.packed_accessor32<index_t,1,torch::RestrictPtrTraits>(),
+              bool_matrix_x.packed_accessor32<bool,3,torch::RestrictPtrTraits>(),
+              comp_id_x.packed_accessor32<index_t,2,torch::RestrictPtrTraits>(),
+              comp_check.packed_accessor32<bool,2,torch::RestrictPtrTraits>());
+          }));
+          if (next_hard_batch_size == 0) break;
+
+          batch_idx = batch_idx.index({next_hard_batch});
+          hard_length = hard_length.index({next_hard_batch}); hlm = hard_length.max();
+          seq_threshold = seq_threshold.index({next_hard_batch});
+          hard_batch_size = next_hard_batch_size;
+          max_comp_per_hard_batch = long_index ? hlm.item<long>() : hlm.item<int>();
+          hard_batch_square_dim3 = dim3(hard_batch_size, max_comp_per_hard_batch, max_comp_per_hard_batch);
+          hard_slice = torch::indexing::Slice(0, max_comp_per_hard_batch);
+          hard_matrix = hard_matrix.index({next_hard_batch, hard_slice, hard_slice});
+        }
+      }
+    }
+
+    hard_batch = comp_check.all(1);
+    if (long_index)
+      AT_DISPATCH_FLOATING_TYPES_AND_HALF(final_thresholds.scalar_type(), "kernel_write_errors", ([&] {
+        kernel_write_errors<long, scalar_t><<<batch_size, 1>>>(
+          hard_batch.packed_accessor32<bool,1,torch::RestrictPtrTraits>(),
+          trials.packed_accessor32<long,1,torch::RestrictPtrTraits>(),
+          final_thresholds.packed_accessor32<scalar_t,1,torch::RestrictPtrTraits>());
+      }));
+    else
+      AT_DISPATCH_FLOATING_TYPES_AND_HALF(final_thresholds.scalar_type(), "kernel_write_errors", ([&] {
+        kernel_write_errors<int, scalar_t><<<batch_size, 1>>>(
+          hard_batch.packed_accessor32<bool,1,torch::RestrictPtrTraits>(),
+          trials.packed_accessor32<int,1,torch::RestrictPtrTraits>(),
+          final_thresholds.packed_accessor32<scalar_t,1,torch::RestrictPtrTraits>());
       }));
 
-    auto seq_threshold = hard_matrix.reshape({invalid_size, -1});
-    auto seq_distances = seq_threshold - threshold;
-    auto seq_indices = torch::arange(invalid_size).unsqueeze(-1);
-    seq_distances *= seq_distances;
-    std::tuple<torch::Tensor, torch::Tensor> thresholds_obj = seq_distances.sort();
-    seq_threshold = seq_threshold.index({seq_indices, std::get<1>(thresholds_obj)})
-    // std::cout <<  << std::endl;
-    // const torch::Tensor &thresholds = ;
-
-    if (catch_any_invalid)
-      AT_DISPATCH_INDEX_TYPES(dis_length.scalar_type(), "kernel_catch_invalid_each", ([&] {
-        kernel_catch_invalid_each<index_t><<<batch_square_dim3, 1>>>(
+    if (group_all_invalid)
+      AT_DISPATCH_INDEX_TYPES(dis_length.scalar_type(), "kernel_catch_invalid_all", ([&] {
+        kernel_catch_invalid_all<index_t><<<batch_square_dim3, 1>>>(
             comp_check.packed_accessor32<bool,2,torch::RestrictPtrTraits>(),
             dis_length.packed_accessor32<index_t,1,torch::RestrictPtrTraits>(),
             comp_id_x.packed_accessor32<index_t,2,torch::RestrictPtrTraits>(),
             bool_matrix_x.packed_accessor32<bool,3,torch::RestrictPtrTraits>());
       }));
     else
-      AT_DISPATCH_INDEX_TYPES(dis_length.scalar_type(), "kernel_catch_invalid_all", ([&] {
-        kernel_catch_invalid_all<index_t><<<batch_square_dim3, 1>>>(
+      AT_DISPATCH_INDEX_TYPES(dis_length.scalar_type(), "kernel_catch_invalid_each", ([&] {
+        kernel_catch_invalid_each<index_t><<<batch_square_dim3, 1>>>(
             comp_check.packed_accessor32<bool,2,torch::RestrictPtrTraits>(),
             dis_length.packed_accessor32<index_t,1,torch::RestrictPtrTraits>(),
             comp_id_x.packed_accessor32<index_t,2,torch::RestrictPtrTraits>(),
@@ -442,5 +602,5 @@ std::vector<torch::Tensor> predict_disco_sections_cuda(
         sections.packed_accessor32<index_t,2,torch::RestrictPtrTraits>());
   }));
 
-  return {sections, comp_id_y, components, comp_check};
+  return {sections, comp_id_y, components, comp_check, final_thresholds, trials};
 }
