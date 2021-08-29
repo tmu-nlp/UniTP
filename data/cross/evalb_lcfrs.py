@@ -243,12 +243,15 @@ def read_export_samples(fname):
             else:
                 sample.append(line)
 
-def parse_export_sample(lines):
+def parse_export_sample(lines, dptb_split = False):
     bottom = []
     top_down = defaultdict(list)
     non_terminals = {}
     for line in lines[1:-1]:
-        cid_or_word, _, _, label, _, _, pid = line.split('\t')
+        if dptb_split:
+            cid_or_word, label, _, ftag, pid = line.split()
+        else:
+            cid_or_word, _, _, label, _, _, pid = line.split('\t')
         pid = int(pid)
         cid = is_nonterminal(cid_or_word)
         if cid:
@@ -290,3 +293,28 @@ def export_string(sent_id, bottom, top_down, root_id):
     if not has_vroot:
         lines+= f'#{node_dict[root_id]}\t\t\t{top_down[root_id].label}\t--\t--\t0\n'
     return lines + f'#EOS {sent_id}'
+
+class ExportReader:
+    def __init__(self, fname, dptb_split = False):
+        from tqdm import tqdm
+        samples = []
+        indices = []
+        for lines in tqdm(read_export_samples(fname)):
+            _, head = lines[0].split()
+            _, tail = lines[-1].split()
+            assert head == tail
+            head = int(head)
+            samples.append(parse_export_sample(lines, dptb_split))
+            indices.append(head)
+        self._samples = samples
+        self._indices = indices
+
+    def __len__(self):
+        return len(self._indices)
+
+    @property
+    def indices_is_continuous(self):
+        return all(i+1==j for i, j in enumerate(self._indices))
+
+    def __getitem__(self, idx):
+        return self._samples[idx]

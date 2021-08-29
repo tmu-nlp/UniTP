@@ -271,7 +271,7 @@ class DiscoOperator(Operator):
         
     def _get_optuna_fn(self, train_params):
         import numpy as np
-        from utils.types import E_ORIF5_HEAD
+        from utils.types import E_ORIF5_HEAD, E_ORIF5, O_HEAD
         from utils.train_ops import train, get_optuna_params
         from utils.str_ops import height_ratio
 
@@ -302,9 +302,13 @@ class DiscoOperator(Operator):
                     loss_weight['shuffled'] = s = trial.suggest_float('shuffled', 0.0, 1.0)
                     loss_str += f'X{height_ratio(s)}'
                 
-                binarization = np.array([trial.suggest_loguniform(x, 1e-5, 1e5) for x in E_ORIF5_HEAD])
+                involve_head = data['binarization']['head'] > 0
+                E_ORIF = E_ORIF5_HEAD if involve_head else E_ORIF5
+                binarization = np.array([trial.suggest_loguniform(x, 1e-5, 1e5) for x in E_ORIF])
                 binarization /= np.sum(binarization)
-                data['binarization'] = bz = {k:float(v) for k, v in zip(E_ORIF5_HEAD, binarization)}
+                bz = {k:float(v) for k, v in zip(E_ORIF, binarization)}
+                if not involve_head: bz[O_HEAD] = 0
+                data['binarization'] = bz
                 specs['train']['learning_rate'] = lr = trial.suggest_loguniform('learning_rate', 1e-6, 1e-3)
                 self._train_config._nested.update(specs['train'])
                 self._train_materials = bz, self._train_materials[1] # for train/train_initials(max_epoch>0)
