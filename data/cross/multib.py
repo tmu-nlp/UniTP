@@ -1,11 +1,13 @@
 from data.cross import has_multiple, TopDown, _read_dpenn, _read_graph, _pre_proc
 from data.cross import defaultdict, gap_degree, height_gen, add_efficient_subs
+from data.cross import _new_dep, _dep_n_prefix, _dep_on, _dep_combine
+from utils.param_ops import replace_args_kwargs
 from random import random
 
 F_RANDOM = 'random'
 F_LEFT = 'left'
 F_RIGHT = 'right'
-F_DEP = 'dep'
+F_DEP = 'head'
 F_CON = 'continuous'
 E_FACTOR = F_RANDOM, F_LEFT, F_RIGHT, F_DEP, F_CON
 
@@ -13,6 +15,13 @@ def _closest(order, length):
     if isinstance(order, float):
         order = round(order * (length - 1e-10) - 0.5)
     return order
+
+def _find_dep(children, dep, node, bt_head):
+    for _node in children:
+        if _node == node:
+            continue
+        if _node == bt_head or _node in dep and _dep_on(dep, node, _node):
+            return _node
 
 def _multi_hash(bottom, top_down, factor):
     # make a new td: including head flag
@@ -29,28 +38,72 @@ def _multi_hash(bottom, top_down, factor):
                 bottom_trace[nid] = node
                 bottom_flag[nid] = False
 
-        if isinstance(factor, str):
-            if factor == F_RANDOM:
-                factor = random()
-            elif factor == F_LEFT:
-                factor = 0
-            elif factor == F_RIGHT:
-                factor = -1
-            else:
-                raise NotImplementedError()
-        elif isinstance(factor, dict):
-            loc_in = {node: nid for nid, node in enumerate(children)}
-            dep_in = defaultdict(int)
-            for nid, node in enumerate(children):
-                node_in = factor[node]
-                if node_in in loc_in:
-                    dep_in[loc_in[node_in]] += 1
-            factor = max(dep_in, key = lambda x: dep_in[x])
-
-        cid = _closest(factor, len(children))
+        if factor == F_RANDOM:
+            loc = random()
+        elif factor == F_LEFT:
+            loc = 0
+        elif factor == F_RIGHT:
+            loc = -1
+        else:
+            raise NotImplementedError()
+        cid = _closest(loc, len(children))
         p_head[children[cid]] = p_node, None, location
     return bottom_trace, p_head
 
+I_EXH = 1
+I_LPH = 2
+def _dep_hash(bottom, top_down, dependency):
+    # make a new td: including head flag
+    bottom_flag = [True for _ in bottom]
+    bottom_trace = [None for _ in bottom]
+    p_head = {}
+    issues = {}
+    for p_node, td in top_down.items():
+        location = []
+        children = []
+        for nid, (node, flag) in enumerate(zip(bottom, bottom_flag)):
+            if flag and node in td.children:
+                location.append(nid)
+                children.append(node)
+                bottom_trace[nid] = node
+                bottom_flag[nid] = False
+
+        loc_in = {}
+        dep_pt = {}
+        external_head = defaultdict(set)
+        for nid, node in enumerate(children):
+            loc_in[node] = nid
+            bt_head = dependency[node].label
+            if bt_head is None: continue # ROOT
+            _node = _find_dep(children, dependency, node, bt_head)
+            if _node is None:
+                external_head[bt_head].add(node)
+            else:
+                dep_pt[node] = _node
+        p_issue = {}
+        if dep_pt:
+            dep_in = defaultdict(int)
+            for node in children:
+                anti_loop = set({node})
+                while head := dep_pt.get(node):
+                    dep_in[head] += 1; node = head
+                    if node in anti_loop: p_issue[I_LPH] = dep_pt; break
+                    else: anti_loop.add(node)
+            head = max(dep_in, key = dep_in.get)
+            loc = loc_in[head]
+        else:
+            loc = _closest(random(), len(children))
+            head = children[loc]
+            if len(external_head) != 1: p_issue[I_EXH] = external_head
+            # if len(external_head) != 1: # DPTB need both this and anti_loop
+            #     print(external_head)
+            #     breakpoint()
+        _dep_combine(dependency, head, p_node, *(node for node in children if node != head))
+
+        cid = _closest(loc, len(children))
+        p_head[children[cid]] = p_node, None, location
+        if p_issue: issues[p_node] = p_issue
+    return bottom_trace, p_head, issues
 
 def _continuous_hash(bottom, bottom_top_down, future_top_down, gaps, boundaries, bottom_up, factor, bottom_ref):
     # make a new td: including head flag
@@ -141,17 +194,19 @@ def _is_disc(locations):
 def cross_signals(bottom, node2tag, bottom_unary, top_down, root_id, factor, # float:midin :most_continuous :random :dep
                   l2i = None,
                   dependency_or_mid_in = None,
+                  verbose_file = None,
                   pos_prefix = '#'):
     # sub_suffix = '.'
     f_continuous = factor == F_CON
+    f_dep = factor == F_DEP
     if f_continuous:
         mid_in = dependency_or_mid_in
         boundaries = {}
         bottom_ref = {node: i for i, node in enumerate(bottom)}
         bottom_up = {}
         gaps = gap_degree(bottom, top_down, root_id)
-    elif factor == F_DEP:
-        factor = dependency_or_mid_in
+    elif f_dep and verbose_file:
+        dep_issues = []
 
     top_down_group_by_height = [] # ordered by td dependency
     for node, height in height_gen(top_down, root_id):
@@ -190,6 +245,25 @@ def cross_signals(bottom, node2tag, bottom_unary, top_down, root_id, factor, # f
             for td in top_down_group_by_height:
                 future_top_down.update(td)
             bottom_trace, p_head = _continuous_hash(bottom, bottom_top_down, future_top_down, gaps, boundaries, bottom_up, mid_in, bottom_ref)
+        elif f_dep:
+            bottom_trace, p_head, issues = _dep_hash(bottom, bottom_top_down, dependency_or_mid_in)
+            if verbose_file:
+                if issues:
+                    line = f'#{len(dep_issues)}: '
+                    for e_nid, _issues in issues.items():
+                        line +=  f'{top_down[e_nid].label} '
+                        for ety, _issue in _issues.items():
+                            if ety == I_EXH:
+                                line += '[E '
+                                line += '; '.join('(' + ', '.join(top_down[n].label if n in top_down else n for n in ns) + f') -> {h}' for h, ns in _issue.items())
+                                line +=  ']'
+                            else:
+                                line += '[L '
+                                line += ', '.join(f'{n} -> {h}' for n, h in _issues.items())
+                                line += ']'
+                else:
+                    line = None
+                dep_issues.append(line)
         else:
             bottom_trace, p_head = _multi_hash(bottom, bottom_top_down, factor)
         new_bottom = []
@@ -232,6 +306,12 @@ def cross_signals(bottom, node2tag, bottom_unary, top_down, root_id, factor, # f
         label = l2i(label)
     layers_of_label.append([label])
     assert not bottom and not top_down_group_by_height
+    if verbose_file and f_dep and any(dep_issues):
+        headline, file, lines = verbose_file
+        file.write(headline + '\n' + lines + '\n')
+        for line in dep_issues:
+            if line: file.write(line)
+        file.write('\n')
 
     return layers_of_label, layers_of_space, layers_of_disco
 
@@ -342,11 +422,13 @@ class TreeKeeper:
 
     @classmethod
     def from_disco_penn(cls, tree, *args, **kw_args):
+        args = replace_args_kwargs(_dep_n_prefix, 1, args, 'dep', kw_args)
         return cls(*_read_dpenn(tree), *args, **kw_args)
 
-    def __init__(self, bottom_info, top_down, root_id, v2is = None, dep = None, details = False):
-        self._lines = draw_str_lines(bottom_info, top_down) if details else None
-        word, bottom, node2tag, bottom_unary = _pre_proc(bottom_info, top_down)
+    def __init__(self, bottom_info, top_down, root_id, v2is = None, dep = None, details = False, verbose_file = None):
+        if details: print('\n'.join(draw_str_lines(bottom_info, top_down)))
+        if verbose_file: verbose_file = verbose_file + ('\n'.join(draw_str_lines(bottom_info, top_down)),)
+        word, bottom, node2tag, bottom_unary = _pre_proc(bottom_info, top_down, dep = dep)
         self._gaps = gap_degree(bottom, top_down, root_id) # if details else None
         self._word = word
         if v2is is None:
@@ -357,10 +439,33 @@ class TreeKeeper:
             bottom_tag = [t2i(node2tag[t]) for t in bottom]
             # self._dbg = [(word[tid], node2tag[bottom[tid]]) for tid, t in enumerate(bottom_tag) if t is None]
             word = [w2i(w) for w in word]
+        if dep is not None:
+            if details:
+                print('  '.join(n.split('_')[1]+'->'+(h.split('_')[1] if h else '*') for n, h in dep.items()))
+            extra = []
+            for node, bt_head in dep.items():
+                if bt_head not in node2tag and bt_head:
+                    extra.append(node)
+            media = set()
+            for node in extra:
+                bt_head = dep.pop(node)
+                while bt_head and bt_head not in node2tag:
+                    media.add(bt_head)
+                    bt_head = dep[bt_head]
+                dep[node] = bt_head
+                if details and not bt_head:
+                    print('!:', node,' misses attachment.')
+            for bt_head in media:
+                dep.pop(bt_head)
+            if details:
+                print('  '.join(n.split('_')[1]+'->'+(h.split('_')[1] if h else '*') for n, h in dep.items()))
+                if media:
+                    print('Removed media nodes: ' + ', '.join(media))
 
         self._word_tag = word, bottom_tag
-        self._materials = bottom, node2tag, bottom_unary, top_down, l2i, root_id, dep
+        self._materials = bottom, node2tag, bottom_unary, top_down, l2i, root_id, dep, verbose_file
         self._balanced_top_down = None
+        # self._dep_signals = None
 
     @property
     def has_signals(self):
@@ -384,7 +489,7 @@ class TreeKeeper:
         return self._word_tag
     
     def stratify(self, factor = F_LEFT, balancing = False):
-        bottom, node2tag, bottom_unary, top_down, l2i, root_id, dep = self._materials
+        bottom, node2tag, bottom_unary, top_down, l2i, root_id, dep, vf = self._materials
         if balancing:
             if self._balanced_top_down is None:
                 self._balanced_top_down = add_efficient_subs(top_down, root_id)
@@ -396,8 +501,33 @@ class TreeKeeper:
             factor = F_DEP
         bottom = bottom if len(bottom) > 1 else bottom.copy() # pop bottom
         if factor == F_DEP:
-            return cross_signals(bottom, node2tag, bottom_unary, top_down, root_id, factor, l2i, dep)
+            # if self._dep_signals is None TODO 
+            return cross_signals(bottom, node2tag, bottom_unary, top_down, root_id, factor, l2i, _new_dep(dep), vf)
         return cross_signals(bottom, node2tag, bottom_unary, top_down, root_id, factor, l2i)
+
+def continuous_fence(space_layer, disco_set):
+    count = 0
+    split_layer = []
+    for lhs, rhs in zip(space_layer, space_layer[1:] + [-1]):
+        if lhs in disco_set:
+            continue
+        else:
+            count += 1
+        if lhs != rhs:
+            split_layer.append(count)
+    if split_layer:
+        split_layer.insert(0, 0)
+    return count, split_layer
+
+def total_fence(space_layer):
+    count = len(space_layer)
+    space_layer = [-1] + space_layer + [-1]
+    split_layer = []
+    for sid, (lhs, rhs) in enumerate(zip(space_layer, space_layer[1:])):
+        if lhs != rhs:
+            split_layer.append(sid)
+    return count, split_layer
+
 
 from data.mp import DM
 from data.cross.evalb_lcfrs import export_string

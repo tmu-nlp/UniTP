@@ -4,19 +4,37 @@ from os.path import isfile
 from datetime import datetime
 from utils.shell_io import byte_style
 
-def _wait(lfile):
+def _lock_msg(lfile):
     if isfile(lfile):
-        msg = 'Wait for '
-        msg += byte_style(f"'{lfile}'", '3')
-        msg += '\n  (Locked at '
+        head = 'Wait for ' + byte_style(f"'{lfile}'", '3')
+        content = '(Locked at '
         with open(lfile) as fr:
             for line in fr:
-                msg += line.split('.')[0]
-        msg += ') Unlock? [Y or any key to exit] '
+                content += line.split('.')[0]
+        return head, content.strip() + ')'
+
+def _wait_or_exit(lfile):
+    if msg := _lock_msg(lfile):
+        msg = '\n '.join(msg)
+        msg += ' Unlock? [Y or any key to exit] '
         if input(msg) != 'Y':
             # print('\nexited')
             exit()
-        remove(lfile)
+        if isfile(lfile):
+            remove(lfile)
+
+def _wait(lfile):
+    from time import sleep
+    second = 0
+    while msg := _lock_msg(lfile):
+        head, content = msg
+        if second == 0:
+            print(head)
+        print('\r  ' + content + f' {second} second', end = '')
+        sleep(1)
+        second += 1
+    print()
+
 
 def _block(lfile):
     with open(lfile, 'w') as fw:
@@ -56,11 +74,14 @@ def save_yaml(status, mfile, lfile, wait_lock = True):
             yaml.dump(status, fw, default_flow_style = False)
     return True
 
-def load_yaml(mfile, lfile, block = False, wait_lock = True):
+def load_yaml(mfile, lfile, wait = True, wait_then_block = False, wait_or_exit = True):
     if isfile(mfile):
-        if wait_lock:
-            _wait(lfile)
-            if block:
+        if wait:
+            if wait_or_exit:
+                _wait_or_exit(lfile)
+            else:
+                _wait(lfile)
+            if wait_then_block:
                 _block(lfile)
     else:
         save_yaml({}, mfile, lfile)
@@ -68,6 +89,6 @@ def load_yaml(mfile, lfile, block = False, wait_lock = True):
         status = yaml.load(fr, Loader = yaml.FullLoader)
     if not status:
         status = {}
-    if wait_lock and block:
+    if wait and wait_then_block:
         return status, lambda : _unblock(lfile)
     return status

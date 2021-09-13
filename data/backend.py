@@ -28,6 +28,7 @@ class _BaseReader:
         self._to_model = {}
         self._oovs = oovs
         self.update(i2vs, **to_model)
+        self._loaded_ds = {}
         
     def dir_join(self, fname, pardir = 0):
         if parpath:
@@ -72,6 +73,10 @@ class _BaseReader:
     @property
     def device(self):
         return self._device
+
+    @property
+    def loaded_ds(self):
+        return self._loaded_ds
 
     def get_to_model(self, name):
         return self._to_model[name]
@@ -244,6 +249,9 @@ class LengthOrderedDataset(Dataset):
         self._lengths = lengths
         self._mode = None
         self._extra_text_helper = extra_text_helper
+        self._reset_factors(factors)
+
+    def _reset_factors(self, factors):
         if isinstance(factors, dict):
             factors = tuple(factors.items())
             if len(factors) > 1:

@@ -1,5 +1,5 @@
 from data.disco import DiscoMultiReader
-from data.disco_types import C_ABSTRACT, C_DPTB, C_TGR, xccp_data_config, select_and_split_corpus
+from data.disco_types import C_ABSTRACT, C_DPTB, C_TGR, xccp_data_config, select_and_split_corpus, parpath
 from utils.types import M_TRAIN, M_DEVEL, M_TEST
 from utils.param_ops import HParams, get_sole_key
 from data.backend import CharTextHelper
@@ -22,7 +22,8 @@ def get_configs(recorder = None):
                                           penn.data_splits.train_set,
                                           penn.data_splits.devel_set,
                                           penn.data_splits.test_set,
-                                          False, False) # TODO dep
+                                          binary = False,
+                                          read_dep = parpath(penn.data_path))
 
     reader = DiscoMultiReader(penn.data_path,
                               penn.medium_factor.balanced > 0,
@@ -36,11 +37,17 @@ def get_configs(recorder = None):
     def get_datasets(mode, new_medium_factor = None):
         datasets = {}
         if mode == M_TRAIN:
-            datasets[corp_name] = reader.batch(M_TRAIN, penn.batch_size, penn.bucket_len,
-                                               new_medium_factor or penn.medium_factor._nested,
-                                               max_len = penn.max_len,
-                                               min_gap = penn.min_gap,
-                                               sort_by_length = penn.sort_by_length)
+            train_ds = reader.loaded_ds.get(mode)
+            if train_ds is None:
+                datasets[corp_name] = reader.batch(M_TRAIN, penn.batch_size, penn.bucket_len,
+                                                   penn.medium_factor._nested,
+                                                   max_len = penn.max_len,
+                                                   min_gap = penn.min_gap,
+                                                   sort_by_length = penn.sort_by_length)
+            else:
+                from data.backend import post_batch
+                train_ds.reset_factors(new_medium_factor)
+                datasets[corp_name] = post_batch(mode, train_ds, penn.sort_by_length, penn.bucket_len, penn.batch_size)
         else:
             datasets[corp_name] = reader.batch(mode, penn.batch_size << 1, 0)
         return datasets

@@ -1,8 +1,9 @@
 from setuptools import setup
 from torch.utils.cpp_extension import BuildExtension, CUDAExtension
 import os
-os.environ['CUDA_HOME'] = '/usr/local/cuda'
-
+if 'CUDA_HOME' not in os.environ:
+    os.environ['CUDA_HOME'] = '/usr/local/cuda'
+    
 setup(
     name='xccp_decode',
     ext_modules=[

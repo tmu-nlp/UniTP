@@ -11,7 +11,6 @@
 # 30/10/2019: edit, adding 'interviews' to the possible datasets 
 # Modified By zchen0420@github, 2020 (to py37)
 
-import sys
 import xml.sax.handler
 from collections import defaultdict
 if __name__ == '__main__':

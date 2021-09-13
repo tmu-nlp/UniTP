@@ -1,4 +1,6 @@
 from random import random, randint
+from data.cross import has_multiple, TopDown, _read_dpenn, _read_graph, draw_str_lines, _pre_proc, gap_degree, _new_dep, _dep_n_prefix, _dep_combine, _dep_on
+
 def _positional_right(cid, num_children, factor):
     position = 1 - (cid + 0.5) / num_children
     if position == factor == 0.5:
@@ -6,11 +8,6 @@ def _positional_right(cid, num_children, factor):
     else:
         right = position > factor # T[TfF]F
     return right
-
-def _new_dep(dependency, d_node, h_node, new_node):
-    head = dependency.pop(h_node)
-    head.children.update(dependency.pop(d_node).children)
-    dependency[new_node] = head
 
 def _new_sub_id(group, sub_suffix):
     sub_id = 0
@@ -71,7 +68,6 @@ def binary_hash(bottom,
     consumed_top_down = {}
     swappable_groups = []
     bottom_flag = [True for _ in bottom]
-    depend_on = lambda d_node, h_node: dependency[d_node].label in dependency[h_node].children
     for p_node, td in top_down.items():
         p_node_complete = p_node in completed_nodes
         not_enough_child = not some_or_all(node in bottom for node in td.children)
@@ -106,7 +102,7 @@ def binary_hash(bottom,
                             #     import pdb; pdb.set_trace()
                             continue
                             # continue # not compactible
-                        if depend_on(node, h_node):
+                        if _dep_on(dependency, node, h_node):
                             internal_dep = True
                             break
                     # import pdb; pdb.set_trace()
@@ -137,10 +133,10 @@ def binary_hash(bottom,
                             #     sub_id += 1
                             # new_node += f'{sub_suffix}{sub_id}'
                         if dependency and node in dependency and last_node in dependency:
-                            if depend_on(last_node, node): # dep -> head
-                                _new_dep(dependency, last_node, node, new_node)
-                            elif depend_on(node, last_node): # head <- dep
-                                _new_dep(dependency, node, last_node, new_node)
+                            if _dep_on(dependency, last_node, node): # dep -> head
+                                _dep_combine(dependency, node, new_node, last_node)
+                            elif _dep_on(dependency, node, last_node): # head <- dep
+                                _dep_combine(dependency, last_node, new_node, node)
                         bottom_up[node] = new_node
                         group[new_node] = group.pop(last_node) + '.' + group.pop(node)
                         bottom_flag[last_nid] = False
@@ -243,7 +239,6 @@ def binary_signals(bottom,
     return new_bottom, right_layer, joint_layer, label_layer, direc_layer
 
 
-from data.cross import has_multiple, TopDown, _read_dpenn, _read_graph, draw_str_lines, _pre_proc, gap_degree
 def cross_signals(bottom, node2tag, bottom_unary, top_down, factor,
                   dependency = None,
                   aggressive = True,
@@ -312,15 +307,14 @@ from data.cross import add_efficient_subs
 def read_tiger_graph(graph, dep_head = None, add_subs = False):
     bottom_info, top_down, root_id = _read_graph(graph)
     lines = draw_str_lines(bottom_info, top_down)
-    word, bottom, node2tag, bottom_unary = _pre_proc(bottom_info, top_down)
+    word, bottom, node2tag, bottom_unary = _pre_proc(bottom_info, top_down, dep = dep_head)
     bottom_tag = [node2tag[t] for t in bottom]
     gap = gap_degree(bottom, top_down, root_id)
     if add_subs:
         top_down = add_efficient_subs(top_down, root_id)
     cnf_layers = {}
-    if dep_head:
-        dep_head = {node: TopDown(head, set([node])) for node, head in dep_head.items()}
-        cnf_layers[O_HEAD] = cross_signals(bottom, node2tag, bottom_unary, deepcopy(top_down), 0.5, dep_head)
+    if dep_head is not None:
+        cnf_layers[O_HEAD] = cross_signals(bottom, node2tag, bottom_unary, deepcopy(top_down), 0.5, _new_dep(dep_head))
     for oid, cnf_factor in enumerate(E_ORIF5):
         new_top_down = deepcopy(top_down) if cnf_factor != O_RGT else top_down
         cnf_layers[cnf_factor] = cross_signals(bottom, node2tag, bottom_unary, new_top_down, (oid + 0.5) / 5)
@@ -329,15 +323,15 @@ def read_tiger_graph(graph, dep_head = None, add_subs = False):
 def read_disco_penn(tree, dep_head = None, add_subs = False):
     bottom_info, top_down, root_id = _read_dpenn(tree)
     lines = draw_str_lines(bottom_info, top_down)
-    word, bottom, node2tag, bottom_unary = _pre_proc(bottom_info, top_down)
+    if dep_head is not None: dep_head = _dep_n_prefix(dep_head)
+    word, bottom, node2tag, bottom_unary = _pre_proc(bottom_info, top_down, dep = dep_head)
     bottom_tag = [node2tag[t] for t in bottom]
     gap = gap_degree(bottom, top_down, root_id)
     if add_subs:
         top_down = add_efficient_subs(top_down, root_id)
     cnf_layers = {}
-    if dep_head:
-        dep_head = {node: TopDown(f'n_{head}', set(['n_{node}'])) for node, head in dep_head.items()}
-        cnf_layers[O_HEAD] = cross_signals(bottom, node2tag, bottom_unary, deepcopy(top_down), 0.5, dep_head)
+    if dep_head is not None:
+        cnf_layers[O_HEAD] = cross_signals(bottom, node2tag, bottom_unary, deepcopy(top_down), 0.5, _new_dep(dep_head))
     for oid, cnf_factor in enumerate(E_ORIF5):
         new_top_down = deepcopy(top_down) if cnf_factor != O_RGT else top_down
         cnf_layers[cnf_factor] = cross_signals(bottom, node2tag, bottom_unary, new_top_down, (oid + 0.5) / 5)

@@ -4,8 +4,8 @@ from data.penn_types import select_and_split_corpus, SourcePool
 from tqdm import tqdm
 from itertools import zip_longest, count
 from multiprocessing import Process, Queue
-from utils.file_io import DelayedKeyboardInterrupt
 from time import sleep
+from data.mp import mp_workers
 # from data.delta import E_XDIM
 
 fields = 'token', 'tag', 'ftag'
@@ -139,30 +139,6 @@ class StanWorker(Process):
             q.put(StanTreeKeeper(line, v2is, trapezoid_height).get())
 
 
-def mp_workers(works, q, core_fn, num_threads):
-    text = []
-    lengths = []
-    keepers = []
-    with tqdm(desc = f'Receiving from {num_threads} threads ...') as qbar:
-        try:
-            while any(x.is_alive() for x in works):
-                if q.empty():
-                    sleep(0.00001)
-                else:
-                    words, length, keeper = core_fn(*q.get())
-                    text.append(words)
-                    lengths.append(length)
-                    keepers.append(keeper)
-                    qbar.update(1)
-            qbar.desc = f'TreeKeepers'
-        except KeyboardInterrupt as ex:
-            with DelayedKeyboardInterrupt(ignore = True):
-                for x in works:
-                    x.kill()
-            raise ex
-    return text, lengths, keepers
-
-
 from data.penn_types import Tree
 from data.io import distribute_jobs
 class TrapezoidDataset(LengthOrderedDataset):
@@ -202,7 +178,7 @@ class TrapezoidDataset(LengthOrderedDataset):
             keeper = PennTreeKeeper(Tree.fromstring(tree_str), v2is, trapezoid_height)
             keeper.update_factored(factored, words)
             return words, length, keeper
-        text, lengths, keepers = mp_workers(works, q, core_fn, num_threads)
+        text, lengths, keepers = mp_workers(works, q, core_fn, 3, f'Receiving from {num_threads} threads ...')
         return cls('token tag label xtype', keepers, lengths, text,
                     trapezoid_height,
                     field_v2is,
@@ -246,7 +222,7 @@ class TrapezoidDataset(LengthOrderedDataset):
             keeper = StanTreeKeeper(None, v2is, trapezoid_height)
             keeper.update_factored(factored)
             return words, length, keeper
-        text, lengths, keepers = mp_workers(works, q, core_fn, num_threads)
+        text, lengths, keepers = mp_workers(works, q, core_fn, 3, f'Receiving from {num_threads} threads ...')
         return cls('token polar xtype', keepers, lengths, text,
                     trapezoid_height,
                     field_v2is,

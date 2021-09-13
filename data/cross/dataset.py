@@ -238,32 +238,9 @@ class StaticCrossDataset(LengthOrderedDataset):
         field_columns['offset'] = pad_len
         return field_columns
 
-def continuous_fence(space_layer, disco_set):
-    count = 0
-    split_layer = []
-    for lhs, rhs in zip(space_layer, space_layer[1:] + [-1]):
-        if lhs in disco_set:
-            continue
-        else:
-            count += 1
-        if lhs != rhs:
-            split_layer.append(count)
-    if split_layer:
-        split_layer.insert(0, 0)
-    return count, split_layer
-
-def total_fence(space_layer):
-    count = len(space_layer)
-    space_layer = [-1] + space_layer + [-1]
-    split_layer = []
-    for sid, (lhs, rhs) in enumerate(zip(space_layer, space_layer[1:])):
-        if lhs != rhs:
-            split_layer.append(sid)
-    return count, split_layer
-
 # from data.io import distribute_jobs
 from data.multib.dataset import fill_layers
-from data.cross.multib import F_RANDOM
+from data.cross.multib import F_RANDOM, total_fence, continuous_fence
 class DynamicCrossDataset(LengthOrderedDataset):
     def __init__(self,
                  tree_keepers,
@@ -274,8 +251,7 @@ class DynamicCrossDataset(LengthOrderedDataset):
                  min_gap  = 0,
                  extra_text_helper = None,
                  c2i = None,
-                 continuous_fence_only = True,
-                 num_threads = 0):
+                 continuous_fence_only = True):
 
         text = []
         lengths = []
@@ -305,28 +281,7 @@ class DynamicCrossDataset(LengthOrderedDataset):
             tree_keepers = static_signals
             lines = ['Load ' + byte_style('static D.M. treebank', '3')]
         else:
-            balanced_prob = factors['balanced']
-            original_prob = 1 - balanced_prob
-            train_factors = {}
-            lines = ' F\Balanced'
-            if balanced_prob:
-                lines += '          Yes'
-            if original_prob:
-                lines += '      No (Origin without _SUB)'
-            lines = ['Load ' + byte_style('dynamic D.M. treebank', '7'), byte_style(lines, '2')]
-            for factor, o_prob in factors['others'].items():
-                line = ''
-                prob = balanced_prob * o_prob
-                if prob:
-                    train_factors['+'+factor] = prob
-                    line += f'{prob * 100:.0f}%'.rjust(9)
-                prob = original_prob * o_prob
-                if prob:
-                    train_factors['-'+factor] = prob
-                    line += f'{prob * 100:.0f}%'.rjust(18)
-                if line:
-                    lines.append(f'  ::{ factor}::'.ljust(15) + line)
-            factors = train_factors
+            factors, lines = self.__reset_and_show_factors(factors, 'Load ')
         print('\n'.join(lines))
             
         self._keepers_heads = tree_keepers, heads
@@ -334,6 +289,35 @@ class DynamicCrossDataset(LengthOrderedDataset):
             extra_text_helper = extra_text_helper(text, device, c2i)
         super().__init__(heads, lengths, factors, min_len, max_len, extra_text_helper)
         self._device_cfo = device, continuous_fence_only
+
+    def __reset_and_show_factors(self, factors, prefix):
+        balanced_prob = factors['balanced']
+        original_prob = 1 - balanced_prob
+        train_factors = {}
+        lines = ' F\Balanced'
+        if balanced_prob:
+            lines += '          Yes'
+        if original_prob:
+            lines += '      No (Origin without _SUB)'
+        lines = [prefix + byte_style('dynamic D.M. treebank', '7'), byte_style(lines, '2')]
+        for factor, o_prob in factors['others'].items():
+            line = ''
+            prob = balanced_prob * o_prob
+            if prob:
+                train_factors['+'+factor] = prob
+                line += f'{prob * 100:.0f}%'.rjust(9)
+            prob = original_prob * o_prob
+            if prob:
+                train_factors['-'+factor] = prob
+                line += f'{prob * 100:.0f}%'.rjust(18)
+            if line:
+                lines.append(f'  ::{ factor}::'.ljust(15) + line)
+        return train_factors, lines
+
+    def reset_factors(self, factors):
+        factors, lines = self.__reset_and_show_factors(factors, 'Reset ')
+        print('\n'.join(lines))
+        self._reset_factors(factors)
 
     def at_idx(self, idx, factor, length, helper_outputs):
         tree_keepers, heads = self._keepers_heads

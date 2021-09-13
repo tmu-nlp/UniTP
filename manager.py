@@ -1,5 +1,4 @@
-#!/usr/bin/env python
-
+#!/usr/bin/env python3
 import os
 import sys
 import argparse
@@ -401,10 +400,9 @@ def get_args():
     parser.add_argument('base', metavar = 'DIR', help = 'working directory', type = str)
     parser.add_argument('-R', '--reset',     help = 'initial manager.yaml', action = 'store_true', default = False)
     parser.add_argument('-p', '--prepare',   help = 'prepare all dataset for training', action = 'store_true', default = False)
-    parser.add_argument('-P', '--threads',   help = 'a number of threads for pre-processing the data', type = int, default = -1)
-    parser.add_argument('-m', '--menu',      help = 'list available sublayer configurations', action = 'store_true', default = False)
+    parser.add_argument('-T', '--threads',   help = 'a number of threads for pre-processing the data', type = int, default = -1)
     parser.add_argument('-g', '--gpu',       help = 'pass to environment', type = str, default = '0')
-    parser.add_argument('-x', '--train',     help = 'fv=3:30:4,max=100,!,optuna [fine validation starts from the 3rd consecutive key score wandering, ends at the 30th wandering, occuring 4 times during one epoch. !test with devel set!]', type = str, default = '')
+    parser.add_argument('-x', '--train',     help = 'fv=3:30:4,max=100,!,optuna [fine validation starts from the 3rd consecutive key score wandering, ends at the 30th wandering, occuring 4 times during one epoch. !test with devel set!]', type = str, default = 'mp')
     parser.add_argument('-s', '--select',    help = 'select (a sub-layer config id)[/data][:folder] name to run', type = str)
     parser.add_argument('-i', '--instance',  help = 'test an trained model by the folder id without its suffix name', type = str)
     args = parser.parse_args()

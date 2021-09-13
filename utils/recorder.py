@@ -1,10 +1,11 @@
 
 from datetime import datetime
+from os import wait
 from subprocess import call
 from utils.file_io import join, create_join, listdir, isdir, isfile, remove, rm_rf, rename
 from utils.file_io import DelayedKeyboardInterrupt, copy_with_prefix_and_rename, link, basename
 from utils.yaml_io import load_yaml, save_yaml
-from utils.param_ops import zip_nt_params, dict_print, change_key, unzip_nt_params
+from utils.param_ops import get_sole_key, zip_nt_params, dict_print, change_key
 from sys import stderr
 from itertools import count
 from math import isnan
@@ -37,7 +38,7 @@ class Recorder:
 
         rt_file, rt_lock = _rt_file_lock(task_dir)
         if new_instance:
-            rt, unlock = load_yaml(rt_file, rt_lock, True)
+            rt, unlock = load_yaml(rt_file, rt_lock, wait_then_block = True, wait_or_exit = not read_only)
             if len(rt):
                 name_len = max(len(i) for i in rt.keys())
                 inames = tuple(int(i) for i in rt.keys())
@@ -80,7 +81,7 @@ class Recorder:
         self._ckpt_fname = join(instance_dir, 'checkpoint')
         self._model_dir  = create_join(instance_dir, 'models')
         if not read_only:
-            _, self._sv_unlock = load_yaml(sv_file, sv_lock, True)
+            _, self._sv_unlock = load_yaml(sv_file, sv_lock, wait_then_block = True)
         self._rt_file_lock = rt_file, rt_lock
         self._sv_file_lock = sv_file, sv_lock
         self._key = None
@@ -91,7 +92,7 @@ class Recorder:
 
     def new_trial_recorder(self, specs_update_fn, trial):
         _, instance_dir = self._instance_dir
-        specs          = load_yaml(*self._sv_file_lock, wait_lock = False)
+        specs          = load_yaml(*self._sv_file_lock, wait = False)
         results        = specs.pop('results')
         best_model     = max(results, key = lambda x: results[x]);
         best_score     = results.pop(best_model)
@@ -112,33 +113,38 @@ class Recorder:
         rt_file = join(fpath, _rt_file)
         rt_lock = join(fpath, _rt_lock)
         # some other can be empty: if v and 'key' in v
-        children = load_yaml(rt_file, rt_lock, wait_lock = False)
+        children = load_yaml(rt_file, rt_lock, wait = False)
         children = ((k, v) for k, v in children.items() if v and 'key' in v)
-        best_trial, best_result = max(children, key = lambda x: x[1]['key'])
+        best_test_trial, best_test_result = max(children, key = lambda x: x[1]['key'])
         for fname in listdir(fpath):
             if '.' in fname:
-                match = fname.split('.')[0] == best_trial
+                match = fname.split('.')[0] == best_test_trial
             else:
-                match = fname == best_trial
+                match = fname == best_test_trial
             if match:
-                specs = load_yaml(*self._sv_file_lock, wait_lock = False)
+                specs = load_yaml(*self._sv_file_lock, wait = False)
                 results = specs['results']
-                for x in (x for x in results if x[0] == 'O'):
-                    results.pop(x)
-                    remove(join(instance_dir, 'models', x))
+                optina_best = specs.get('optuna')
+                if optina_best:
+                    best_old_model = get_sole_key(optina_best)
+                    remove(join(instance_dir, 'models', best_old_model))
+                    best_old_validated_score = optina_best[best_old_model]
+                else:
+                    best_old_validated_score = 0
                     
                 sv_file = join(fpath, fname, _sv_file)
                 sv_lock = join(fpath, fname, _sv_lock)
                 trial_specs = load_yaml(sv_file, sv_lock)['results']
-                best_model = max(trial_specs, key = trial_specs.get)
-                if best_model in results: break
-                best_trial = f'O{best_trial}-{best_model}'
-                link(join(fpath, fname, 'models', best_model),
+                best_validated_model = max(trial_specs, key = trial_specs.get)
+                trial_validated_score = trial_specs[best_validated_model]
+                if trial_validated_score < best_old_validated_score: break
+                best_trial = f'O{best_test_trial}-{best_validated_model}'
+                link(join(fpath, fname, 'models', best_validated_model),
                      join(instance_dir, 'models', best_trial))
-                results[best_trial] = trial_specs[best_model]
+                specs['optuna'] = {best_trial: trial_validated_score}
                 save_yaml(specs, *self._sv_file_lock, wait_lock = False)
                 break
-        return best_result
+        return best_test_result
         # for fname in listdir(join(instance_dir, 'trials')):
         #     if '.' in fname:
         #         thatsit = fname.split('.')[0] == best_child
@@ -150,7 +156,7 @@ class Recorder:
         #         best_model = max(child_results, key = lambda x: child_results[x])
         #         best_fpath = join(instance_dir, 'trials', fname, 'models', best_model)
                 
-        #         specs = load_yaml(*self._sv_file_lock, wait_lock = False)
+        #         specs = load_yaml(*self._sv_file_lock, wait = False)
         #         results = specs['results']
         #         results[best_model] = child_results[best_model]
         #         copy_with_prefix_and_rename(best_model, self._model_dir, best_model)
@@ -219,7 +225,7 @@ class Recorder:
 
     def task_specs(self): # TODO if not training set trainset & develset to {}
         from utils.param_ops import HParams
-        specs = load_yaml(*self._sv_file_lock, wait_lock = False)
+        specs = load_yaml(*self._sv_file_lock, wait = False)
         _, model_type, train_type = self._module.get_configs()
         model_config = get_obj_from_config(model_type, specs['model'])
         train_config = get_obj_from_config(train_type, specs['train'])
@@ -246,9 +252,9 @@ class Recorder:
             model_fname = self._ckpt_fname
 
         elif isdir(self._model_dir) or restore_from_best_validation:
-            resutls = load_yaml(*self._sv_file_lock, wait_lock = False)['results']
-            if resutls:
-                best_model = max(resutls, key = lambda x: resutls[x])
+            results = load_yaml(*self._sv_file_lock, wait = False)['results']
+            if results:
+                best_model = max(results, key = lambda x: results[x])
                 model_fname = join(self._model_dir, best_model)
 
         if model_fname is None:
@@ -336,7 +342,7 @@ class Recorder:
     def check_betterment(self, epoch, falling, global_step, model, optimizer, key):
         if isnan(key):
             key = float('-inf')
-        specs = load_yaml(*self._sv_file_lock, wait_lock = False)
+        specs = load_yaml(*self._sv_file_lock, wait = False)
         betterment = (self._key is None or self._key < key)
         in_top_k = any(old_key < key for old_key in specs['results'].values())
         fine_validation = falling and not betterment
@@ -373,7 +379,7 @@ class Recorder:
     def experiments_status(task_path):
         rt_file = join(task_path, _rt_file)
         rt_lock = join(task_path, _rt_lock)
-        (instance_status, unlock), modifed = load_yaml(rt_file, rt_lock, True), False
+        (instance_status, unlock), modifed = load_yaml(rt_file, rt_lock, wait_then_block = True), False
         status = dict(locking = [], unlocked = [], other = [], tested = [])
         folders = listdir(task_path)
 

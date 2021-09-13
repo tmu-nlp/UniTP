@@ -262,7 +262,7 @@ class DiscoMultiStem(MultiStem):
     def forward(self, unit_emb, existence, supervision = None, disco_2d_negative = 0, **kw_args):
         batch_size, seg_len, model_dim = unit_emb.shape
         h0c0 = self.get_h0c0(batch_size)
-        max_iter_n = seg_len << 2 # 4 times
+        max_iter_n = seg_len << 1 # 2 times
         teacher_forcing =  supervision is not None
         segment, seg_length = [], []
         batch_dim = torch.arange(batch_size, device = unit_emb.device)

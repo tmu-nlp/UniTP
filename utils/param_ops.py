@@ -130,3 +130,11 @@ def get_sole_key(dic):
     sole = shake.pop()
     assert not shake, f'{sole} is not the sole key in {dic}'
     return sole
+
+def replace_args_kwargs(fn, n, args, key, kw_args):
+    m = n + 1
+    if len(args) >= m:
+        args = args[:n] + (fn(args[n]),) + args[m:]
+    elif (val := kw_args.get(key)) is not None:
+        kw_args[key] = fn(val)
+    return args

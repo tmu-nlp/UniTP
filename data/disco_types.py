@@ -253,6 +253,7 @@ def build(save_to_dir,
                     fw.write(wd)
                     ft.write(bt)
                     fg.write(f'{sent_gap_degree}\n')
+                    assert all(x in cnf_bundle for x in E_ORIF5_HEAD), 'Missing ' + ', '.join(set(E_ORIF5_HEAD) - cnf_bundle.keys()) + f' in {sent_id}'
                     for cnf_factor, (cindex, labels, xtypes, swaps) in cnf_bundle.items():
                         fis[cnf_factor].write(cindex)
                         fls[cnf_factor].write(labels)

@@ -12,6 +12,29 @@ from utils.shell_io import concatenate, byte_style
 t_sleep_deep = 0.1
 t_sleep_shallow = 0.001
 
+
+def mp_workers(works, q, core_fn, num_returns_from_core_fn, desc = None):
+    returns = tuple([] for _ in range(num_returns_from_core_fn))
+    from tqdm import tqdm
+    from utils.file_io import DelayedKeyboardInterrupt
+    with tqdm(desc = desc) as qbar:
+        try:
+            while any(x.is_alive() for x in works):
+                if q.empty():
+                    sleep(0.00001)
+                else:
+                    for fr, rl in zip(core_fn(*q.get()), returns):
+                        rl.append(fr)
+                    qbar.update(1)
+            qbar.desc = desc + ' done'
+        except KeyboardInterrupt as ex:
+            with DelayedKeyboardInterrupt(ignore = True):
+                for x in works:
+                    x.kill()
+            raise ex
+    return returns
+
+
 class D2T(Process):
     def __init__(self, idx, in_q, out_q, vocabs, tree_gen_fn, cat_dir):
         super().__init__()

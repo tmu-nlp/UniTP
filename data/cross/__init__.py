@@ -305,7 +305,7 @@ def _read_dpenn(tree,
                 stack['__CURRENT__'].add(nid)
         elif status == _CMD_TAG:
             wd, tg = item
-            nid = len(bottom)
+            nid = len(bottom) + 1 # start from n is okay
             bottom[nid] = (wd, tg)
             stack[tg].add(nid)
             
@@ -411,12 +411,14 @@ def _read_dpenn(tree,
     root_id = get_sole_key(vroot.children)
 
     if convert_id_to_str:
-        bottom = [(f'n_{bid}', w, t) for bid, (w, t) in bottom.items()]
+        condensed_bottom = sorted(bottom)
+        condense = {bid: eid for eid, bid in enumerate(condensed_bottom, 1) if eid != bid}
+        bottom = [(f'n_{condense.get(bid, bid)}', w, t) for bid, (w, t) in bottom.items()]
         new_top_down = {}
         for nid, td in top_down.items():
             children = {}
             for cid, ftag in td.children.items():
-                children[f'n_{cid}'] = ftag
+                children[f'n_{condense.get(cid, cid)}'] = ftag
             new_top_down[f'n_{nid}'] = TopDown(td.label, children)
         top_down = new_top_down
         root_id = f'n_{root_id}'
@@ -505,6 +507,22 @@ def add_efficient_subs(top_down, root_id, sub_prefix = '_', sub_suffix = '.'):
             new_top_down[node] = top_down[node]
     return new_top_down
 
+def _new_dep(dep_head):
+    return {node: TopDown(head, set([node])) for node, head in dep_head.items()}
+
+def _dep_n_prefix(dep_head):
+    return {f'n_{node}': f'n_{head}' if head else None for node, head in dep_head.items()}
+
+def _dep_combine(dependency, h_node, new_node, *d_nodes):
+    head = dependency.pop(h_node)
+    for d_node in d_nodes: # dependants disappear
+        head.children.update(dependency.pop(d_node).children)
+    dependency[new_node] = head # the head keeps its dependant
+
+def _dep_on(dependency, d_node, h_node):
+    # this .label actually means .head
+    return dependency[d_node].label in dependency[h_node].children
+
 from utils.math_ops import bit_fanout
 def gap_degree(bottom, top_down, nid, return_coverage = False, bottom_is_bid = True):
     finally_return = True
@@ -591,7 +609,7 @@ def bracketing(bottom, top_down, nid, bottom_is_bid = False,
 #             last_nid = nid
         
 
-def _pre_proc(bottom_info, top_down, unary_join_mark = '+'):
+def _pre_proc(bottom_info, top_down, unary_join_mark = '+', dep = None):
     bu_nodes = [p_node for p_node, (_, children) in top_down.items() if len(children) == 1]
     unary = {}
     while bu_nodes:
@@ -604,15 +622,18 @@ def _pre_proc(bottom_info, top_down, unary_join_mark = '+'):
     node2tag = {}
     bottom_unary = {}
     new_bottom = []
+    if dep: _dep = {}
     for node, wd, tg in bottom_info:
         word.append(wd)
 
         collapsed_label = ''
+        if dep: dep_origin = node; dep_head = dep.pop(node) if node in unary else None
         while node in unary: # bottom up node
             label, node = unary.pop(node) # shift node!
             collapsed_label += unary_join_mark + label
         if collapsed_label:
             bottom_unary[node] = collapsed_label[1:]
+            if dep: _dep[dep_origin] = node; dep[node] = dep_head
 
         new_bottom.append(node)
         node2tag[node] = tg
@@ -620,6 +641,11 @@ def _pre_proc(bottom_info, top_down, unary_join_mark = '+'):
     for node, (label, p_node) in sorted(unary.items(), key = lambda x: x[0]): # collapse top_down unary branches
         td_label, children = top_down.pop(node)
         top_down[p_node] = TopDown(label + unary_join_mark + td_label, children)
+    
+    if dep and _dep:
+        for n, h in dep.items():
+            if h in _dep:
+                dep[n] = _dep[h]
 
     return word, new_bottom, node2tag, bottom_unary
 
