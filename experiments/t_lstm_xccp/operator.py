@@ -225,8 +225,6 @@ class DiscoMultiOperator(DiscoOperator):
         import numpy as np
         from utils.train_ops import train, get_optuna_params
         optuna_params = get_optuna_params(train_params)
-        from data.cross.multib import F_LEFT, F_RANDOM, F_RIGHT
-        E_MED = F_LEFT, F_RANDOM, F_RIGHT
 
         def obj_fn(trial):
             def spec_update_fn(specs, trial):
@@ -244,15 +242,24 @@ class DiscoMultiOperator(DiscoOperator):
                 medium_factor = specs['data']
                 medium_factor = specs['data']['tiger' if 'tiger' in medium_factor else 'dptb']
                 medium_factor = medium_factor['medium_factor']
-                medium_factor['balanced'] = bz = trial.suggest_float('balanced', 0.0, 1.0)
-                med = np.array([trial.suggest_loguniform(x, 1e-5, 1e5) for x in E_MED])
-                med /= np.sum(med)
-                for k, v in zip(E_MED, med):
+                if involve_balanced := medium_factor['balanced'] > 0:
+                    medium_factor['balanced'] = bz = trial.suggest_float('balanced', 0.0, 1.0)
+                med_k, med_v = [], []
+                for k, v in medium_factor['others'].items():
+                    if v > 0:
+                        med_k.append(k)
+                        med_v.append(trial.suggest_loguniform(k, 1e-5, 1e5))
+                med_v = np.array(med_v)
+                med_v /= np.sum(med_v)
+                for k, v in zip(med_k, med_v):
                     medium_factor['others'][k] = float(v)
                 self._train_materials = medium_factor, self._train_materials[1]
                 specs['train']['learning_rate'] = lr = trial.suggest_loguniform('learning_rate', 1e-6, 1e-3)
                 self._train_config._nested.update(specs['train'])
-                med_str = f'med={height_ratio(bz)}M' + ''.join(height_ratio(x) for x in med)
+                med_str = 'med='
+                if involve_balanced:
+                    med_str += f'{height_ratio(bz)}M'
+                med_str += ''.join(height_ratio(v) for v in med_v)
                 return med_str + ';' + loss_str + f';lr={lr:.1e}'
 
             self._mode_trees = [], [] # force init

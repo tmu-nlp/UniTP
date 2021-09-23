@@ -41,6 +41,7 @@ def hinge_score(hinge_logits, inplace):
 
 import math
 from torch.nn import Module, Parameter, init
+from torch.nn import Linear, Softmax, Softmin
 class SimplerLinear(Module):
     __constants__ = ['bias', 'in_features']
     def __init__(self, in_features, weight = True, bias = True):
@@ -76,26 +77,86 @@ class SimplerLinear(Module):
             self.in_features, self.bias is not None
         )
 
+class BiaffineAttention(Module):
+    """Implements a biaffine attention operator for binary relation classification.
+    PyTorch implementation of the biaffine attention operator from "End-to-end neural relation
+    extraction using deep biaffine attention" (https://arxiv.org/abs/1812.11275) which can be used
+    as a classifier for binary relation classification.
+    """
+    __constants__ = ['weight', 'bias']
+    def __init__(self, lhs_features, rhs_features, bias = False):
+        super(BiaffineAttention, self).__init__()
+        self.lhs_features = lhs_features
+        self.rhs_features = rhs_features
+        self.weight = Linear(lhs_features, rhs_features, bias = False)
+        if bias:
+            self.bias = Bias(1)
+        else:
+            self.register_parameter('bias', None)
+        self.reset_parameters()
+
+    def forward(self, lhs, rhs, drop_out = None):
+        hidden = self.weight(lhs)
+        hidden = hidden.bmm(rhs)
+        if drop_out is not None:
+            hidden = drop_out(hidden)
+        if self.bias is not None:
+            hidden = hidden + self.bias()
+        return hidden
+
+    def reset_parameters(self):
+        self.weight.reset_parameters()
+        if self.bias is not None:
+            self.bias.reset_parameters()
+
+class LinearBinary(Module):
+    __constants__ = ['weight_in', 'weight_hidden']
+    def __init__(self, in_features, hidden_features = 1, in_act = None):
+        super(LinearBinary, self).__init__()
+        self.in_features     = in_features
+        self.hidden_features = hidden_features
+        self.weight_in = Linear(in_features, hidden_features)
+        if hidden_features > 1:
+            assert in_act is not None, 'Hidden layer need an activation'
+            self.in_act = in_act()
+            self.weight_hidden = Linear(hidden_features, 1)
+        else:
+            self.register_parameter('weight_hidden', None)
+        self.reset_parameters()
+
+    def forward(self, embed, drop_out = None):
+        hidden = self.weight_in(embed)
+        if drop_out is not None:
+            hidden = drop_out(hidden)
+        if self.weight_hidden is not None:
+            hidden = self.weight_hidden(self.in_act(hidden))
+        return hidden.squeeze(dim = -1)
+
+    def reset_parameters(self):
+        self.weight_in.reset_parameters()
+        if self.weight_hidden is not None:
+            self.weight_hidden.reset_parameters()
+
 class Bias(Module):
-    __constants__ = ['bias', 'in_features']
-    def __init__(self, in_features):
+    __constants__ = ['bias']
+    def __init__(self, *bias_shape):
         super(Bias, self).__init__()
-        self.in_features = in_features
-        self.bias = Parameter(torch.Tensor(in_features))
+        self.bias_shape = bias_shape
+        self.bias = Parameter(torch.Tensor(bias_shape))
         self.reset_parameters()
 
     def reset_parameters(self):
-        bound = 1 / math.sqrt(self.in_features)
+        bound = 1 / math.sqrt(sum(self.bias_shape))
         init.uniform_(self.bias, -bound, bound)
 
     def forward(self):
         return self.bias
 
     def extra_repr(self):
-        return 'in_features={}'.format(self.in_features)
+        return 'bias_shape={}'.format(self.in_features)
 
 class GaussianCodebook(Module):
-    __constants__ = ['bias', 'codebook' 'io_features']
+    __constants__ = ['codebook' 'io_features']
     def __init__(self, in_dim, num_codes, prefix_dims = 0, coeff = 0):
         super(GaussianCodebook, self).__init__()
 
@@ -140,7 +201,6 @@ class GaussianCodebook(Module):
             in_features, out_features
         )
 
-from torch.nn import Linear, Softmax, Softmin
 def get_logit_layer(logit_type):
     if logit_type in ('affine', 'linear'):
         Net = lambda i_size, o_size: Linear(i_size, o_size, bias = logit_type == 'affine')

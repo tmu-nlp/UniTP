@@ -206,7 +206,6 @@ class Operator:
         optuna.visualization.plot_slice(study)
         optuna.visualization.plot_contour(study, params=['n_estimators', 'max_depth'])
         '''
-        import optuna
         # from optuna.trial import TrialState
         from os.path import join
         from utils.file_io import DelayedKeyboardInterrupt
@@ -220,6 +219,7 @@ class Operator:
         #         study.trials.pop(tid)
         assert n_trials > 0, 'Optuna with n_trials == 0'
         fpath = join(self._recorder.create_join(), 'trials.db')
+        import optuna
         study = optuna.create_study(direction  = 'maximize',
                                     study_name = 'hyper-tune',
                                     storage    = 'sqlite:///' + fpath,
@@ -227,10 +227,10 @@ class Operator:
         self._recorder.log(f'Start optuna with {n_trials} trials ...')
         study.optimize(self._get_optuna_fn(train_params), n_trials = n_trials) # core
         with DelayedKeyboardInterrupt(True):
-            self._recorder.detach() # 1 operator vs. 2 recorders (super + trial)
+            self._recorder.detach() # child: 1 operator vs. 2 recorders (super + trial)
             self._recorder = self._optuna_mode[0]
             self._optuna_mode = None
-            return self._recorder.summary_trials()
+            return self._recorder.summary_trials() # main
 
     def _get_optuna_fn(self, train_params):
         raise NotImplementedError()

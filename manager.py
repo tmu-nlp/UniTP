@@ -383,7 +383,7 @@ class Manager:
                         traceback.print_exc()
                     print(e, file = sys.stderr)
 
-                    if input('Remove recorder ? [Any key or n]').lower() != 'n':
+                    if input('Remove recorder ? [Y or any key]').lower() == 'y':
                         recorder.delete_all()
                 if operator:
                     operator.close()

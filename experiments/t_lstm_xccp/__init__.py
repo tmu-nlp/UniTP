@@ -23,7 +23,7 @@ def get_configs(recorder = None):
                                           penn.data_splits.devel_set,
                                           penn.data_splits.test_set,
                                           binary = False,
-                                          read_dep = parpath(penn.data_path))
+                                          read_dep = parpath(penn.data_path) if penn.medium_factor.others.head else None)
 
     reader = DiscoMultiReader(penn.data_path,
                               penn.medium_factor.balanced > 0,

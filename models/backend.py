@@ -470,13 +470,13 @@ class PadRNN(nn.Module):
                 if method == 'dot':
                     self._fence_l1 = nn.Linear(fence_dim, linear_dim)
                     if from_unit:
-                        self._fence_l2 = nn.Linear(model_dim, linear_dim)
+                        self._fence_l2 = nn.Linear(embed_dim, linear_dim)
                     else:
                         self._fence_l2 = nn.Linear(fence_dim, linear_dim)
                     method = self.predict_fence_2d_dot
                 elif method == 'cat':
                     if from_unit:
-                        self._fence_l1 = nn.Linear(fence_dim + model_dim, linear_dim)
+                        self._fence_l1 = nn.Linear(fence_dim + embed_dim, linear_dim)
                     else:
                         self._fence_l1 = nn.Linear(fence_dim << 1, linear_dim)
                     self._fence_l2 = nn.Linear(linear_dim, 1)
@@ -537,8 +537,12 @@ class PadRNN(nn.Module):
             helper = condense_helper(fence, True, offset)
         fw = condense_left(fw, helper)
         bw = condense_left(bw, helper)
-        return torch.cat([fw[:, 1:] - fw[:, :-1], bw[:, :-1] - bw[:, 1:]], dim = 2)
         # select & concat: fw[:*-1] - fw[*1:] & bw...
+        return PadRNN.diff_emb(fw, bw)
+
+    @staticmethod
+    def diff_emb(fw, bw):
+        return torch.cat([fw[:, 1:] - fw[:, :-1], bw[:, :-1] - bw[:, 1:]], dim = 2)
 
     def predict_fence(self, fw, bw):
         fence = torch.cat([fw, bw], dim = 2)

@@ -5,7 +5,7 @@ from subprocess import call
 from utils.file_io import join, create_join, listdir, isdir, isfile, remove, rm_rf, rename
 from utils.file_io import DelayedKeyboardInterrupt, copy_with_prefix_and_rename, link, basename
 from utils.yaml_io import load_yaml, save_yaml
-from utils.param_ops import get_sole_key, zip_nt_params, dict_print, change_key
+from utils.param_ops import zip_nt_params, dict_print, change_key
 from sys import stderr
 from itertools import count
 from math import isnan
@@ -109,42 +109,38 @@ class Recorder:
     def summary_trials(self): # should only be a super_recorder
         assert callable(self._sv_unlock), 'Not main recorder?'
         _, instance_dir = self._instance_dir
+
         fpath = join(instance_dir, 'trials')
-        rt_file = join(fpath, _rt_file)
-        rt_lock = join(fpath, _rt_lock)
+        rt_file, rt_lock = _rt_file_lock(fpath)
         # some other can be empty: if v and 'key' in v
-        children = load_yaml(rt_file, rt_lock, wait = False)
-        children = ((k, v) for k, v in children.items() if v and 'key' in v)
-        best_test_trial, best_test_result = max(children, key = lambda x: x[1]['key'])
+        children_rt = load_yaml(rt_file, rt_lock, wait = False)
+        test_kv = ((k, v['key']) for k, v in children_rt.items() if v and 'key' in v)
+        test_kv = sorted(test_kv, key = lambda x: x[1], reverse = True)[:self._keep_top_k]
+        top_k = set(k for k, _ in test_kv)
+
+        optuna_top_k = {}
         for fname in listdir(fpath):
-            if '.' in fname:
-                match = fname.split('.')[0] == best_test_trial
-            else:
-                match = fname == best_test_trial
-            if match:
-                specs = load_yaml(*self._sv_file_lock, wait = False)
-                results = specs['results']
-                optina_best = specs.get('optuna')
-                if optina_best:
-                    best_old_model = get_sole_key(optina_best)
-                    remove(join(instance_dir, 'models', best_old_model))
-                    best_old_validated_score = optina_best[best_old_model]
-                else:
-                    best_old_validated_score = 0
-                    
-                sv_file = join(fpath, fname, _sv_file)
-                sv_lock = join(fpath, fname, _sv_lock)
-                trial_specs = load_yaml(sv_file, sv_lock)['results']
-                best_validated_model = max(trial_specs, key = trial_specs.get)
-                trial_validated_score = trial_specs[best_validated_model]
-                if trial_validated_score < best_old_validated_score: break
-                best_trial = f'O{best_test_trial}-{best_validated_model}'
+            if not isdir(idir := join(fpath, fname)) or '.' not in fname:
+                continue
+            trial_id, trial_string = fname.split('.', 1)
+            if not trial_id.isdecimal():
+                continue
+            if trial_id in top_k:
+                sv_file, sv_lock = _sv_file_lock(idir)
+                trial_results = load_yaml(sv_file, sv_lock)['results']
+                best_validated_model, score = max(trial_results.items(), key = lambda x: x[1])
+                best_trial = f'O{trial_id}-{best_validated_model}'
                 link(join(fpath, fname, 'models', best_validated_model),
                      join(instance_dir, 'models', best_trial))
-                specs['optuna'] = {best_trial: trial_validated_score}
-                save_yaml(specs, *self._sv_file_lock, wait_lock = False)
-                break
-        return best_test_result
+                optuna_top_k[best_trial] = f'{trial_string}@{score}'
+
+        for fname in listdir(join(instance_dir, 'models')):
+            if fname[0] == 'O' and isfile(fpath := join(instance_dir, 'models', fname)):
+                remove(fpath)
+        main_specs = load_yaml(*self._sv_file_lock, wait = False)
+        main_specs['optuna'] = optuna_top_k
+        save_yaml(main_specs, *self._sv_file_lock, wait_lock = False)
+        return children_rt[children_rt[0][0]]
         # for fname in listdir(join(instance_dir, 'trials')):
         #     if '.' in fname:
         #         thatsit = fname.split('.')[0] == best_child
