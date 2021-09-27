@@ -310,7 +310,7 @@ class Manager:
         from utils.train_ops import train
         task, corp_name, name = check_select(args.select)
         op_code, exp_ids = check_instances_operation(args.instance)
-        assert op_code in (None, False, 'r', 'd', 'o'), f'Unknown operation {op_code}, neither [r]esume, [d]elete, or [o]ptuna'
+        assert op_code in (None, False, 'r', 'd'), f'Unknown operation {op_code}, neither [r]esume nor [d]elete'
 
         assert task in self._exp_modules, f'No such task module {task} in [' + ', '.join(self._exp_modules.keys()) + ']'
         assert task in ready_tasks, f'No such ready task_spec {task} in [' + ', '.join(ready_paths.keys()) + ']'
@@ -331,10 +331,9 @@ class Manager:
                             module,
                             config_dict_or_instance,
                             name,
-                            evalb = evalb,
-                            read_only = op_code == 'o')
+                            evalb = evalb)
 
-        train_or_resume_training = op_code in ('r', 'o') or None in exp_ids
+        train_or_resume_training = op_code == 'r' or None in exp_ids
         if train_or_resume_training:
             train_params = check_train(args.train)
         

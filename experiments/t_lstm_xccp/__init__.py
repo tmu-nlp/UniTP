@@ -40,7 +40,7 @@ def get_configs(recorder = None):
             train_ds = reader.loaded_ds.get(mode)
             if train_ds is None:
                 datasets[corp_name] = reader.batch(M_TRAIN, penn.batch_size, penn.bucket_len,
-                                                   penn.medium_factor._nested,
+                                                   new_medium_factor or penn.medium_factor._nested,
                                                    max_len = penn.max_len,
                                                    min_gap = penn.min_gap,
                                                    sort_by_length = penn.sort_by_length)

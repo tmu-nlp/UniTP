@@ -58,7 +58,7 @@ def save_yaml(status, mfile, lfile, wait_lock = True):
             try:
                 with open(mfile, 'w') as fw:
                     fw.write(f'# {datetime.now()}\n')
-                    yaml.dump(status, fw, default_flow_style = False)
+                    yaml.safe_dump(status, fw, encoding = 'utf-8', allow_unicode = True) #default_flow_style = False
                 finished = True
             except KeyboardInterrupt as e:
                 do_exit = e

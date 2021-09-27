@@ -1,9 +1,7 @@
 
 from datetime import datetime
-from os import wait
-from subprocess import call
 from utils.file_io import join, create_join, listdir, isdir, isfile, remove, rm_rf, rename
-from utils.file_io import DelayedKeyboardInterrupt, copy_with_prefix_and_rename, link, basename
+from utils.file_io import copy_with_prefix_and_rename, link, basename
 from utils.yaml_io import load_yaml, save_yaml
 from utils.param_ops import zip_nt_params, dict_print, change_key
 from sys import stderr
@@ -29,16 +27,12 @@ def _sv_file_lock(instance_dir):
 class Recorder:
     '''A Recorder provides environment for an Operator, created in a Manager, operated by the Operator.'''
     
-    def __init__(self, task_dir, task_module, config_dict_or_instance, instance_name = None, keep_top_k = 4, evalb = None, read_only = False):
-        # with DelayedKeyboardInterrupt():
+    def __init__(self, task_dir, task_module, config_dict_or_instance, instance_name = None, keep_top_k = 4, evalb = None, child_mode = False):
         new_instance = isinstance(config_dict_or_instance, dict)
-        if read_only:
-            assert not new_instance, 'parallelism of optuna trials should be based on a trained instance'
-            self._sv_unlock = None # !!! an inactive recorder !!!
 
         rt_file, rt_lock = _rt_file_lock(task_dir)
         if new_instance:
-            rt, unlock = load_yaml(rt_file, rt_lock, wait_then_block = True, wait_or_exit = not read_only)
+            rt, unlock = load_yaml(rt_file, rt_lock, wait_then_block = True, wait_or_exit = not child_mode)
             if len(rt):
                 name_len = max(len(i) for i in rt.keys())
                 inames = tuple(int(i) for i in rt.keys())
@@ -80,8 +74,7 @@ class Recorder:
         self._module     = task_module
         self._ckpt_fname = join(instance_dir, 'checkpoint')
         self._model_dir  = create_join(instance_dir, 'models')
-        if not read_only:
-            _, self._sv_unlock = load_yaml(sv_file, sv_lock, wait_then_block = True)
+        _, self._sv_unlock = load_yaml(sv_file, sv_lock, wait_then_block = True)
         self._rt_file_lock = rt_file, rt_lock
         self._sv_file_lock = sv_file, sv_lock
         self._key = None
@@ -98,7 +91,7 @@ class Recorder:
         best_score     = results.pop(best_model)
         specs['results'] = {best_model: best_score}
         trial_name     = specs_update_fn(specs, trial)
-        child_recorder = Recorder(create_join(instance_dir, 'trials'), self._module, specs, trial_name, 1, self._evalb)
+        child_recorder = Recorder(create_join(instance_dir, 'trials'), self._module, specs, trial_name, 1, self._evalb, True)
         _, child_dir   = child_recorder._instance_dir
         link(join(instance_dir, 'models', best_model), join(child_dir, 'models', best_model))
         child_dir = basename(child_dir)
@@ -140,7 +133,7 @@ class Recorder:
         main_specs = load_yaml(*self._sv_file_lock, wait = False)
         main_specs['optuna'] = optuna_top_k
         save_yaml(main_specs, *self._sv_file_lock, wait_lock = False)
-        return children_rt[children_rt[0][0]]
+        return children_rt[test_kv[0][0]]
         # for fname in listdir(join(instance_dir, 'trials')):
         #     if '.' in fname:
         #         thatsit = fname.split('.')[0] == best_child
@@ -178,7 +171,7 @@ class Recorder:
         rm_rf(instance_dir, stderr)
 
     def delete_most(self):
-        instance, instance_dir = self._instance_dir
+        _, instance_dir = self._instance_dir
         remove(join(instance_dir, 'checkpoint'))
         with open(join(instance_dir, 'experiment.log'), 'a+') as fw:
             for fname in listdir(instance_dir):
