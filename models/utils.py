@@ -95,11 +95,9 @@ class BiaffineAttention(Module):
             self.register_parameter('bias', None)
         self.reset_parameters()
 
-    def forward(self, lhs, rhs, drop_out = None):
+    def forward(self, lhs, rhs):
         hidden = self.weight(lhs)
         hidden = hidden.bmm(rhs)
-        if drop_out is not None:
-            hidden = drop_out(hidden)
         if self.bias is not None:
             hidden = hidden + self.bias()
         return hidden
@@ -126,9 +124,9 @@ class LinearBinary(Module):
 
     def forward(self, embed, drop_out = None):
         hidden = self.weight_in(embed)
-        if drop_out is not None:
-            hidden = drop_out(hidden)
         if self.weight_hidden is not None:
+            if callable(drop_out):
+                hidden = drop_out(hidden)
             hidden = self.weight_hidden(self.in_act(hidden))
         return hidden.squeeze(dim = -1)
 

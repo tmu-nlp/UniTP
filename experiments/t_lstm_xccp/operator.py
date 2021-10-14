@@ -105,32 +105,32 @@ class DiscoMultiOperator(DiscoOperator):
             if self._train_config.binary_hinge_loss:
                 fence_loss = hinge_loss(fence_logits, gold_fences, None)
                 disco_1d_loss = hinge_loss(disco_1d_logits, batch['dis_disco'], None)
-                if has_disco_2d_positive:
-                    disco_2d_posloss = hinge_loss(disco_2d_positive, torch.ones_like(disco_2d_positive, dtype = torch.bool), None)
                 if has_disco_2d:
                     disco_2d_loss = hinge_loss(disco_2d_logits, batch['dis_component'], None)
-                    if has_disco_2d_negative:
-                        disco_2d_negloss = hinge_loss(disco_2d_negative, torch.zeros_like(disco_2d_negative, dtype = torch.bool), None)
+                if has_disco_2d_positive:
+                    disco_2d_posloss = hinge_loss(disco_2d_positive, torch.ones_like(disco_2d_positive, dtype = torch.bool), None)
+                if has_disco_2d_negative:
+                    disco_2d_negloss = hinge_loss(disco_2d_negative, torch.zeros_like(disco_2d_negative, dtype = torch.bool), None)
             else:
                 fence_loss = binary_cross_entropy(fence_logits, gold_fences, None)
                 disco_1d_loss = binary_cross_entropy(disco_1d_logits, batch['dis_disco'], None)
-                if has_disco_2d_positive:
-                    disco_2d_posloss = binary_cross_entropy(disco_2d_positive, torch.ones_like(disco_2d_positive, dtype = torch.bool), None)
                 if has_disco_2d:
                     disco_2d_loss = binary_cross_entropy(disco_2d_logits, batch['dis_component'], None)
-                    if has_disco_2d_negative:
-                        disco_2d_negloss = binary_cross_entropy(disco_2d_negative, torch.zeros_like(disco_2d_negative, dtype = torch.bool), None)
+                if has_disco_2d_positive:
+                    disco_2d_posloss = binary_cross_entropy(disco_2d_positive, torch.ones_like(disco_2d_positive, dtype = torch.bool), None)
+                if has_disco_2d_negative:
+                    disco_2d_negloss = binary_cross_entropy(disco_2d_negative, torch.zeros_like(disco_2d_negative, dtype = torch.bool), None)
 
             total_loss = self._train_config.loss_weight.tag * tag_loss
             total_loss = self._train_config.loss_weight.label * label_loss + total_loss
             total_loss = self._train_config.loss_weight.fence * fence_loss + total_loss
             total_loss = self._train_config.loss_weight.disco_1d * disco_1d_loss + total_loss
-            if has_disco_2d_positive:
-                total_loss = self._train_config.loss_weight.disco_2d_neg * disco_2d_posloss + total_loss
             if has_disco_2d:
                 total_loss = self._train_config.loss_weight.disco_2d * disco_2d_loss + total_loss
-                if has_disco_2d_negative:
-                    total_loss = self._train_config.loss_weight.disco_2d_neg * disco_2d_negloss + total_loss
+            if has_disco_2d_positive:
+                total_loss = self._train_config.loss_weight.disco_2d_neg * disco_2d_posloss + total_loss
+            if has_disco_2d_negative:
+                total_loss = self._train_config.loss_weight.disco_2d_neg * disco_2d_negloss + total_loss
             total_loss.backward()
             
             if hasattr(self._model, 'tensorboard'):

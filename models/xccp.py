@@ -266,17 +266,17 @@ class DiscoMultiStem(MultiStem):
         if disco_2d_op.startswith('biaff'):
             self.biaff_2d_disco = BiaffineAttention(lhs_dim, rhs_dim, disco_2d_op == 'biaff+b')
             def predict_2d_disco(lhs, rhs):
-                return self.biaff_2d_disco(lhs, rhs.transpose(1, 2), self._stem_dp)
+                return self.biaff_2d_disco(self._stem_dp(lhs), self._stem_dp(rhs.transpose(1, 2)))
         else:
             cat_dim = int(disco_2d_op)
             self.cat_2d_disco = LinearBinary(lhs_dim + rhs_dim, cat_dim, disco_2d_activation)
-            def predict_2d_disco(lhs, rhs, drop_out):
+            def predict_2d_disco(lhs, rhs):
                 batch_size, lhs_seq_dim, lhs_dim = lhs.shape
                 _,          rhs_seq_dim, rhs_dim = rhs.shape
                 lhs_hidden = lhs[:, :, None].expand(batch_size, lhs_seq_dim, rhs_seq_dim, lhs_dim)
                 rhs_hidden = rhs[:, None, :].expand(batch_size, lhs_seq_dim, rhs_seq_dim, rhs_dim)
                 hidden = torch.cat([lhs_hidden, rhs_hidden], dim = -1)
-                return self.cat_2d_disco(hidden, self._stem_dp)
+                return self.cat_2d_disco(self._stem_dp(hidden), self._stem_dp)
         self.predict_2d_disco = predict_2d_disco
 
     def forward(self, unit_emb, existence, supervision = None, disco_2d_negative = 0, **kw_args):
@@ -300,11 +300,7 @@ class DiscoMultiStem(MultiStem):
             layers_of_disco_2d_positive = []
             layers_of_disco_2d_negative = []
         else:
-            # dis_slice_start = 0
             layers_of_space = [] # 001132324
-            # dbg/vis signal
-            # layers_of_slice = []
-            # layers_of_shape = [] # 
             layers_of_weight = []
 
         for l_cnt in range(max_iter_n):
