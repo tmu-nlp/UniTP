@@ -24,7 +24,7 @@ F_MULTI = 'multi'
 
 def write_complexity(complexity_gen, corp_name):
     with open(join(csv_fpath, f'sent.orif-node.{corp_name}.csv'), 'w') as fw:
-        fw.write('len,orif,size\n')
+        fw.write('len,height,orif,size\n')
         for line in complexity_gen():
             fw.write(line)
 
@@ -127,13 +127,14 @@ def continuous_stratification(corp_name, local_path, corp_path):
             for fct in factors:
                 token_size = len(keeper[fct]['token'])
                 label_size = 0
+                height = len(keeper[fct]['label'])
                 for x in keeper[fct]['label']:
                     this_size = len(x)
                     if label_size:
                         ratios[fct][(last_size, this_size)] += 1
                     label_size += this_size
                     last_size = this_size
-                yield f'{token_size},{fct},{label_size}\n'
+                yield f'{token_size},{height},{fct},{label_size}\n'
                 fct_nlr = nlr[fct]
                 for xtype in keeper[fct]['xtype']:
                     
@@ -149,13 +150,14 @@ def continuous_stratification(corp_name, local_path, corp_path):
         for signals in samples:
             w, t, ll, lc = signals
             layer_size = 0
+            height = len(ll)
             for x in ll:
                 this_size = len(x)
                 if layer_size:
                     ratios[F_MULTI][(last_size, this_size)] += 1
                 last_size = this_size
                 layer_size += this_size
-            yield f'{len(w)},{F_MULTI},{layer_size}\n'
+            yield f'{len(w)},{height},{F_MULTI},{layer_size}\n'
 
     write_complexity(complexity_gen, corp_name)
     write_compress_ratio(corp_name, ratios)
@@ -171,12 +173,13 @@ def disco_orientation(corp_name, local_path, factors):
                     with open(join(local_path, f'{mode}.index.{factor}')) as fr:
                         for _, line in enumerate(fr):
                             lengths = tuple(int(x) for x in line.split())
+                            height = len(lengths)
                             if not lengths:
                                 finish = True
                                 continue
                             for sizes in zip(lengths, lengths[1:]):
                                 ratios[factor][sizes] += 1
-                            yield f'{lengths[0]},{factor},{sum(lengths)}\n'
+                            yield f'{lengths[0]},{height},{factor},{sum(lengths)}\n'
                             qbar.update(1)
                         assert finish
                 if first_run:
@@ -212,7 +215,7 @@ def live_dm_layer_stat(*keeper_factor):
     square = sum(sum(len(g) for g in gs.values())**2 for gs in layers_of_disco)
     max_square = sum(len(x)**2 for x in layers_of_label)
     sent_line = f'{len(keeper.word)},{lid+1},{keeper.gaps},{linear},{square_layers},{square},{max_square},{factor}\n'
-    orif_line = f'{len(keeper.word)},{F_MULTI},{linear}\n'
+    orif_line = f'{len(keeper.word)},{len(layers_of_label)},{F_MULTI},{linear}\n'
     return sent_line, layer_lines, orif_line, ratio_count
 
 def disco_multib(corp_name, data_specs, factors):

@@ -56,7 +56,7 @@ class DiscoOperator(Operator):
                                         equal_labels    = {l:ls[-1] for ls in eq_l for l in ls})
 
     def _build_optimizer(self, start_epoch):
-        # self._loss_weights_of_tag_label_orient = 0.3, 0.1, 0.6 betas = (0.9, 0.98), weight_decay = 0.01, eps = 1e-6
+        # self._loss_weights_of_tag_label_orient = 0.3, 0.1, 0.6 betas = (0.9, 0.98), weight_decay = 0.01, eps = 1e-9
         self._schedule_lr = hp = WarmOptimHelper.adam(self._model, self._train_config.learning_rate)
         self.recorder.init_tensorboard()
         optim = hp.optimizer
@@ -281,35 +281,41 @@ class DiscoOperator(Operator):
             def spec_update_fn(specs, trial):
                 loss_weight = specs['train']['loss_weight']
                 loss_weight['tag']   = t = trial.suggest_float('tag',   0.0, 1.0)
-                loss_weight['label'] = l = trial.suggest_float('label', 0.1, 1.0)
-                loss_weight['joint'] = j = trial.suggest_float('joint', 0.1, 1.0)
+                loss_weight['label'] = l = trial.suggest_float('label', 0.0, 1.0)
+                loss_weight['joint'] = j = trial.suggest_float('joint', 0.0, 1.0)
                 loss_str = f'L={height_ratio(t)}{height_ratio(l)}{height_ratio(j)}'
                 if self._model.orient_bits == 3:
-                    loss_weight['orient'] = o = trial.suggest_float('orient', 0.1, 1.0)
+                    loss_weight['orient'] = o = trial.suggest_float('orient', 0.0, 1.0)
+                    loss_weight['_direc'] = loss_weight['_right'] = loss_weight['_undirect_orient'] = 0.0
                     loss_str += f'T{height_ratio(o)}'
                 else:
-                    loss_weight['_right'] = r = trial.suggest_float('_right', 0.1, 1.0)
+                    loss_weight['_right'] = r = trial.suggest_float('_right', 0.0, 1.0)
+                    loss_weight['orient'] = 0
                     if self._model.orient_bits == 2:
-                        loss_weight['_direc'] = d = trial.suggest_float('_direc', 0.1, 1.0)
-                        loss_weight['_undirect_orient'] = u = trial.suggest_float('_undirect_orient', 0.1, 1.0)
+                        loss_weight['_direc'] = d = trial.suggest_float('_direc', 0.0, 1.0)
+                        loss_weight['_undirect_orient'] = u = trial.suggest_float('_undirect_orient', 0.0, 1.0)
                         loss_str += f'D{height_ratio(r)}{height_ratio(d)}{height_ratio(u)}'
                     else:
+                        loss_weight['_direc'] = loss_weight['_undirect_orient'] = 0
                         loss_str += f'S{height_ratio(r)}'
 
                 data = specs['data']
                 data = data['tiger' if 'tiger' in data else 'dptb']
-                if data['shuffle_swap'] is not None:
+                if data['shuffle_swap'] is None:
+                    loss_weight['shuffled'] = 0
+                else:
                     loss_weight['shuffled'] = s = trial.suggest_float('shuffled', 0.0, 1.0)
                     loss_str += f'X{height_ratio(s)}'
                 
                 involve_head = data['binarization']['head'] > 0
                 E_ORIF = E_ORIF5_HEAD if involve_head else E_ORIF5
-                binarization = np.array([trial.suggest_loguniform(x, 1e-5, 1e5) for x in E_ORIF])
+                binarization = np.array([trial.suggest_loguniform(x, 1e-6, 1e3) for x in E_ORIF])
                 binarization /= np.sum(binarization)
                 bz = {k:float(v) for k, v in zip(E_ORIF, binarization)}
                 if not involve_head: bz[O_HEAD] = 0
                 data['binarization'] = bz
-                specs['train']['learning_rate'] = lr = trial.suggest_loguniform('learning_rate', 1e-6, 1e-3)
+                lr = specs['train']['learning_rate']
+                specs['train']['learning_rate'] = lr = trial.suggest_loguniform('learning_rate', 1e-6, lr)
                 self._train_config._nested.update(specs['train'])
                 self._train_materials = bz, self._train_materials[1] # for train/train_initials(max_epoch>0)
                 bin_str = 'bin=' + ''.join(height_ratio(x) for x in binarization)

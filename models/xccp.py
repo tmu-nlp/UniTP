@@ -8,11 +8,11 @@ from utils.shell_io import byte_style
 try:
     import xccp_decode
     import numpy as np
-    print(byte_style('Use our cuda::xccp_decode✨', '2'))
-    def predict_disco_sections_(disco_2d, layer_fence, dis_batch, dis_length, dis_indice, head_score):
+    print(byte_style('With our cuda::xccp_decode✨', '2'))
+    def predict_disco_sections_(disco_2d, layer_fence, dis_batch_idx, dis_length, dis_indice, head_score):
         (sections, comp_id, component, comp_check, final_thresholds,
-         trials) = xccp_decode.predict_disco_sections(disco_2d, dis_length, dis_batch, dis_indice.contiguous(), layer_fence.contiguous(), head_score, 0.5, True, -1)
-        disco_2d = (x.cpu().numpy() for x in (dis_batch, dis_length, disco_2d, comp_id, component, comp_check, final_thresholds, trials))
+         trials) = xccp_decode.predict_disco_sections(disco_2d, dis_length, dis_batch_idx, dis_indice.contiguous(), layer_fence.contiguous(), head_score, 0.5, True, -1)
+        disco_2d = (x.cpu().numpy() for x in (dis_batch_idx, dis_length, disco_2d, comp_id, component, comp_check, final_thresholds, trials))
         layer_2d_logits = {}
         for bid, dis_len, clear_2d, cid, comps, check, thresh, trial in zip(*disco_2d):
             cid = cid[:dis_len]
@@ -65,17 +65,17 @@ def get_head_score(medoid, disco_2d, dis_length, get_dis_emb, head_logit):
         raise ValueError('Unknown medoid: ' + medoid)
     return head_score
 
-def predict_disco_sections(disco_2d, layer_fence, dis_batch, dis_length, dis_indice, head_score, debug = False):
+def predict_disco_sections(disco_2d, layer_fence, dis_batch_idx, dis_length, dis_indice, head_score, debug = False):
     if disco_2d.is_cuda and xccp_decode is not None:
-        cuda_sections, cuda_layer_2d_logits = predict_disco_sections_(disco_2d, layer_fence, dis_batch, dis_length, dis_indice, head_score)
+        cuda_sections, cuda_layer_2d_logits = predict_disco_sections_(disco_2d, layer_fence, dis_batch_idx, dis_length, dis_indice, head_score)
         if debug:
             _, dis_max_children, _ = disco_2d.shape
-            fb_comps = torch.ones(1, dis_max_children, dtype = torch.bool, device = dis_batch.device)
-            fb_comp_idx = torch.zeros(dis_max_children, dtype = dis_batch.dtype, device = dis_batch.device)
+            fb_comps = torch.ones(1, dis_max_children, dtype = torch.bool, device = dis_batch_idx.device)
+            fb_comp_idx = torch.zeros(dis_max_children, dtype = dis_batch_idx.dtype, device = dis_batch_idx.device)
 
             dis_comps = []
             layer_2d_logits = {}
-            for clear_2d, dis_len, bid, indice, score in zip(disco_2d, dis_length, dis_batch, dis_indice, head_score):
+            for clear_2d, dis_len, bid, indice, score in zip(disco_2d, dis_length, dis_batch_idx, dis_indice, head_score):
                 threshold = 0.5
                 clear_2d = clear_2d[:dis_len, :dis_len] # no way: need var sizes
                 b_clear_2d = clear_2d > threshold # clear_2d.mean() # mean ? softer? bad for ones; CPU or GPU?  inclusion matrix for comp
@@ -211,6 +211,12 @@ class SelectCache:
             return (gn(lhs_fn(self._x)),) * 2
         return (gn(fn(self._x)) for fn in fns)
 
+def append_negative_eye(layers_of_disco_2d_negative, negative):
+    if (num_con := negative.shape[-1]) > 1:
+        eye_mat = torch.eye(num_con, dtype = torch.bool, device = negative.device)
+        eye_mat.logical_not_(); eye_mat.unsqueeze_(dim = 0) # why without unsqueeze is okay?
+        layers_of_disco_2d_negative.append(negative[eye_mat.expand_as(negative)])
+
 class DiscoMultiStem(MultiStem):
     def __init__(self,
                  model_dim,
@@ -337,30 +343,43 @@ class DiscoMultiStem(MultiStem):
                 
             dis_batch = discontinuous.any(dim = 1)
             if dis_batch.any():
-                dis_batch, = torch.where(dis_batch)
-                dis_batch_size, = dis_batch.shape
+                dis_batch_idx, = torch.where(dis_batch)
+                dis_batch_size, = dis_batch_idx.shape
                 continuous = existence & ~discontinuous
                 if self._continuous_fence_only:
                     fence_logits = continuous_fence(bbt_zeros, continuous, fence_logits)
 
-                dis_exist = discontinuous[dis_batch]
-                dis_helper = condense_helper(dis_exist, as_existence = True)
-                get_dis_emb = lambda emb: condense_left(emb[dis_batch], dis_helper)
-
-                disco_lhs, disco_rhs = cache.disco_2d(get_dis_emb)
                 if teacher_forcing and disco_2d_negative:
-                    if (dis_continuous := continuous[dis_batch]).any():
-                        dis_continuous &= torch.rand_like(dis_continuous, dtype = unit_emb.dtype) < disco_2d_negative
-                        if dis_continuous.any():
-                            con_helper = condense_helper(dis_continuous, as_existence = True)
-                            get_con_emb = lambda emb: condense_left(emb[dis_batch], con_helper)
-                            con_lhs, con_rhs = cache.disco_2d(get_con_emb)
-                            dis_continuous = condense_left(dis_continuous, con_helper)
-                            negative = self.predict_2d_disco(disco_lhs, con_rhs)
-                            layers_of_disco_2d_negative.append(negative[dis_continuous.unsqueeze(dim = 1).expand_as(negative)].reshape(-1))
-                            negative = self.predict_2d_disco(con_lhs, disco_rhs)
-                            layers_of_disco_2d_negative.append(negative[dis_continuous.unsqueeze(dim = 2).expand_as(negative)].reshape(-1))
-                disco_2d_logits = self.predict_2d_disco(disco_lhs, disco_rhs)
+                    disco_1d_prob = self._sigmoid(disco_1d_logits) * disco_2d_negative
+                    disco_1d_rand = torch.rand_like(disco_1d_prob, dtype = unit_emb.dtype) < disco_1d_prob
+                    con_rand = continuous & disco_1d_rand
+                    dis_con_rand_batch = dis_batch & con_rand.any(dim = 1)
+                    con_con_rand_batch = dis_batch.logical_not() & disco_1d_rand.any(dim = 1)
+                    if dis_con_rand_batch.any():
+                        dis_helper = condense_helper(discontinuous[dis_con_rand_batch], as_existence = True)
+                        disco_lhs, disco_rhs = cache.disco_2d(lambda emb: condense_left(emb[dis_con_rand_batch], dis_helper))
+                        
+                        dis_con_rand = con_rand[dis_con_rand_batch]
+                        con_helper = condense_helper(dis_con_rand, as_existence = True)
+                        con_lhs, con_rhs = cache.disco_2d(lambda emb: condense_left(emb[dis_con_rand_batch], con_helper))
+
+                        dis_rand = condense_left(dis_con_rand, con_helper)
+                        negative = self.predict_2d_disco(disco_lhs, con_rhs)
+                        layers_of_disco_2d_negative.append(negative[dis_rand.unsqueeze(dim = 1).expand_as(negative)].reshape(-1))
+                        negative = self.predict_2d_disco(con_lhs, disco_rhs)
+                        layers_of_disco_2d_negative.append(negative[dis_rand.unsqueeze(dim = 2).expand_as(negative)].reshape(-1))
+                        append_negative_eye(layers_of_disco_2d_negative, self.predict_2d_disco(con_lhs, con_rhs))
+                    
+                    if con_con_rand_batch.any():
+                        con_helper = condense_helper(disco_1d_rand[con_con_rand_batch], as_existence = True)
+                        con_lhs, con_rhs = cache.disco_2d(lambda emb: condense_left(emb[con_con_rand_batch], con_helper))
+                        append_negative_eye(layers_of_disco_2d_negative, self.predict_2d_disco(con_lhs, con_rhs))
+
+                    
+                dis_exist = discontinuous[dis_batch_idx]
+                dis_helper = condense_helper(dis_exist, as_existence = True)
+                get_dis_emb = lambda emb: condense_left(emb[dis_batch_idx], dis_helper)
+                disco_2d_logits = self.predict_2d_disco(*cache.disco_2d(get_dis_emb))
             else:
                 disco_2d_logits = None
             layers_of_fence.append(fence_logits)
@@ -406,7 +425,7 @@ class DiscoMultiStem(MultiStem):
                     disco_2d_logits = self._sigmoid(disco_2d_logits) # need to be in a arange (not hard compress)
                     head_score = get_head_score(self._medoid, disco_2d_logits, dis_length, get_dis_emb, sub_emb)
 
-                    sections, disco_2d = predict_disco_sections(disco_2d_logits, layer_fence, dis_batch, dis_length, dis_indice, head_score)
+                    sections, disco_2d = predict_disco_sections(disco_2d_logits, layer_fence, dis_batch_idx, dis_length, dis_indice, head_score)
                     layers_of_disco_2d.append(disco_2d)
                 sections = torch.where(seq_idx < layer_len, sections, torch.zeros_like(sections))
                 layers_of_space.append(sections)
@@ -421,7 +440,7 @@ class DiscoMultiStem(MultiStem):
         embeddings = torch.cat(layers_of_u_emb,     dim = 1)
         existence  = torch.cat(layers_of_existence, dim = 1)
         fence      = torch.cat(layers_of_fence,     dim = 1) if layers_of_fence else torch.zeros(batch_size, 0, dtype = unit_emb.dtype, device = unit_emb.device)
-        disco_1d   = torch.cat(layers_of_disco_1d, dim = 1)
+        disco_1d   = torch.cat(layers_of_disco_1d,  dim = 1)
         if teacher_forcing:
             weight = space = None
             disco_2d = torch.cat(layers_of_disco_2d, dim = 0) if layers_of_disco_2d else None
@@ -547,7 +566,7 @@ class BaseRnnTree(DiscoMultiStem):
 
 
 
-# def discontinuous_hidden(dis_batch, seq_idx, discontinuous):
+# def discontinuous_hidden(dis_batch_idx, seq_idx, discontinuous):
     # 012345678
     # 001132432
     # 10101_11_1 (sup 1_1)
@@ -576,7 +595,7 @@ class BaseRnnTree(DiscoMultiStem):
     # dis_u, dis_d, dis_v = torch.svd_lowrank(disco_2d, dis_max_parents) # [b, mp, mc], [b, mp]
     # dis_d_diff = dis_d[:, :dis_max_parents - 1] - dis_d[:, 1:dis_max_parents] # [b, mp]
     # dis_d_diff_argmax = dis_d_diff.argmax(dim = 1, keepdim = True)
-    # seq_idx = torch.arange(dis_max_parents, device = dis_batch.device)
+    # seq_idx = torch.arange(dis_max_parents, device = dis_batch_idx.device)
     # dis_d[dis_d_diff_argmax < seq_idx[None]] = 0
     # clear_3d = torch.bmm(dis_d.unsqueeze(dim = 1) * dis_u, dis_v.transpose(1, 2))
     # svd_time = time() - start
@@ -610,8 +629,8 @@ class BaseRnnTree(DiscoMultiStem):
     #     dis_comps[dis_bid] = dis_max_idx, comps, comp_max_idx
     #     return dis_bid
 
-    # dis_idx = torch.arange(dis_size, device = dis_batch.device)
-    # dis_idx.map2_(dis_batch, dis_length, disco_inject)
+    # dis_idx = torch.arange(dis_size, device = dis_batch_idx.device)
+    # dis_idx.map2_(dis_batch_idx, dis_length, disco_inject)
 
     # print(layer_fence * 1)
         # num_comps, _ = comps.shape
@@ -633,7 +652,7 @@ class BaseRnnTree(DiscoMultiStem):
     #     sections[con_bid, indice] = (order[:, None] * comps).sum(dim = 0) # 3232 for 0101
     #     # print()
     #     return dis_bid
-    # dis_idx.map2_(dis_batch, dis_length, disco_assign)
+    # dis_idx.map2_(dis_batch_idx, dis_length, disco_assign)
  # 3232 for 0101
         # 0:0101  23 2
         # 1:1010  01 3 3232

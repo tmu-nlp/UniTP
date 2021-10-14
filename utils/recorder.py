@@ -86,6 +86,7 @@ class Recorder:
     def new_trial_recorder(self, specs_update_fn, trial):
         _, instance_dir = self._instance_dir
         specs          = load_yaml(*self._sv_file_lock, wait = False)
+        specs.pop('optuna', None)
         results        = specs.pop('results')
         best_model     = max(results, key = lambda x: results[x]);
         best_score     = results.pop(best_model)

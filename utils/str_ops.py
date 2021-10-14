@@ -102,20 +102,14 @@ def hex_ratio(x):
     assert 0 <= x <= 1
     return '0123456789abcdef'[int(16 * x - 1e-8)]
 
-def hw_ratio(x):
-    assert 0 <= x <= 1
-    return ' ▁▂▃▄▅▆▇ ▏▎▍▌▋▊▉'[int(16 * x - 1e-8)]
-
-def wh_ratio(x):
-    assert 0 <= x <= 1
-    return '  ▏▎▍▌▋▊▁▂▃▄▅▆▇▉'[int(16 * x - 1e-8)]
-
 def width_ratio(x):
     assert 0 <= x <= 1
+    if x == 0: return '-'
     return '▏▎▍▌▋▊▉'[int(7 * x - 1e-8)]
 
 def height_ratio(x):
     assert 0 <= x <= 1
+    if x == 0: return '-'
     return '▁▂▃▄▅▆▇▉'[int(8 * x - 1e-8)]
 
 def space_height_ratio(x):

@@ -230,36 +230,44 @@ class DiscoMultiOperator(DiscoOperator):
             def spec_update_fn(specs, trial):
                 loss_weight = specs['train']['loss_weight']
                 loss_weight['tag']   = t = trial.suggest_float('tag',   0.0, 1.0)
-                loss_weight['label'] = l = trial.suggest_float('label', 0.1, 1.0)
-                loss_weight['fence'] = f = trial.suggest_float('fence', 0.1, 1.0)
-                loss_weight['disco_1d'] = d1 = trial.suggest_float('disco_1d', 0.1, 1.0)
-                loss_weight['disco_2d'] = d2 = trial.suggest_float('disco_2d', 0.1, 1.0)
-                loss_str = f'L={height_ratio(t)}{height_ratio(l)}{height_ratio(f)}{height_ratio(d1)}{height_ratio(d2)}'
-                if specs['train']['disco_2d_negrate']:
-                    loss_weight['disco_2d_neg'] = d2n = trial.suggest_float('disco_2d_neg', 1e-6, 1.0)
-                    loss_str = f'N{height_ratio(d2n)}'
+                loss_weight['label'] = l = trial.suggest_float('label', 0.0, 1.0)
+                loss_weight['fence'] = f = trial.suggest_float('fence', 0.0, 1.0)
+                loss_weight['disco_1d'] = d1 = trial.suggest_float('disco_1d', 0.0, 1.0)
+                loss_weight['disco_2d'] = d2 = trial.suggest_float('disco_2d', 0.0, 1.0)
+                loss_str = 'L=' + height_ratio(t) + height_ratio(l) + height_ratio(f) + height_ratio(d1) + height_ratio(d2)
+
+                if d_d2n := specs['train']['disco_2d_negrate'] > 0:
+                    specs['train']['disco_2d_negrate'] = d_d2n = trial.suggest_loguniform('disco_2d_negrate', 0.0001, 0.1)
+                    loss_weight['disco_2d_neg'] = l_d2n = trial.suggest_float('disco_2d_neg', 1e-6, 1.0)
+                    loss_str += 'N' + height_ratio(l_d2n)
+                else:
+                    loss_weight['disco_2d_neg'] = specs['train']['disco_2d_negrate'] = 0
 
                 medium_factor = specs['data']
-                medium_factor = specs['data']['tiger' if 'tiger' in medium_factor else 'dptb']
-                medium_factor = medium_factor['medium_factor']
+                medium_factor = specs['data'][get_sole_key(medium_factor)]['medium_factor']
+
                 if involve_balanced := medium_factor['balanced'] > 0:
                     medium_factor['balanced'] = bz = trial.suggest_float('balanced', 0.0, 1.0)
-                med_k, med_v = [], []
-                for k, v in medium_factor['others'].items():
-                    if v > 0:
-                        med_k.append(k)
-                        med_v.append(trial.suggest_loguniform(k, 1e-5, 1e5))
-                med_v = np.array(med_v)
-                med_v /= np.sum(med_v)
-                for k, v in zip(med_k, med_v):
-                    medium_factor['others'][k] = float(v)
+
+                if multi_medoid := any(0 < v < 1 for v in medium_factor['others'].values()):
+                    med_k, med_v = [], []
+                    for k, v in medium_factor['others'].items():
+                        if v > 0:
+                            med_k.append(k)
+                            med_v.append(trial.suggest_loguniform(k, 1e-6, 1e3))
+                    med_v = np.array(med_v)
+                    med_v /= np.sum(med_v)
+                    for k, v in zip(med_k, med_v):
+                        medium_factor['others'][k] = float(v)
+
                 self._train_materials = medium_factor, self._train_materials[1]
-                specs['train']['learning_rate'] = lr = trial.suggest_loguniform('learning_rate', 1e-6, 1e-3)
+                lr = specs['train']['learning_rate']
+                specs['train']['learning_rate'] = lr = trial.suggest_loguniform('learning_rate', 1e-6, lr)
                 self._train_config._nested.update(specs['train'])
                 med_str = 'med='
-                if involve_balanced:
-                    med_str += f'{height_ratio(bz)}M'
-                med_str += ''.join(height_ratio(v) for v in med_v)
+                if involve_balanced: med_str += f'{height_ratio(bz)}'
+                if multi_medoid:     med_str += 'M' + ''.join(height_ratio(v) for v in med_v)
+                if d_d2n > 0:        med_str += f'Ng={d_d2n:.1e}'
                 return med_str + ';' + loss_str + f';lr={lr:.1e}'
 
             self._mode_trees = [], [] # force init
@@ -268,12 +276,9 @@ class DiscoMultiOperator(DiscoOperator):
             return train(optuna_params, self)['key']
         return obj_fn
 
-from utils.vis import BaseVis, VisRunner
-from utils.file_io import join, isfile, listdir, remove, isdir
-from utils.param_ops import HParams
-from utils.shell_io import parseval, rpt_summary
+from utils.vis import VisRunner
+from utils.file_io import remove, isdir, mkdir, listdir, join
 from data.cross.multib import disco_tree, draw_str_lines
-from visualization import tee_trees
 from itertools import count
 
 def batch_trees(b_word, b_tag, b_label, b_space, b_segment, b_seg_length, i2vs, fb_label = None, b_weight = None):
@@ -299,7 +304,6 @@ def batch_trees(b_word, b_tag, b_label, b_space, b_segment, b_seg_length, i2vs, 
         yield disco_tree(wd, tg, layers_of_label, layers_of_space, fb_label, layers_of_weight)
 
 
-from utils.file_io import isfile, remove, isdir, mkdir, listdir, join
 from utils.str_ops import cat_lines, height_ratio, space_height_ratio
 class DiscoMultiVis(DiscoVis):
     def __init__(self, epoch, work_dir, i2vs, head_trees, logger, evalb_lcfrs_kwargs, discodop_prm, draw_trees):

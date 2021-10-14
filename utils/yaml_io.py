@@ -33,7 +33,8 @@ def _wait(lfile):
         print('\r  ' + content + f' {second} second', end = '')
         sleep(1)
         second += 1
-    print()
+    if second:
+        print()
 
 
 def _block(lfile):
