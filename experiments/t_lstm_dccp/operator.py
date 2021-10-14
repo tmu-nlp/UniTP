@@ -259,7 +259,7 @@ class DiscoOperator(Operator):
         logg += f' @{speed_outer}{speed_dm_str} sps. (sym:nn {rate:.2f}; {seconds:.3f}{dmt} sec.)'
         if not final_test:
             self.recorder.tensorboard(self.global_step, 'TestSet/%s' if use_test_set else 'DevelSet/%s',
-                                      F1 = scores.get('F1', 0), SamplePerSec = None if serial else speed_dm)
+                                      F1 = scores.get('TF', 0), SamplePerSec = None if serial else speed_dm)
         self._vis_mode = None
         return scores, desc, logg
 
