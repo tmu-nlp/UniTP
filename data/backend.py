@@ -438,27 +438,6 @@ def post_batch(mode, len_sort_ds, sort_by_length, bucket_length, batch_size):
     return BatchSpec(len_sort_ds.size, di)
 
 
-def before_to_seq(vocabs):
-    if 'tag' in vocabs: # label_mode
-        i2t = vocabs['tag']
-        label_vocab = vocabs['label'].__getitem__
-    else:
-        i2t = None
-        if 'label' in vocabs:
-            i2l = vocabs['label']
-            label_vocab = lambda x: i2l[x]
-        elif 'polar' in vocabs:
-            i2p = vocabs['polar']
-            def label_vocab(x):
-                if isinstance(x, np.ndarray):
-                    if x[0] < 0:
-                        return NIL
-                    return ''.join(i2p[xi] for xi in x)
-                return NIL if x < 0 else i2p[x]
-        else:
-            label_vocab = lambda x: f'{x * 100:.2f}%' if x > 0 else NIL
-    return vocabs['token'], i2t, label_vocab
-
 def drop_word(wi, indices, ws = None):
     new_wi = []
     if ws is None:

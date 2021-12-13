@@ -452,7 +452,7 @@ class PadRNN(nn.Module):
             else:
                 self._subject_fw_d = None
                 self._subject_bw_d = None
-            self._subject_bias = Bias(embed_dim)
+            # self._subject_bias = Bias(embed_dim) # 0 ~ useless
 
         if linear_dim:
             if fence_vote is None:
@@ -510,7 +510,7 @@ class PadRNN(nn.Module):
             dom_emb = self._stem_dp(dom_emb)
         else:
             dom_emb = None
-        sub_emb = self._stem_dp(self._subject_bias())
+        sub_emb = 0 #self._stem_dp(self._subject_bias())
         if self._subject_unit:  sub_emb = sub_emb + self._stem_dp(self._subject_unit(unit_emb))
         if self._subject_state: sub_emb = sub_emb + self._stem_dp(self._subject_state(fence_hidden))
         if self._subject_fw_a:  sub_emb = sub_emb + self._stem_dp(self._subject_fw_a(fw[:, 1:]))

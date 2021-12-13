@@ -365,3 +365,23 @@ class TrapezoidDataset(LengthOrderedDataset):
         #     import pdb; pdb.set_trace()
 
         return field_columns
+
+from data.mp import DM
+from data.trapezoid import trapezoid_to_layers, after_to_tree
+
+class TrapezoidalDM(DM):
+    @staticmethod
+    def tree_gen_fn(i2w, i2t, i2l, segments, offsets, lengths, token, tag, label, right, seg_length):
+        for offset, length, tokens, tags, labels, rights, seg_length in zip(offsets, lengths, token, tag, label, right, seg_length):
+            token_layer = tuple(i2w[w] for w in tokens[offset:offset+length])
+            tag_layer   = tuple(i2t[t] for t in tags  [offset:offset+length]) if i2t else None
+            label_layers = trapezoid_to_layers(labels, segments, seg_length, i2l)
+            right_layers = trapezoid_to_layers(rights, segments, seg_length, None)
+            tree = after_to_tree(token_layer, tag_layer, label_layers, right_layers)
+            yield ' '.join(str(tree).split())
+
+    @staticmethod
+    def arg_segment_fn(seg_id, seg_size, batch_size, args):
+        start = seg_id * seg_size
+        if start < batch_size:
+            return args[:1] + tuple(x[start: (seg_id + 1) * seg_size] for x in args[1:])

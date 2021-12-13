@@ -3,7 +3,8 @@ from datetime import datetime
 from utils.file_io import join, create_join, listdir, isdir, isfile, remove, rm_rf, rename
 from utils.file_io import copy_with_prefix_and_rename, link, basename
 from utils.yaml_io import load_yaml, save_yaml
-from utils.param_ops import zip_nt_params, dict_print, change_key
+from utils.param_ops import zip_nt_params, dict_print, fold_same_children, change_key
+from utils.shell_io import byte_style
 from sys import stderr
 from itertools import count
 from math import isnan
@@ -83,19 +84,19 @@ class Recorder:
         self._evalb = evalb
         self.log(datetime.now())
 
-    def new_trial_recorder(self, specs_update_fn, trial):
-        _, instance_dir = self._instance_dir
-        specs          = load_yaml(*self._sv_file_lock, wait = False)
+    def new_trial_recorder(self, specs_update_fn, trial, fpath):
+        specs = load_yaml(*self._sv_file_lock, wait = False)
         specs.pop('optuna', None)
         results        = specs.pop('results')
         best_model     = max(results, key = lambda x: results[x]);
         best_score     = results.pop(best_model)
         specs['results'] = {best_model: best_score}
         trial_name     = specs_update_fn(specs, trial)
-        child_recorder = Recorder(create_join(instance_dir, 'trials'), self._module, specs, trial_name, 1, self._evalb, True)
+        child_recorder = Recorder(fpath, self._module, specs, trial_name, 3, self._evalb, True)
+        link(join(self._model_dir, best_model), join(child_recorder._model_dir, best_model))
         _, child_dir   = child_recorder._instance_dir
-        link(join(instance_dir, 'models', best_model), join(child_dir, 'models', best_model))
         child_dir = basename(child_dir)
+        self.msg('» ' + byte_style(child_dir, '2'))
         trial.set_user_attr('dir', child_dir)
         self.log(f'⌙→ Trial [{child_dir}] on best model {best_model}')
         return child_recorder
@@ -163,6 +164,8 @@ class Recorder:
     def detach(self):
         if callable(self._sv_unlock):
             self._sv_unlock()
+        _, instance_dir = self._instance_dir
+        self.msg('Close ' + byte_style(instance_dir, '3'))
 
     def delete_all(self):
         instance, instance_dir = self._instance_dir
@@ -191,7 +194,6 @@ class Recorder:
         try:
             from torch.utils.tensorboard import SummaryWriter
         except ImportError:
-            from utils.shell_io import byte_style
             Recorder.msg(byte_style('(tensorboard is not installed; not tracking training statistics)', '3'))
             SummaryWriter = None
         if SummaryWriter is not None:
@@ -226,9 +228,19 @@ class Recorder:
         _, instance_dir = self._instance_dir
         return create_join(instance_dir, *args)
 
-    def initial_or_restore(self, model, optimizer = None, restore_from_best_validation = False):
-        model_fname = None
-        if not restore_from_best_validation and isfile(self._ckpt_fname):
+    @property
+    def validated_models(self):
+        if isdir(self._model_dir):
+            models  = listdir(self._model_dir)
+            results = load_yaml(*self._sv_file_lock, wait = False)['results']
+            results = [(k,v) for k,v in results.items() if k in models]
+            if results:
+                results.sort(key = lambda x: x[1], reverse = True)
+                return results
+
+    def initial_or_restore(self, model, restore_nth_best_validated_model = None):
+        model_fname = restore_opt_fn = None
+        if restore_nth_best_validated_model is None and isfile(self._ckpt_fname):
             # if not set_vocab(vis_path, r_pu_su[0].py_vocabs, vocab_size):
             # recorder.set_resume_cleaner(lambda mj, mn: clean_epoch(vis_path, mj)) # no mn
             # self._path = vis_path
@@ -240,24 +252,23 @@ class Recorder:
             # if self._init is None:
             # clean_tree_heads(self._path)
             model_fname = self._ckpt_fname
-
-        elif isdir(self._model_dir) or restore_from_best_validation:
-            results = load_yaml(*self._sv_file_lock, wait = False)['results']
-            if results:
-                best_model = max(results, key = lambda x: results[x])
-                model_fname = join(self._model_dir, best_model)
+        
+        elif models := self.validated_models:
+            nth = restore_nth_best_validated_model or 0
+            model_fname = join(self._model_dir, models[nth][0])
 
         if model_fname is None:
             epoch = global_step = 0
             fine_validation = False
             md = dict(model.named_parameters())
-            self.log(dict_print(zip_nt_params(md), v_to_str = lambda tensor: '*'.join(str(s) for s in tensor.shape)))
             total = 0
             for t in md.values():
                 x = 1
                 for s in t.shape:
                     x *= s
                 total += x
+            md = ((k, '*'.join(str(s) for s in v.shape)) for k, v in md.items())
+            self.log(dict_print(fold_same_children(zip_nt_params(md))))
             self.log('Total:', total)
         else:
             checkpoint = torch.load(model_fname)
@@ -267,7 +278,6 @@ class Recorder:
                 model_old_dict = checkpoint['model_state_dict']
                 model_new_dict = model.state_dict()
                 new_keys = tuple(model_new_dict)
-                from utils.shell_io import byte_style
                 for old_key in tuple(model_old_dict):
                     if old_key in new_keys:
                         continue
@@ -283,51 +293,66 @@ class Recorder:
                         for ns, os in zip(new_segs, old_segs):
                             if ns == os:
                                 match_depth += 1
-                        if match_depth > 1:
+                        if match_depth > 0 and model_new_dict[new_key].shape == model_old_dict[old_key]:
                             new_candidates[new_key] = match_depth
+                    if any(v > 1 for v in new_candidates.values()):
+                        new_candidates = {k:v for k, v in new_candidates.items() if v > 1}
                     new_candidates = sorted(new_candidates, key = new_candidates.get, reverse = True)
-                    if len(new_candidates) == 1:
-                        new_key = new_candidates[0]
-                        more = len(new_key) - len(old_key)
-                        prompt = byte_style('Rename ', '1') # red
-                        if more > 0:
-                            prompt += ' ' * more
-                            prompt += old_key
-                            prompt += byte_style('\n    as ', '2') # green
-                        else:
-                            more = 0 - more
-                            prompt += old_key
-                            prompt += byte_style('\n    as ', '2') # green
-                            prompt += ' ' * more
-                        prompt += new_key
-                        print(prompt)
+                    if not new_candidates:
+                        print(byte_style('Delete', '1') + ' ' + old_key)
+                        model_old_dict.pop(old_key)
                     else:
-                        prompt = f'Change {old_key} into:\n'
-                        for i, k in enumerate(new_candidates):
-                            prompt += f'{i}) {k}\n'
-                        new_key = input(prompt)
-                        if new_key == 'q':
-                            exit()
-                        new_key = int(new_key)
-                        assert new_key in range(len(new_candidates))
-                        new_key = new_candidates[new_key]
-                    change_key(model_old_dict, old_key, new_key)
-                model.load_state_dict(checkpoint['model_state_dict'])
+                        if len(new_candidates) > 1:
+                            prompt = f'Change {old_key} into:\n'
+                            for i, k in enumerate(new_candidates):
+                                prompt += f'{i}) {k}\n'
+                            prompt += '-1) ' + byte_style('delete ', '1') + f'{old_key}?\n'
+                            new_key = input(prompt)
+                            if new_key == 'q':
+                                exit()
+                            new_key = int(new_key)
+                            if new_key != -1:
+                                assert new_key in range(len(new_candidates))
+                                new_key = new_candidates[new_key]
+                        else:
+                            new_key = new_candidates[0]
+                            more = len(new_key) - len(old_key)
+                            prompt = byte_style('Rename ', '1') # red
+                            if more > 0:
+                                prompt += ' ' * more
+                                prompt += old_key
+                                prompt += byte_style('\n    as ', '2') # green
+                            else:
+                                more = 0 - more
+                                prompt += old_key
+                                prompt += byte_style('\n    as ', '2') # green
+                                prompt += ' ' * more
+                            prompt += new_key
+                            print(prompt)
+                        if isinstance(new_key, int) and new_key < 0:
+                            model_old_dict.pop(old_key)
+                        else:
+                            change_key(model_old_dict, old_key, new_key)
+                model.load_state_dict(model_old_dict)
                 decision = input(f'Save change to {model_fname}? [Y]')
                 if decision == 'Y':
                     torch.save(checkpoint, model_fname)
 
-            if optimizer is not None:
-                optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            if 'optimizer_state_dict' in checkpoint:
+                def restore_opt_fn(optimizer):
+                    try:
+                        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+                    except ValueError as e:
+                        self.msg(byte_style('Optimzer loading error:' , '3'), e)
             epoch, fine_validation, global_step = checkpoint['status']
             self._key = checkpoint['key']
             
-            self.log(f"Model restored from", model_fname)
-            Recorder.msg(f'Model Restored at {epoch:.2f}, key score {self._key:.2f}')
-            if restore_from_best_validation:
+            self.log('Model restored from', model_fname)
+            Recorder.msg('Restore model (' + byte_style(f'{epoch:.2f}', '3') + ') with dev score ' + byte_style(f'{self._key:.2f}', '3'))
+            if isinstance(restore_nth_best_validated_model, int):
                 return epoch, global_step
             epoch = int(epoch)
-        return epoch, fine_validation, global_step
+        return epoch, fine_validation, global_step, restore_opt_fn
 
     def check_betterment(self, epoch, falling, global_step, model, optimizer, key):
         if isnan(key):
@@ -345,13 +370,16 @@ class Recorder:
                 self._key = key
             model_fname = timestamp(epoch)
             copy_with_prefix_and_rename(self._ckpt_fname, self._model_dir, model_fname)
-            specs['results'][model_fname] = key
-            results = specs['results']
+            results = specs['results'], listdir(self._model_dir)
+            results = {k: v for k, v in results[0].items() if k in results[1]}
+            results[model_fname] = key; specs['results'] = results
             if len(results) > self._keep_top_k:
-                weakest_model = min(results, key = lambda x: results[x])
-                remove(join(self._model_dir, weakest_model))
-                results.pop(weakest_model)
-                self.log(' Replace worst model', weakest_model, 'with a', 'new best' if betterment else 'better', 'model', model_fname)
+                weakest_model = min(results, key = results.get)
+                self.log(' Replace worst model', weakest_model, 'with a',
+                    'new best' if betterment else 'better', 'model', 
+                    model_fname, f'(+{key - results.pop(weakest_model)}).')
+                if isfile(weakest_model := join(self._model_dir, weakest_model)):
+                    remove(weakest_model)
             else:
                 self.log(' A new', 'best' if betterment else 'better', 'model', model_fname)
             save_yaml(specs, *self._sv_file_lock, wait_lock = False)

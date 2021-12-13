@@ -112,6 +112,28 @@ def dict_print(d, indent = 0, indent_inc = 2, indent_char = ' ', v_to_str = lamb
         s += '\n'
     return s[:-1]
 
+def fold_same_children(d, sep = '+'):
+    groups = []
+    for xk, xv in d.items():
+        if any(xk in g for g in groups): continue
+        g = set({xk})
+        for yk, yv in d.items():
+            if any(yk in g for g in groups): continue
+            if xv == yv:
+                g.add(yk)
+        groups.append(g)
+    c = {}
+    for g in groups:
+        sg = g
+        if all(isinstance(k, int) or isinstance(k, str) and k.isdigit() for k in g):
+            k = sorted(int(k) for k in g)
+        k = sep.join(k if isinstance(k, str) else str(k) for k in sg)
+        v = d[g.pop()]
+        if not g and isinstance(v, dict): 
+            v = fold_same_children(v)
+        c[k] = v
+    return c
+
 def more_kwargs(base, **kwargs):
     for k,v in base.items():
         if k in kwargs:

@@ -23,8 +23,8 @@ load_db <- function(model_name, corp_name) {
     ns <- subset(data, variable != 'lr')
     ls <- subset(data, variable == 'lr')
     ns$variable <- factor(ns$variable, levels = levels,
-                          labels = c('Tag', 'Label', 'Joint\nDB Losses', 'Orient ', ' Shuffle', 0, 0.25, '0.5\nBinarization', 0.75, 1))
-    ls$variable <- factor(ls$variable, levels = c('lr'), labels = c('Learning Rate'))
+                          labels = c('Tag', 'Label', 'Joint \nDB Loss Weights', 'Orient ', '  Shuffle', '0\n   Left', 0.25, '0.5\nBinarization', 0.75, '1\nRight      '))
+    ls$variable <- factor(ls$variable, levels = c('lr'), labels = c('\nLearning Rate              '))
     list(ns = ns, ls = ls)
 }
 
@@ -38,8 +38,8 @@ load_dm <- function(model_name, corp_name) {
     ns <- subset(data, variable != 'lr' & variable != 'm.neg')
     ls <- subset(data, variable == 'lr' | variable == 'm.neg')
     ns$variable <- factor(ns$variable, levels = c('l.tag', 'l.label', 'l.joint', 'l.disc', 'l.biaff', 'l.neg', 'm.sub'),
-                          labels = c('Tag', 'Label', 'Joint', 'Disc.\nDM Losses', ' Biaff.', 'nBiaff.', '   P(sub)'))
-    ls$variable <- factor(ls$variable, levels = c('m.neg', 'lr'), labels = c('P(neg)  \nSampling Rates                        ', '                  Learning Rate'))
+                          labels = c('Tag', 'Label', 'Joint', 'Disc.\nDM Loss Weights', ' Biaff.', 'nBiaff.', '   P.sub'))
+    ls$variable <- factor(ls$variable, levels = c('m.neg', 'lr'), labels = c('P.neg  \nSampling Rates                          ', '\n                  Learning Rate'))
     list(ns = ns, ls = ls)
 }
 
@@ -52,15 +52,16 @@ break_fn <- function(x) {
     c(x_min, x_1, x_2, x_max)
 }
 
-draw <- function(data) {
+draw <- function(data, gd, lc, hc) {
     data <- data[order(data$tf), ]
+
 
     p <- ggplot(data, aes(variable, value, color = tf, size = tf))
     # p <- p + facet_wrap(~coeff, scale = 'free_y')
-    p <- p + geom_jitter(width = 0.0, height = 0, alpha = I(0.9)) #+ geom_violin()
-    p <- p + guides(size = guide_legend(title = "F1"), color = guide_legend(title = "F1"))
-    p <- p + scale_size_continuous(range = c(.1, 5), breaks = break_fn)
-    p <- p + scale_color_continuous(low = "blue", high = "tomato", breaks = break_fn)
+    p <- p + geom_point(alpha = I(0.618)) #+ geom_violin()
+    p <- p + guides(size = gd, color = gd)
+    p <- p + scale_size_continuous(range = c(1, 5), breaks = break_fn)
+    p <- p + scale_color_continuous(low = lc, high = hc, breaks = break_fn)
     p <- p + theme(#strip.text.x = element_text(margin = margin(b = 1.2, t = 0.1)),
                     axis.title.x = element_blank(),
                     axis.title.y = element_blank(),
@@ -69,27 +70,122 @@ draw <- function(data) {
     p
 }
 
+replace_corp_name <- function(x) {
+    if(x == 'dptb') {
+        return('DPTB')
+    } else if (x == 'tiger') {
+        return('Tiger')
+    }
+    x
+}
+
 proc <- function(model_name, corp_name) {
     if (model_name == 'db') {
         data <- load_db(model_name, corp_name)
         ws <- c(5, 1)
+        legend.position <- 'left'
+        hc <- "tomato"
+        lc <- "cyan"
     } else {
         data <- load_dm(model_name, corp_name)
         ws <- c(5.5, 2)
+        legend.position <- 'right'
+        hc <- "yellow"
+        lc <- "purple"
     }
-    np <- draw(data$ns)
-    lp <- draw(data$ls)
+    gd <- guide_legend(title = paste0('Model ', toupper(model_name), '\nF1 | ', replace_corp_name(corp_name)), reverse = TRUE)
+    np <- draw(data$ns, gd, lc, hc)
+    np <- np + scale_y_continuous(breaks = seq(0, 1, 0.25), labels = c(0, '¼', '½', '¾', 1))
+    lp <- draw(data$ls, gd, lc, hc)
     lp <- lp + scale_y_log10(breaks = trans_breaks("log10", function(x) 10^x),
               labels = trans_format("log10", math_format(10^.x)))
-    ggarrange(np, lp, ncol = 2, widths = ws, common.legend = TRUE, legend = 'right')
+    ggarrange(np, lp, ncol = 2, widths = ws, common.legend = TRUE, legend = legend.position)
     fname <- paste('optuna', model_name, corp_name, 'pdf', sep = '.')
-    ggsave(paste0(folder, fname), height = 1.7, width = 5.6)
+    ggsave(paste0(folder, fname), height = 1.7, width = 5.5)
 }
 
 proc('db', 'tiger')
 proc('db', 'dptb')
 proc('dm', 'tiger')
 proc('dm', 'dptb')
+
+diff_dev_test <- function(data) {
+    p <- ggplot(data, aes(dev.tf, test.tf))
+    p <- p + labs(x = 'Development F1')
+    p
+}
+
+diff_step <- function(data) {
+    p <- ggplot(data, aes(n.step, test.tf))
+    p <- p + labs(x = 'Optuna Epoch')
+    p
+}
+
+diff_td_f1 <- function(data) {
+    p <- ggplot(data, aes(test.df, test.tf))
+    p <- p + labs(x = 'Test-set D.F1')
+    p
+}
+
+plot_diff <- function(model_name, corp_name, ann_plot) {
+    data <- load_corp(paste('diff', 'optuna', model_name, sep = '.'), corp_name)
+
+    numbers <- data$test.tf
+    numbers <- aggregate(numbers, list(num = numbers), length)
+    start.test.tf <- data[which.max(numbers$x),]$test.tf
+    data <- subset(data, test.tf >= start.test.tf)
+
+    dx <- density(data$test.tf)
+    dy <- approx(dx$x, dx$y, xout = data$test.tf)$y
+    od <- order(dy)
+    data <- data[od,]
+
+    gd <- guide_legend(title = 'Count')
+    gd <- guides(color = gd, size = gd)
+
+    gc <- geom_count(aes(color = ..n..), alpha = I(0.618))
+    gt <- theme(axis.title.y = element_blank(),
+                axis.text.y  = element_blank(),
+                axis.ticks.y = element_blank())
+    g1 <- labs(y = 'Test-set F1')
+
+    dt <- diff_dev_test(data) + gd + gc
+    ns <- diff_step(data) + gd + gc
+    f1 <- diff_td_f1(data) + gd + gc
+    if (ann_plot) {
+        tf_max <- max(data$test.tf)
+        tf_bnd <- 83.92
+        nf_y <- 84.038
+        r_alpha <- .16
+        t_alpha <- .32
+        t_size <- 3
+        a11 <- annotate("rect", xmin = 0, xmax = max(data$n.step), ymin = tf_bnd, ymax = tf_max, alpha = r_alpha)
+        a12 <- annotate('text', label = 'w/ nBiaff.', x = 42, y = nf_y, size = t_size, alpha = t_alpha)
+        a13 <- annotate('text', label = '^ optuna start', x = 15, y = 83.72, size = t_size, alpha = .618, color = 'dodgerblue')
+        ns <- ns + a11 + a12 + a13
+
+        a21 <- annotate("rect", xmin = min(data$dev.tf), xmax = max(data$dev.tf), ymin = tf_bnd, ymax = tf_max, alpha = r_alpha)
+        a22 <- annotate('text', label = 'w/ nBiaff.', x = 88.48, y = nf_y, size = t_size, alpha = t_alpha)
+        dt <- dt + a21 + a22
+        
+        df_min <- min(data$test.df)
+        df_vex <- df_min + 1.62
+        a31 <- annotate('text', label = 'Linearity: F1 & D.F1', x = 58.1, y = 84.05, size = t_size)
+        a32 <- annotate("segment", x = df_min, xend = df_vex, y = tf_bnd, yend = tf_bnd, alpha = r_alpha, linetype = 2)
+        a33 <- annotate("segment", x = df_vex, xend = df_vex, y = tf_bnd, yend = min(data$test.tf), alpha = r_alpha, linetype = 2)
+        s3 <- stat_smooth(method = 'lm', formula = y ~ x, geom = 'line', color = 'black', show.legend = F)
+        f1 <- f1 + a31 + a32 + a33 + s3
+    }
+    p <- ggarrange(ns + g1, dt + gt, f1 + gt, ncol = 3, widths = c(2.9, 2.3, 2.3), legend = 'none')
+    # annotate_figure(p, top = toupper(paste(model_name, corp_name)))
+    fname <- paste('diff', 'optuna', model_name, corp_name, 'pdf', sep = '.')
+    ggsave(paste0(folder, fname), height = 1.9, width = 5.3)
+}
+
+plot_diff('db', 'tiger', F)
+plot_diff('db', 'dptb', F)
+plot_diff('dm', 'tiger', F)
+plot_diff('dm', 'dptb', F)
 # en <- read.csv(paste0('optuna.', task, '.en.csv'))
 # en$lang <- rep('DPTB - English', length(en$rank))
 # de <- read.csv(paste0('optuna.', task, '.de.csv'))

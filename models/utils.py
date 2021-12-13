@@ -140,7 +140,7 @@ class Bias(Module):
     def __init__(self, *bias_shape):
         super(Bias, self).__init__()
         self.bias_shape = bias_shape
-        self.bias = Parameter(torch.Tensor(bias_shape))
+        self.bias = Parameter(torch.empty(bias_shape))
         self.reset_parameters()
 
     def reset_parameters(self):

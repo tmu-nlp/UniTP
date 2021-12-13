@@ -238,7 +238,7 @@ class StaticCrossDataset(LengthOrderedDataset):
         field_columns['offset'] = pad_len
         return field_columns
 
-# from data.io import distribute_jobs
+from data.io import sorting_order, sort_by_order
 from data.multib.dataset import fill_layers
 from data.cross.multib import F_RANDOM, total_fence, continuous_fence
 class DynamicCrossDataset(LengthOrderedDataset):
@@ -272,8 +272,7 @@ class DynamicCrossDataset(LengthOrderedDataset):
                 lengths.append(len(wd))
             if factors is None:
                 static_signals.append((wi, ti) + tk.stratify(F_RANDOM))
-            if extra_text_helper is not None:
-                text.append(wd)
+            text.append(wd)
 
         heads = 'token', 'tag', 'label', 'space', 'disco'
         if factors is None:
@@ -283,9 +282,13 @@ class DynamicCrossDataset(LengthOrderedDataset):
         else:
             factors, lines = self.__reset_and_show_factors(factors, 'Load ')
         print('\n'.join(lines))
+
+        order = sorting_order(text)
+        lengths, tree_keepers = (sort_by_order(order, x) for x in (lengths, tree_keepers))
             
         self._keepers_heads = tree_keepers, heads
         if extra_text_helper:
+            text = sort_by_order(order, text)
             extra_text_helper = extra_text_helper(text, device, c2i)
         super().__init__(heads, lengths, factors, min_len, max_len, extra_text_helper)
         self._device_cfo = device, continuous_fence_only

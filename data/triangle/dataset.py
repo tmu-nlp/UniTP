@@ -123,3 +123,23 @@ class TriangularDataset(LengthOrderedDataset):
         for f, column in field_columns.items():
             field_columns[f] = torch.as_tensor(column, dtype = (None if f == 'xtype' else torch.long), device = device)
         return field_columns
+
+from data.mp import DM
+from data.triangle import triangle_to_layers, after_to_tree
+class TriangularDM(DM):
+    @staticmethod
+    def tree_gen_fn(i2w, i2t, i2l, offsets, lengths, token, tag, label, right):
+        for offset, length, tokens, tags, labels, rights in zip(offsets, lengths, token, tag, label, right):
+            size = len(tokens)
+            token_layer = tuple(i2w[w] for w in tokens[offset:offset+length])
+            tag_layer   = tuple(i2t[t] for t in tags  [offset:offset+length])
+            label_layers = triangle_to_layers(labels, size, offset, length, i2l)
+            right_layers = triangle_to_layers(rights, size, offset, length, None)
+            tree = after_to_tree(token_layer, tag_layer, label_layers, right_layers)
+            yield ' '.join(str(tree).split())
+
+    @staticmethod
+    def arg_segment_fn(seg_id, seg_size, batch_size, args):
+        start = seg_id * seg_size
+        if start < batch_size:
+            return tuple(x[start: (seg_id + 1) * seg_size] for x in args)

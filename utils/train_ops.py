@@ -39,7 +39,7 @@ def train(train_params, operator):
                     if nth_wander >= train_params.stop_at_nth_wander:
                         return operator.test_model()
                 if train_params.test_with_validation:
-                    operator.test_model(epoch = epoch)
+                    operator.test_model(dev_epoch = epoch)
                 nth_validation += 1
         nth_validation = validation_each_nth_epoch + 1
     return operator.optuna_model(train_params) if train_params.optuna_trials else operator.test_model()

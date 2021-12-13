@@ -81,6 +81,18 @@ def get_fasttext(fname):
 def sort_count(cnt):
     return sorted(cnt.items(), key = lambda x:x[1], reverse = True)
 
+def sorting_order(seq):
+    order = {}
+    for src in sorted(range(len(seq)), key = lambda i: (len(seq[i]), seq[i])):
+        order[src] = len(order)
+    return order
+
+def sort_by_order(order, seq):
+    cache = [None for _ in seq]
+    for src, dst in order.items():
+        cache[dst] = seq[src]
+    return cache
+
 def save_vocab(save_to_file, common_cnt, special_toks = [], appendix_cnt = None):
     # [NIL PAD] + [syn] + [pos]
     lines = []

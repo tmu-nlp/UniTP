@@ -1,19 +1,15 @@
 import torch
-from torch import nn
 from utils.operator import Operator
-from data.delta import get_rgt, get_dir, get_jnt
 from utils.param_ops import get_sole_key
 from time import time
-from utils.str_ops import strange_to
-from utils.math_ops import is_bin_times, f_score
-from utils.types import M_TRAIN, BaseType, frac_open_0, frac_06, frac_close
-from utils.types import str_num_array, true_type, false_type, tune_epoch_type
-from models.utils import PCA, fraction, hinge_score
-from models.loss import binary_cross_entropy, hinge_loss
+from utils.math_ops import is_bin_times
+from utils.types import M_TRAIN, BaseType, frac_open_0, frac_06, frac_close, tune_epoch_type
+from models.utils import PCA, fraction
 from experiments.helper import WarmOptimHelper
 from data.cross.evalb_lcfrs import DiscoEvalb, ExportWriter, read_param
 from utils.shell_io import has_discodop, discodop_eval, byte_style
-from utils.file_io import join, basename
+from utils.file_io import join
+from copy import deepcopy
 
 train_type = dict(loss_weight = dict(tag    = BaseType(0.3, validator = frac_open_0),
                                      label  = BaseType(0.1, validator = frac_open_0),
@@ -46,14 +42,7 @@ class DiscoOperator(Operator):
         self._mode_trees = [], []
         self._train_config = train_config
         self._tune_pre_trained = False
-        evalb_lcfrs_prm = read_param(evalb_lcfrs_prm)
-        eq_w = evalb_lcfrs_prm.EQ_WORD
-        eq_l = evalb_lcfrs_prm.EQ_LABEL
-        self._evalb_lcfrs_kwargs = dict(unlabel = None if evalb_lcfrs_prm.LABELED else 'X',
-                                        excluded_labels = evalb_lcfrs_prm.DELETE_LABEL,
-                                        excluded_words  = evalb_lcfrs_prm.DELETE_WORD,
-                                        equal_words     = {w:ws[-1] for ws in eq_w for w in ws},
-                                        equal_labels    = {l:ls[-1] for ls in eq_l for l in ls})
+        self._evalb_lcfrs_kwargs = read_param(evalb_lcfrs_prm)
 
     def _build_optimizer(self, start_epoch):
         # self._loss_weights_of_tag_label_orient = 0.3, 0.1, 0.6 betas = (0.9, 0.98), weight_decay = 0.01, eps = 1e-9
@@ -330,9 +319,9 @@ class DiscoOperator(Operator):
 
 
 from utils.vis import BaseVis, VisRunner
-from utils.file_io import isfile, listdir, remove, isdir
+from utils.file_io import isfile
 from utils.pickle_io import pickle_dump, pickle_load
-from data.cross import bracketing, Counter, draw_str_lines
+from data.cross import bracketing, Counter, new_word_label, filter_words
 from data.cross.binary import disco_tree
 def batch_trees(bid_offset, heads_gen, segments, i2vs, fall_back_root_label = None):
     for sid, (s_seq_len, s_token, s_tag, s_label, s_right, s_joint, s_direc) in enumerate(heads_gen):
@@ -358,24 +347,13 @@ def batch_trees(bid_offset, heads_gen, segments, i2vs, fall_back_root_label = No
         words = tuple(i2vs.token[i] for i in s_token[1:bottom_end])
         yield disco_tree(words, tags, layers_of_label, layers_of_right, layers_of_joint, layers_of_direc, fall_back_root_label)
 
-def inner_score(bt, td, rt,
-                export_writer = None,
-                unlabel = None,
-                equal_labels = None,
-                equal_words = None,
-                excluded_words = None,
-                excluded_labels = None):
+def inner_score(bt, td, rt, prm_args, export_writer = None):
     if export_writer:
         export_writer.add(bt, td, rt)
-    brackets_cnt = bracketing(bt, td, rt, False, unlabel, excluded_labels, equal_labels) if td else Counter()
-    bottom_set = set()
-    for bid, word, tag in bt:
-        if equal_words:
-            word = equal_words.get(word, word)
-        if word in excluded_words:
-            continue
-        bottom_set.add((bid, word, tag))
-    return brackets_cnt, bottom_set
+    bt, td = new_word_label(bt, td, word_fn = prm_args.word_fn, label_fn = prm_args.label_fn)
+    filter_words(bt, td, rt, 'remove', prm_args.DELETE_WORD)
+    brac_cnt, brac_mul = bracketing(bt, td, rt, False, prm_args.DELETE_LABEL) if td else Counter()
+    return brac_cnt, brac_mul, set(bt)
 
 class Dummy:
     def __init__(self, work_dir, i2vs):
@@ -429,8 +407,8 @@ class DiscoVis(BaseVis):
             heads = zip(h_seq_len, h_token, h_tag, h_label, h_right, h_joint, h_direc)
             for bt, td, rt, error in batch_trees(bid_offset, heads, h_segment, i2vs):
                 assert not error
-                head_top_downs.append(td)
-                head_trees_for_scores.append(inner_score(bt, td, rt, self._xh_writer, **self._evalb_lcfrs_kwargs))
+                head_top_downs.append(deepcopy(td))
+                head_trees_for_scores.append(inner_score(bt, td, rt, self._evalb_lcfrs_kwargs, self._xh_writer))
             self._head_batches.append(head_trees_for_scores)
             if self.save_tensors:
                 self._dtv.set_head(batch_id, h_token.shape[1], h_token, h_tag, h_label, h_right, h_joint, h_direc, head_top_downs, h_segment, h_seq_len)
@@ -445,8 +423,8 @@ class DiscoVis(BaseVis):
         data = zip(d_seq_len, h_token, d_tag, d_label, d_right, d_joint, d_direc)
         for sid, (bt, td, rt, error) in enumerate(batch_trees(bid_offset, data, d_segment, i2vs, 'VROOT')):
             data_errors.append(error)
-            data_top_downs.append(td)
-            data_trees_for_scores.append(inner_score(bt, td, rt, self._xd_writer, **self._evalb_lcfrs_kwargs))
+            data_top_downs.append(deepcopy(td))
+            data_trees_for_scores.append(inner_score(bt, td, rt, self._evalb_lcfrs_kwargs, self._xd_writer))
             if error: self._v_errors[sid] = error
         scores = []
         evalb = DiscoEvalb()

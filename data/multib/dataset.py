@@ -1,9 +1,9 @@
 from data.backend import LengthOrderedDataset, np, torch
 from utils.shell_io import byte_style
-from data.multib import MAryX, Tree, draw_str_lines
+from data.multib import MAryX
 from tqdm import tqdm
 from itertools import zip_longest
-from data.io import distribute_jobs
+from data.io import distribute_jobs, sorting_order, sort_by_order
 from multiprocessing import Process, Queue
 from utils.file_io import DelayedKeyboardInterrupt
 from time import sleep
@@ -37,7 +37,6 @@ class MAryWorker(Process):
             #     print('\n'.join(draw_str_lines(tree)))
             #     field_v2is['label']._flag = False
             #     import pdb; pdb.set_trace()
-
 
 class MAryDataset(LengthOrderedDataset):
     def __init__(self,
@@ -114,6 +113,9 @@ class MAryDataset(LengthOrderedDataset):
                 error_string += ' '.join(w+f'/{c}' for w,c in oov_words.items())
             # if oov_tags: error_string += f'; {oov_tags} OOV tag(s)'
             print(error_string, file = stderr)
+
+        order = sorting_order(text) # make stable for ordered | this fixes a minor bug?
+        text, lengths, signals = (sort_by_order(order, x) for x in (text, lengths, signals))
 
         heads = 'token', 'tag', 'label', 'fence'
         self._signals_heads = signals, heads

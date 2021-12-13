@@ -4,8 +4,7 @@ from time import time, sleep
 
 from sys import stderr
 
-from numpy import byte
-from data.backend import before_to_seq
+from data.delta import before_to_seq
 from os.path import join, dirname
 from utils.shell_io import concatenate, byte_style
 

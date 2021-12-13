@@ -215,14 +215,6 @@ class MultiOperator(PennOperator):
             else:
                 self._mode_length_bins = length_bins, test_bins # change devel
 
-            for wbin in length_bins:
-                fhead = vis._join_fn(f'head.bin_{wbin}.tree')
-                fdata = vis._join_fn(f'data.{vis.epoch}.bin_{wbin}.tree')
-                if final_test:
-                    remove(fhead)
-                if isfile(fdata):
-                    remove(fdata)
-
         speed_outer = float(f'{count / seconds:.1f}')
         speed_inner = float(f'{count / vis.proc_time:.1f}') # unfolded with multiprocessing
         if vis.is_async:
@@ -248,8 +240,7 @@ class MultiOperator(PennOperator):
 
 
 from utils.vis import BaseVis, VisRunner
-from utils.file_io import join, isfile, listdir, remove, isdir
-from utils.param_ops import HParams
+from utils.file_io import join, isfile, listdir, remove
 from utils.shell_io import parseval, rpt_summary
 from data.multib import get_tree_from_signals, draw_str_lines
 from visualization import tee_trees
@@ -299,24 +290,28 @@ class MultiVis(BaseVis):
         self._evalb = evalb
         htree = join(work_dir, 'head.tree')
         dtree = join(work_dir, f'data.{epoch}.tree')
-        self._join_fn = lambda x: join(work_dir, x)
-        self._is_anew = not isfile(htree) or flush_heads
+        self._fnames   = htree, dtree
+        self._join_fn  = lambda x: join(work_dir, x)
+        self._is_anew  = not isfile(htree) or flush_heads
         self._rpt_file = join(work_dir, f'data.{epoch}.rpt')
-        self._logger = logger
-        self._fnames = htree, dtree
-        self._i2vs = i2vs
+        self._logger   = logger
+        self._i2vs     = i2vs
         self.register_property('length_bins',  length_bins)
         self._draw_file = join(work_dir, f'data.{epoch}.art') if draw_weights else None
         self._error_idx = 0, []
         self._headedness_stat = join(work_dir, f'data.{epoch}.headedness'), {}
         self._mark_np_without_dt = mark_np_without_dt
+        for fname in listdir(work_dir):
+            if 'bin_' in fname and fname.endswith('.tree'):
+                if flush_heads and fname.startswith('head.') or fname.startswith('data.'):
+                    remove(join(work_dir, fname))
 
     def _before(self):
+        htree, dtree = self._fnames
+        if isfile(dtree): remove(dtree)
         if self._is_anew:
             self.register_property('length_bins', set())
-            for fn in self._fnames:
-                if isfile(fn):
-                    remove(fn)
+            if isfile(htree): remove(htree)
         if self._draw_file and isfile(self._draw_file):
             remove(self._draw_file)
 
@@ -325,14 +320,14 @@ class MultiVis(BaseVis):
          d_tag, d_label, d_fence, d_fence_vote, d_weight, d_segment, d_seg_length) = batch
 
         if self._is_anew:
-            # if float(self.epoch) < 20: d_fence_vote = None
-            trees = batch_trees(h_token, h_tag, h_label, h_fence, h_segment, h_seg_length, self._i2vs, None)
-            trees = [' '.join(str(x).split()) for x in trees]
+            trees = []
+            for tree in batch_trees(h_token, h_tag, h_label, h_fence, h_segment, h_seg_length, self._i2vs, None):
+                trees.append(' '.join(str(tree).split()))
             self.length_bins |= tee_trees(self._join_fn, 'head', h_seg_length[:, 0], trees, None, 10)
 
         trees = []
         idx_cnt, error_idx = self._error_idx
-        for tree, safe in batch_trees(h_token, d_tag, d_label, d_fence, d_segment, d_seg_length, self._i2vs, 'S'):
+        for tid, (tree, safe) in enumerate(batch_trees(h_token, d_tag, d_label, d_fence, d_segment, d_seg_length, self._i2vs, 'S')):
             idx_cnt += 1 # start from 1
             if not safe:
                 error_idx.append(idx_cnt)

@@ -1,5 +1,7 @@
 from collections import namedtuple, defaultdict, Counter
+from copy import deepcopy
 from os import path
+from subprocess import call
 from utils.param_ops import get_sole_key
 TopDown = namedtuple('TopDown', 'label, children')
 
@@ -555,10 +557,31 @@ def gap_degree(bottom, top_down, nid, return_coverage = False, bottom_is_bid = T
 
     return gap_return, bit_coverage
 
-def bracketing(bottom, top_down, nid, bottom_is_bid = False,
-               unlabel = None,
-               excluded_labels = None,
-               equal_labels = None):
+def find_parent(top_down, root, cid):
+    if root in top_down:
+        if cid in top_down[root].children:
+            return root
+        for nid in top_down[root].children:
+            if rid := find_parent(top_down, nid, cid):
+                return rid
+
+def filter_words(bottom, top_down, root, ex_fn, excluded_words, excluded_tags = None):
+    remove = []
+    for eid, (bid, wd, tg) in enumerate(bottom):
+        if excluded_words and wd in excluded_words or excluded_tags and tg in excluded_tags:
+            top_down[find_parent(top_down, root, bid)].children.__getattribute__(ex_fn)(bid)
+            remove.append(eid)
+    remove.reverse()
+    for eid in remove:
+        assert bottom.pop(eid)[1] in excluded_words
+
+do_nothing = lambda x: x
+def new_word_label(bottom, top_down, *, word_fn = do_nothing, tag_fn = do_nothing, label_fn = do_nothing):
+    new_bottom = [(bid, word_fn(wd), tag_fn(tg)) for bid, wd, tg in bottom]
+    new_top_down = {nid: TopDown(label_fn(td.label), td.children) for nid, td in top_down.items()}
+    return new_bottom, new_top_down
+
+def bracketing(bottom, top_down, nid, bottom_is_bid = False, excluded_labels = None):
     final_check = False
     if isinstance(bottom, dict):
         if nid in bottom:
@@ -574,26 +597,26 @@ def bracketing(bottom, top_down, nid, bottom_is_bid = False,
 
     bit_coverage = 0
     bracket_cnt = Counter()
+    bracket_mul = {}
     for cid in top_down[nid].children:
-        something = bracketing(bottom, top_down, cid, unlabel = unlabel)
+        something = bracketing(bottom, top_down, cid)
         if isinstance(something, int): # from a terminal
             bit_coverage ^= something
         else: # from a non-terminal
-            bracket_cnt.update(something)
-            for _, child_coverage in something.keys():
-                bit_coverage |= child_coverage
+            bcv, cnt, mul = something
+            bit_coverage |= bcv
+            bracket_cnt.update(cnt)
+            bracket_mul.update(mul)
 
-    if unlabel is None:
-        label = top_down[nid].label
-        if equal_labels:
-            label = equal_labels.get(label, label)
-    else:
-        label = unlabel
+    label = top_down[nid].label
     if not excluded_labels or label not in excluded_labels:
-        bracket_cnt[(label, bit_coverage)] += 1
+        bracket_key = label, bit_coverage
+        bracket_cnt[bracket_key] += 1
+        bracket_mul[bracket_key] = len(top_down[nid].children)
     if final_check:
         assert bit_coverage + ~bit_coverage == -1, 'Discontinuous root'
-    return bracket_cnt
+        return bracket_cnt, bracket_mul
+    return bit_coverage, bracket_cnt, bracket_mul
 
 # def swappable_layers(layers_of_label, layers_of_right, layers_of_joint, layers_of_direc):
 #     for label_layer, right_layer, joint_layer direc_layer in zip(layers_of_label, layers_of_right, layers_of_joint + [None], layers_of_direc):

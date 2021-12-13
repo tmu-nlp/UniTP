@@ -36,7 +36,7 @@ def get_configs(recorder = None):
                                                min_gap = disco.min_gap,
                                                sort_by_length = disco.sort_by_length)
         else:
-            datasets[corp_name] = reader.batch(mode, disco.batch_size, 0, non_train_cnf)
+            datasets[corp_name] = reader.batch(mode, disco.batch_size << 1, 0, non_train_cnf)
         return datasets
 
     task_params = {pname: reader.get_to_model(pname) for pname in ('num_tags', 'num_labels', 'paddings')}

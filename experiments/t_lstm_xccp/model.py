@@ -99,6 +99,9 @@ class DiscoMultiRnnTree(BaseRnnTree):
 
     @property
     def message(self):
+        pieces = []
+        if 'biaff_2d_disco.bias.bias' in self.state_dict():
+            pieces.append(f'Biaff.bias: {self.biaff_2d_disco.bias.bias.mean()}')
         if self._bias_only:
             ctx_ratio = self._combine_static.itp_rhs_bias().detach()
             if ctx_ratio is not None:
@@ -109,4 +112,5 @@ class DiscoMultiRnnTree(BaseRnnTree):
                     msg += f'±{ctx_ratio.std():.2f}%'
                 else:
                     msg += '%'
-                return msg
+                pieces.append(msg)
+        return '; '.join(pieces)

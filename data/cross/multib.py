@@ -330,6 +330,11 @@ def disco_tree(word, bottom_tag,
 
     add_weight_base = layers_of_weight is not None
     weight_nodes = {}
+    if add_weight_base:
+        headedness_stat = {}
+        nid2tag = {n: tg for (n, _, tg) in terminals}
+    else:
+        headedness_stat = None
 
     if track_fall_back:
         def fallback(non_terminal_end):
@@ -362,18 +367,34 @@ def disco_tree(word, bottom_tag,
         
         combined = []
         new_track_nodes = []
-        track_count = len(track_nodes)
         for pid, cids in td:
             if len(cids) > 1:
+                labels = layers_of_label[lid + 1][pid]
                 if add_weight:
+                    max_weight = 0
+                    np_leaves = []
                     for cid in cids:
                         track_nid = track_nodes[cid]
-                        non_terminals[non_terminal_end] = f'{layers_of_weight[lid][cid, 0] * 100:.0f}%'
+                        if (weight := layers_of_weight[lid][cid, 0]) > max_weight:
+                            max_weight = weight
+                            head_label = (nid2tag, non_terminals)[track_nid in non_terminals][track_nid]
+                        if 'NP' in labels and track_nid in nid2tag:
+                            np_leaves.append(nid2tag[track_nid])
+                        non_terminals[non_terminal_end] = f'{weight * 100:.0f}%'
                         top_down[non_terminal_end].add(track_nid)
                         track_nodes[cid] = non_terminal_end
                         weight_nodes[track_nid] = lid
                         non_terminal_end += 1
-                labels = layers_of_label[lid + 1][pid]
+                    if head_label != 'DT' and 'DT' in np_leaves:
+                        head_label += '*'
+                    if labels in headedness_stat:
+                        label_cnt, head_cnts = headedness_stat[labels]
+                    else:
+                        label_cnt = 0
+                        head_cnts = defaultdict(int)
+                    head_cnts[head_label] += 1
+                    headedness_stat[labels] = label_cnt + 1, head_cnts
+                        
                 labels = [labels] if perserve_sub or labels[0] in '#_' else labels.split('+')
                 non_terminals[non_terminal_end] = labels.pop()
                 # >j<
@@ -411,7 +432,7 @@ def disco_tree(word, bottom_tag,
         top_down[nid] = TopDown(label, top_down.pop(nid))
 
     if add_weight_base:
-        return terminals, top_down, non_terminal_end - 1, error_layer_id, weight_nodes
+        return terminals, top_down, non_terminal_end - 1, error_layer_id, weight_nodes, headedness_stat
     return terminals, top_down, non_terminal_end - 1, error_layer_id
 
 

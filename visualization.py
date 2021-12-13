@@ -477,7 +477,7 @@ if desktop:
                 else:
                     fscores = ''
                 str_bid, length = h[5:-4].split('_')
-                length = '≤' + length
+                length = '<' + length
                 headbox.insert(END, str_bid.rjust(max_id_len) + length.rjust(3) + fscores)
             self._fpath_heads = fpath, heads
             self._last_init_time = time()

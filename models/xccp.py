@@ -55,8 +55,7 @@ def get_head_score(medoid, disco_2d, dis_length, get_dis_emb, head_logit):
     elif medoid.startswith('max_'): # max_lhs & max_rhs
         head_score = disco_2d.sum(dim = 1 if medoid.endswith('lhs') else 2)
     elif medoid.endswith('most'): # leftmost & rightmost
-        if medoid == 'leftmost':
-            head_score = seq.flip(0)
+        head_score = seq.flip(0) if medoid.startswith('left') else seq
         head_score += 1 # +1 for blocky_max
         head_score = head_score[None].repeat(dis_batch_size, 1)
     elif medoid == 'random': # random
@@ -399,7 +398,7 @@ class DiscoMultiStem(MultiStem):
                 disco_2d_logits = None
             layers_of_fence.append(fence_logits)
 
-            sub_emb = self._stem_dp(self._subject_bias())
+            sub_emb = 0 # self._stem_dp(self._subject_bias())
             if self._subject_unit:  sub_emb = sub_emb + self._stem_dp(self._subject_unit(unit_emb))
             if self._subject_state: sub_emb = sub_emb + self._stem_dp(self._subject_state(disco_hidden))
             if self._subject_fw_a:  sub_emb = sub_emb + self._stem_dp(self._subject_fw_a(fw[:, 1:]))

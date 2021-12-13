@@ -15,11 +15,11 @@ train_type = dict(loss_weight = dict(tag   = BaseType(0.2, validator = frac_open
                                      disco_1d = BaseType(0.5, validator = frac_open_0),
                                      disco_2d = BaseType(0.5, validator = frac_open_0),
                                      disco_2d_neg = BaseType(0.5, validator = frac_open_0)),
-                  learning_rate = BaseType(0.001, validator = frac_open_0),
-                  disco_2d_negrate = BaseType(0.05, validator = frac_close),
+                  learning_rate     = BaseType(0.001, validator = frac_open_0),
+                  disco_2d_negrate  = BaseType(0.05,  validator = frac_close),
                   binary_hinge_loss = true_type,
-                  tune_pre_trained = dict(from_nth_epoch = tune_epoch_type,
-                                          lr_factor = frac_06))
+                  tune_pre_trained  = dict(from_nth_epoch = tune_epoch_type,
+                                           lr_factor      = frac_06))
 
 
 class DiscoMultiOperator(DiscoOperator):
@@ -228,10 +228,9 @@ class DiscoMultiOperator(DiscoOperator):
         else:
             async_ = False
             vis = ParallelVis(epoch, work_dir, self.i2vs, self.recorder.log, self._evalb_lcfrs_kwargs, self._discodop_prm, self.dm)
-        pending_heads = vis._pending_heads
         vis = VisRunner(vis, async_ = async_) # wrapper
         vis.before()
-        self._vis_mode = vis, use_test_set, final_test, pending_heads, serial
+        self._vis_mode = vis, use_test_set, final_test, vis._pending_heads, serial
 
     def _get_optuna_fn(self, train_params):
         import numpy as np
@@ -289,7 +288,7 @@ class DiscoMultiOperator(DiscoOperator):
         return obj_fn
 
 from utils.vis import VisRunner
-from utils.file_io import remove, isdir, mkdir, listdir, join
+from utils.file_io import remove, isdir, mkdir, listdir, join, isfile
 from data.cross.multib import disco_tree, draw_str_lines
 from itertools import count
 
@@ -328,23 +327,24 @@ class DiscoMultiVis(DiscoVis):
             else:
                 mkdir(draw_trees)
         self._draw_trees = draw_trees
+        self._headedness_stat = join(work_dir, f'data.{epoch}.headedness'), {}
 
     def _process(self, batch_id, batch):
         bid_offset, _ = self._evalb.total_missing
 
         i2vs = self._dtv.vocabs
         if self._pending_heads:
-            (batch_len, h_token, h_tag, h_label, h_space, h_segment, h_seg_length,
+            (_, h_token, h_tag, h_label, h_space, h_segment, h_seg_length,
              d_tag, d_label, d_space, d_weight, d_disco_2d, d_segment, d_seg_length) = batch
             head_lines = []
             head_trees_for_scores = []
             for btm, td, rt, error in batch_trees(h_token, h_tag, h_label, h_space, h_segment, h_seg_length, i2vs):
                 assert not error
                 head_lines.append('\n'.join(draw_str_lines(btm, td, attachment = ' (Gold)')))
-                head_trees_for_scores.append(inner_score(btm, td, rt, self._xh_writer, **self._evalb_lcfrs_kwargs))
+                head_trees_for_scores.append(inner_score(btm, td, rt, self._evalb_lcfrs_kwargs, self._xh_writer))
             self._head_batches.append((head_trees_for_scores, head_lines))
         else:
-            (batch_len, h_token, d_tag, d_label, d_space, d_weight, d_disco_2d, d_segment, d_seg_length) = batch
+            (_, h_token, d_tag, d_label, d_space, d_weight, d_disco_2d, d_segment, d_seg_length) = batch
             head_trees_for_scores, head_lines = self._head_batches[self._data_batch_cnt]
             self._data_batch_cnt += 1
         
@@ -352,7 +352,7 @@ class DiscoMultiVis(DiscoVis):
         self._evalb.add_batch_line(batch_id)
         evalb_lines = []
         for sid, (btm, td, rt, error) in enumerate(batch_trees(h_token, d_tag, d_label, d_space, d_segment, d_seg_length, i2vs, 'VROOT')):
-            pred_gold = inner_score(btm, td, rt, self._xd_writer, **self._evalb_lcfrs_kwargs) + head_trees_for_scores[sid]
+            pred_gold = inner_score(btm, td, rt, self._evalb_lcfrs_kwargs, self._xd_writer) + head_trees_for_scores[sid]
             if self._draw_trees: evalb_lines.append(self._evalb.add(*pred_gold))
             if error: self._v_errors[bid_offset + sid] = error
         if self._draw_trees:
@@ -360,7 +360,16 @@ class DiscoMultiVis(DiscoVis):
             c_lines = d_lines = m_lines = f'Batch #{batch_id} ───────────────────────────────────────────\n'
             c_cnt = d_cnt = m_cnt = 0
             d_has_n_comps = d_has_n_fallback = m_has_n_comps = m_has_n_fallback = 0
-            for sid, (btm, td, rt, error, wns) in enumerate(batch_trees(h_token, d_tag, d_label, d_space, d_segment, d_seg_length, i2vs, 'VROOT', d_weight)):
+            _, head_stat = self._headedness_stat
+            for sid, (btm, td, rt, error, wns, stat) in enumerate(batch_trees(h_token, d_tag, d_label, d_space, d_segment, d_seg_length, i2vs, 'VROOT', d_weight)):
+                for lb, (lbc, hc) in stat.items():
+                    if lb in head_stat:
+                        label_cnt, head_cnts = head_stat[lb]
+                        for h, c in hc.items():
+                            head_cnts[h] += c
+                        head_stat[lb] = lbc + label_cnt, head_cnts
+                    else:
+                        head_stat[lb] = lbc, hc
                 bracket_match, p_num_brackets, g_num_brackets, dbm, pdbc, gdbc, tag_match, g_tag_count = evalb_lines[sid]
                 lines = f'Sent #{sid} | #{bid_offset + sid}: '
                 tag_line = 'Exact Tagging Match' if tag_match == g_tag_count else f'Tagging: {tag_match}/{g_tag_count}'
@@ -448,11 +457,20 @@ class DiscoMultiVis(DiscoVis):
                     with open(fname_prefix + f'{height_ratio(cnt / total)}' + suffix, 'w') as fw:
                         fw.write(lines)
 
+    def _after(self):
+        fname, head_stat = self._headedness_stat
+        with open(fname, 'w') as fw:
+            for label, (label_cnt, head_cnts) in sorted(head_stat.items(), key = lambda x: x[1][0], reverse = True):
+                line = f'{label}({label_cnt})'.ljust(15)
+                for h, c in sorted(head_cnts.items(), key = lambda x: x[1], reverse = True):
+                    line += f'{h}({c}); '
+                fw.write(line[:-2] + '\n')
+        return super()._after()
 
 class ParallelVis(BinaryParallelVis):
     _draw_trees = False
     
     def _process(self, batch_id, batch):
-        (batch_len, h_token, d_tag, d_label, d_space, d_weight, d_disco_2d, d_segment, d_seg_length) = batch
+        (_, h_token, d_tag, d_label, d_space, d_weight, d_disco_2d, d_segment, d_seg_length) = batch
         self._args[0].batch(batch_id, self._bid_offset, d_segment, d_seg_length, h_token, d_tag, d_label, d_space)
         self._bid_offset += h_token.shape[0]

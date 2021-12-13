@@ -99,6 +99,10 @@ class MultiRnnTree(BaseRnnTree):
 
     @property
     def message(self):
+        # bsb = self._subject_bias.bias
+        # msg = f'BlockySoftmax.bias: {bsb.mean()}'
+        # if bsb.nelement() > 1:
+        #     msg += f'±{bsb.std()}'
         if self._bias_only:
             ctx_ratio = self._combine_static.itp_rhs_bias().detach()
             if ctx_ratio is not None:

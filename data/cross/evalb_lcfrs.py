@@ -7,13 +7,18 @@ from collections import Counter, defaultdict
 from utils.math_ops import bit_fanout
 from utils.param_ops import HParams
 
+def make_eq_fn(eq):
+    def fn(x):
+        return eq.get(x, x)
+    return fn
+
 def read_param(filename):
     validkeysonce = ('DEBUG', 'MAX_ERROR', 'CUTOFF_LEN', 'LABELED',
                      'DISC_ONLY', 'TED', 'DEP')
     param = {'DEBUG': 0, 'MAX_ERROR': 10, 'CUTOFF_LEN': 9999,
              'LABELED': 1, 'DELETE_LABEL_FOR_LENGTH': set(),
              'DELETE_LABEL': set(), 'DELETE_WORD': set(),
-             'EQ_LABEL': set(), 'EQ_WORD': set(),
+             'EQ_LABEL': {}, 'EQ_WORD': {},
              'DISC_ONLY': 0, 'TED': 0, 'DEP': 0}
     seen = set()
     with open(filename) as fr:
@@ -36,9 +41,16 @@ def read_param(filename):
                     b, c = val.split()
                 except ValueError:
                     raise ValueError('%s requires two values' % key)
-                param[key].add((b, c))
+                param[key][b] = c
             else:
                 raise ValueError('unrecognized parameter key: %s' % key)
+
+    if param['LABELED']:
+        label_fn = make_eq_fn(param['EQ_LABEL'])
+    else:
+        label_fn = lambda _: 'X'
+    param['word_fn'] = make_eq_fn(param['EQ_WORD'])
+    param['label_fn'] = label_fn
     return HParams(param)
 
 def _scores(bracket_match, p_num_brackets, g_num_brackets):
@@ -70,6 +82,50 @@ def incomplete_sent_line(disc_mark, sent_cnt, g_num_brackets, g_disc_num_bracket
         sent_line += f'╎          {g_tag_count:3d}     ╎'
     return sent_line
 
+def conti_matches(p_tree, g_tree):
+    from data.cross import _read_dpenn, bracketing
+    g_bt, g_td, g_rt = _read_dpenn(g_tree, adjust_as_paper11 = False)
+    p_bt, p_td, p_rt = _read_dpenn(p_tree, adjust_as_paper11 = False)
+    bracket_match, _, p_num_brackets, _, _, g_num_brackets, _, _ = disco_matches(bracketing(p_bt, p_td, p_rt), bracketing(g_bt, g_td, g_rt))
+    return bracket_match, p_num_brackets, g_num_brackets
+
+def ndd(brackets):
+    disc_brackets = {}
+    num_brackets = num_disc_brackets = 0
+    for key, ct in brackets.items():
+        _, fo = key
+        num_brackets += ct
+        if bit_fanout(fo) > 1:
+            num_disc_brackets += ct
+            disc_brackets[key] = ct
+    return num_brackets, num_disc_brackets, Counter(disc_brackets)
+
+def mul_fan_ndd(brackets, multibs):
+    mul_num = defaultdict(int)
+    mul_uni = defaultdict(dict)
+    fan_num = defaultdict(int)
+    fan_uni = defaultdict(dict)
+    for key, ct in brackets.items():
+        f = bit_fanout(key[1])
+        m = multibs[key]
+        mul_num[m] += ct
+        mul_uni[m][key] = ct
+        fan_num[f] += ct
+        fan_uni[f][key] = ct
+    return mul_num, mul_uni, fan_num, fan_uni
+    
+# def mul_f1(p_mul, g_mul):
+#     for m in p_mul | g_mul
+
+def disco_matches(p_brackets, g_brackets):
+    g_num_brackets, g_disc_num_brackets, g_disc_brackets = ndd(g_brackets)
+    p_num_brackets, p_disc_num_brackets, p_disc_brackets = ndd(p_brackets)
+    bracket_match = sum((g_brackets & p_brackets).values())
+    disc_bracket_match = sum((g_disc_brackets & p_disc_brackets).values())
+    return bracket_match, disc_bracket_match,\
+        p_num_brackets, p_disc_num_brackets, p_disc_brackets,\
+        g_num_brackets, g_disc_num_brackets, g_disc_brackets
+
 class DiscoEvalb:
     def __init__(self):
         self._tick = 0
@@ -87,13 +143,18 @@ class DiscoEvalb:
         self._disc_gold = 0
         self._disc_exact = 0
         self._sent_lines = []
+        self._mul_match = defaultdict(int)
+        self._mul_gold = Counter()
+        self._mul_pred = Counter()
+        self._fan_match = defaultdict(int)
+        self._fan_gold = Counter()
+        self._fan_pred = Counter()
 
-    def add(self, p_brackets, p_tags, g_brackets, g_tags):
+    def add(self, p_brackets, p_multib, p_tags, g_brackets, g_multib, g_tags):
         self._total_sents += 1
         g_tag_count = len(g_tags)
-        g_num_brackets = sum(g_brackets.values())
-        g_disc_brackets = Counter({(lb, fo):ct for (lb, fo), ct in g_brackets.items() if bit_fanout(fo) > 1})
-        g_disc_num_brackets = sum(g_disc_brackets.values())
+
+        g_num_brackets, g_disc_num_brackets, g_disc_brackets = ndd(g_brackets)
         self._total_gold += g_num_brackets
         self._disc_gold += g_disc_num_brackets
         disc_mark = '* '[not g_disc_num_brackets]
@@ -113,13 +174,12 @@ class DiscoEvalb:
             self._missing += 1
             return -1, -1, -1, -1 if p_tags is None else (tag_match / p_tag_count)
 
-        bracket_match = sum((g_brackets & p_brackets).values())
-        p_num_brackets = sum(p_brackets.values())
-        p_disc_brackets = Counter({(lb, fo):ct for (lb, fo), ct in p_brackets.items() if bit_fanout(fo) > 1})
-        disc_bracket_match = sum((g_disc_brackets & p_disc_brackets).values())
-        p_disc_num_brackets = sum(p_disc_brackets.values())
         if g_brackets == p_brackets:
             self._total_exact += 1
+
+        p_num_brackets, p_disc_num_brackets, p_disc_brackets = ndd(p_brackets)
+        bracket_match = sum((g_brackets & p_brackets).values())
+        disc_bracket_match = sum((g_disc_brackets & p_disc_brackets).values())
         if g_disc_num_brackets and g_disc_brackets == p_disc_brackets:
             self._disc_exact += 1
         sent_prec, sent_rec, sent_fb1 = _scores(bracket_match, p_num_brackets, g_num_brackets)
@@ -137,6 +197,18 @@ class DiscoEvalb:
         self._total_pred += p_num_brackets
         self._disc_match += disc_bracket_match
         self._disc_pred += p_disc_num_brackets
+
+        p_mdn, p_mdb, p_fon, p_fob = mul_fan_ndd(p_brackets, p_multib)
+        g_mdn, g_mdb, g_fon, g_fob = mul_fan_ndd(g_brackets, g_multib)
+        self._mul_pred += p_mdn
+        self._mul_gold += g_mdn
+        self._fan_pred += p_fon
+        self._fan_gold += g_fon
+        for m in p_mdb.keys() & g_mdb.keys():
+            self._mul_match[m] += sum((Counter(p_mdb[m]) & Counter(g_mdb[m])).values())
+        for f in p_fob.keys() & g_fob.keys():
+            self._fan_match[f] += sum((Counter(p_fob[f]) & Counter(g_fob[f])).values())
+
         return bracket_match, p_num_brackets, g_num_brackets, disc_bracket_match, p_disc_num_brackets, g_disc_num_brackets, tag_match, g_tag_count
 
     def add_batch_line(self, batch_id):
@@ -169,7 +241,13 @@ class DiscoEvalb:
         line += '    Disc. LP  : %6.2f %%\n' % dp
         line += '    Disc. LR  : %6.2f %%\n' % dr
         line += '    Disc. F1  : %6.2f %%\n' % df
-        line += '    Disc. EX  : %6.2f %%\n' % (100 * self._disc_exact / self._disc_sents if self._disc_sents else 0)
+        line += '    Disc. EX  : %6.2f %%\n\n' % (100 * self._disc_exact / self._disc_sents if self._disc_sents else 0)
+        line += 'Multi-branching LP LR F1 (P/G/M)\n'
+        for m, (p, r, f, mm, mp, mg) in self.summary_multib():
+            line += f'    {m:3d}  |  {p:6.2f}%  {r:6.2f}%  {f:6.2f}%  ({mp}/{mg}/{mm})\n'
+        line += '\nFan-out LP LR F1 (P/G/M)\n'
+        for fo, (p, r, f, fm, fp, fg) in self.summary_fanout():
+            line += f'    {fo:3d}  |  {p:6.2f}%  {r:6.2f}%  {f:6.2f}%  ({fp}/{fg}/{fm})\n'
         return line
 
     def summary(self):
@@ -177,39 +255,63 @@ class DiscoEvalb:
         disc  = _scores( self._disc_match,  self._disc_pred,  self._disc_gold)
         return total + disc
 
+    def summary_multib(self):
+        for m in sorted(self._mul_pred.keys() | self._mul_gold.keys()):
+            mm = self._mul_match[m]
+            mp = self._mul_pred[m]
+            mg = self._mul_gold[m]
+            yield m, _scores(mm, mp, mg) + (mm, mp, mg)
+    
+    def summary_fanout(self):
+        for fo in sorted(self._fan_pred.keys() | self._fan_gold.keys()):
+            fm = self._fan_match[fo]
+            fp = self._fan_pred[fo]
+            fg = self._fan_gold[fo]
+            yield fo, _scores(fm, fp, fg) + (fm, fp, fg)
+            
     @property
     def total_missing(self):
         return self._total_sents, self._missing
 
 def continuous_evalb(pred_fname, gold_fname, prm_fname):
-    from data.cross import _read_dpenn, bracketing
+    from data.cross import _read_dpenn, bracketing, filter_words, new_word_label
     from nltk.tree import Tree
     evalb_lcfrs_prm = read_param(prm_fname)
-    eq_w = evalb_lcfrs_prm.EQ_WORD
-    eq_l = evalb_lcfrs_prm.EQ_LABEL
-    args = dict(unlabel = None if evalb_lcfrs_prm.LABELED else 'X',
-                excluded_labels = evalb_lcfrs_prm.DELETE_LABEL,
-                equal_labels    = {l:ls[-1] for ls in eq_l for l in ls})
-    excluded_words  = evalb_lcfrs_prm.DELETE_WORD
-    equal_words     = {w:ws[-1] for ws in eq_w for w in ws}
-    def filter_bottom(bt):
-        bt_set = set()
-        for bid, word, tag in g_bt:
-            if equal_words:
-                word = equal_words.get(word, word)
-            if word in excluded_words:
-                continue
-            bt_set.add((bid, word, tag))
-        return bt_set
     evalb = DiscoEvalb()
     with open(pred_fname) as f_pred, open(gold_fname) as f_gold:
         for p_line, g_line in zip(f_pred, f_gold):
-            p_bt, p_td, p_rt = _read_dpenn(Tree.fromstring(p_line))
-            g_bt, g_td, g_rt = _read_dpenn(Tree.fromstring(g_line))
-            p_brackets = bracketing(p_bt, p_td, p_rt, False, **args)
-            g_brackets = bracketing(g_bt, g_td, g_rt, False, **args)
-            evalb.add(p_brackets, filter_bottom(p_bt), g_brackets, filter_bottom(g_bt))
-    print(evalb)
+            try:
+                p_bt, p_td, p_rt = _read_dpenn(Tree.fromstring(p_line))
+                g_bt, g_td, g_rt = _read_dpenn(Tree.fromstring(g_line))
+                p_bt, p_td = new_word_label(p_bt, p_td, word_fn = evalb_lcfrs_prm.word_fn, label_fn = evalb_lcfrs_prm.label_fn)
+                g_bt, g_td = new_word_label(g_bt, g_td, word_fn = evalb_lcfrs_prm.word_fn, label_fn = evalb_lcfrs_prm.label_fn)
+                filter_words(p_bt, p_td, p_rt, 'pop', evalb_lcfrs_prm.DELETE_WORD)
+                filter_words(g_bt, g_td, g_rt, 'pop', evalb_lcfrs_prm.DELETE_WORD)
+                p_brackets, p_multibs = bracketing(p_bt, p_td, p_rt, False, evalb_lcfrs_prm.DELETE_LABEL)
+                g_brackets, g_multibs = bracketing(g_bt, g_td, g_rt, False, evalb_lcfrs_prm.DELETE_LABEL)
+                evalb.add(p_brackets, p_multibs, set(p_bt), g_brackets, g_multibs, set(g_bt))
+            except:
+                continue
+    return evalb
+
+def eval_disc(p_lines, g_lines, evalb_lcfrs_prm):
+    from data.cross import bracketing, filter_words, new_word_label
+    p_bt, p_td, p_rt = parse_export_sample(p_lines, 'VROOT')
+    g_bt, g_td, g_rt = parse_export_sample(g_lines, 'VROOT')
+    p_bt, p_td = new_word_label(p_bt, p_td, word_fn = evalb_lcfrs_prm.word_fn, label_fn = evalb_lcfrs_prm.label_fn)
+    g_bt, g_td = new_word_label(g_bt, g_td, word_fn = evalb_lcfrs_prm.word_fn, label_fn = evalb_lcfrs_prm.label_fn)
+    filter_words(p_bt, p_td, p_rt, 'pop', evalb_lcfrs_prm.DELETE_WORD)
+    filter_words(g_bt, g_td, g_rt, 'pop', evalb_lcfrs_prm.DELETE_WORD)
+    p_brackets, p_multibs = bracketing(p_bt, p_td, p_rt, False, evalb_lcfrs_prm.DELETE_LABEL)
+    g_brackets, g_multibs = bracketing(g_bt, g_td, g_rt, False, evalb_lcfrs_prm.DELETE_LABEL)
+    return p_brackets, p_multibs, set(p_bt), g_brackets, g_multibs, set(g_bt)
+
+def discontinuous_evalb(pref_fname, gold_fname, prm_fname):
+    evalb_lcfrs_prm = read_param(prm_fname)
+    evalb = DiscoEvalb()
+    for p_lines, g_lines in zip(read_export_samples(pref_fname), read_export_samples(gold_fname)):
+        evalb.add(*eval_disc(p_lines, g_lines, evalb_lcfrs_prm))
+    return evalb
 
 class ExportWriter:
     def __init__(self):
@@ -243,7 +345,7 @@ def read_export_samples(fname):
             else:
                 sample.append(line)
 
-def parse_export_sample(lines, dptb_split = False):
+def parse_export_sample(lines, fallback = None, dptb_split = False):
     bottom = []
     top_down = defaultdict(list)
     non_terminals = {}
@@ -261,12 +363,21 @@ def parse_export_sample(lines, dptb_split = False):
             nid = len(bottom)
             bottom.append((nid, cid_or_word, label))
             top_down[pid].append(nid)
-    root = top_down.pop(0)
-    assert len(root) == 1
-    root = root.pop()
+    first = len(top_down[0])
+    if first > 1:
+        assert isinstance(fallback, str)
+        root = max(top_down) + 500
+        non_terminals[root] = fallback
+        top_down[root] = top_down.pop(0)
+        top_down[0] = [root]
+    elif first == 1 and not non_terminals:
+        assert isinstance(fallback, str)
+        top_down[500].append(top_down[0].pop())
+        top_down[0].append(500)
+        non_terminals[500] = fallback
+    root = top_down.pop(0).pop()
     for pid, label in non_terminals.items():
         top_down[pid] = TopDown(label, {n: '--' for n in top_down[pid]})
-    # import pdb; pdb.set_trace()
     return bottom, top_down, root
 
 def export_string(sent_id, bottom, top_down, root_id):
@@ -295,7 +406,7 @@ def export_string(sent_id, bottom, top_down, root_id):
     return lines + f'#EOS {sent_id}'
 
 class ExportReader:
-    def __init__(self, fname, dptb_split = False):
+    def __init__(self, fname, *la, **ka):
         from tqdm import tqdm
         samples = []
         indices = []
@@ -304,7 +415,7 @@ class ExportReader:
             _, tail = lines[-1].split()
             assert head == tail
             head = int(head)
-            samples.append(parse_export_sample(lines, dptb_split))
+            samples.append(parse_export_sample(lines, *la, **ka))
             indices.append(head)
         self._samples = samples
         self._indices = indices

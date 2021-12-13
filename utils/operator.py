@@ -1,3 +1,4 @@
+from sys import prefix
 from numpy import byte
 from utils.types import M_TRAIN, M_DEVEL, M_TEST
 from numpy.random import choice
@@ -59,8 +60,9 @@ class Operator:
             else:
                 print(byte_style('[WARNING] multiprocessing_decode is not for the task', '3'), file = stderr)
 
-        (epoch, fine_validation, global_step) = self._recorder.initial_or_restore(self._model)
+        (epoch, fine_validation, global_step, opt_fn) = self._recorder.initial_or_restore(self._model)
         self._optimizer = self._build_optimizer(epoch)
+        if callable(opt_fn): opt_fn(self._optimizer)
         self._global_step = global_step
         return epoch, fine_validation
 
@@ -103,30 +105,50 @@ class Operator:
         self._recorder.log(timestamp(epoch, 'Validation ') + f' - {ds_logg} ({from_start} from start)', end = '.')
         betterment = self._recorder.check_betterment(epoch, falling, self._global_step, self._model, self._optimizer, scores['key'])
 
-        if self._optuna_mode is not None:
-            super_recorder, trial, trial_step = self._optuna_mode
-            trial.report(scores['key'], trial_step)
-            self._optuna_mode = super_recorder, trial, trial_step + 1
-            if trial.should_prune():
+        if isinstance(self._optuna_mode, tuple):
+            super_recorder, fpath, trial, trial_step = self._optuna_mode
+            should_prune = False
+            try:
+                trial.report(scores['key'], trial_step)
+            except:
+                breakpoint()
+                should_prune = True
+            self._optuna_mode = super_recorder, fpath, trial, trial_step + 1
+            if should_prune or trial.should_prune():
                 super_recorder.log(f'  (got pruned at the {trial_step}-th step)')
                 # self._recorder.register_test_scores(dict(key = self._recorder.key_score, step = trial_step))
                 self.test_model(); import optuna; raise optuna.exceptions.TrialPruned()
         return betterment
 
-    def test_model(self, epoch = None):
+    def test_model(self, dev_epoch = None, test_all_validated_models = False):
         ds_total, ds_names, ds_iters = self._test_materials
-        final_test = epoch is None
-        if final_test:
-            prefix = 'Test ' # final label
-            epoch, self._global_step = self._recorder.initial_or_restore(self._model, restore_from_best_validation = True)
+        if (final_test := dev_epoch is None) and test_all_validated_models:
+            ds_loggs = []
+            th_score = {}
+            for nth, (dev, dev_key_score) in enumerate(self._recorder.validated_models):
+                de, gs = self._recorder.initial_or_restore(self._model, nth)
+                scores_, ds_logg, from_start = self.validation_or_test(M_TEST, ds_total, ds_names, ds_iters, f'🔮#{nth}', float(dev[1:]), final_test)
+                ds_loggs.append(f'{nth}. ' + ds_logg + f' with dev score ({dev_key_score})')
+                if nth == 0: # TODO investigate & change
+                    scores = scores_
+                    dev_epoch = de
+                    self._global_step = gs
+                th_score[nth] = scores_['key']
+            scores['dev'] = max(th_score, key = th_score.get)
+            self._recorder.log(timestamp(dev_epoch, 'Test ') + f' - {from_start} from start.')
+            self._recorder.log('\n'.join(ds_loggs))
         else:
-            prefix = '   ⌙→ Test ' # match length of validation
-        scores, ds_logg, from_start = self.validation_or_test(M_TEST, ds_total, ds_names, ds_iters, '🔮', epoch, final_test)
-        scores['epoch'] = epoch
-        self._recorder.log(timestamp(epoch, prefix) + f' - {ds_logg} ({from_start} from start).')
+            if final_test:
+                dev_epoch, self._global_step = self._recorder.initial_or_restore(self._model, 0)
+                prefix = timestamp(dev_epoch, 'Test ')
+            else:
+                prefix = timestamp(dev_epoch, '   ⌙→ Test ')
+            scores, ds_logg, from_start = self.validation_or_test(M_TEST, ds_total, ds_names, ds_iters, '🔮', dev_epoch, final_test)
+            self._recorder.log(prefix + f' - {ds_logg} ({from_start} from start).')
+        scores['epoch'] = dev_epoch
         if final_test:
-            if self._optuna_mode is not None:
-                super_recorder, _, trial_step = self._optuna_mode
+            if isinstance(self._optuna_mode, tuple):
+                super_recorder, _, _, trial_step = self._optuna_mode
                 super_recorder.log(f'  (finished after {trial_step + 1} steps: {scores["key"]:.2f})')
                 self._recorder.register_test_scores(scores)
             if hasattr(self._model, 'message'):
@@ -149,7 +171,7 @@ class Operator:
                     with no_grad():
                         num_samples, seq_len = self._step(mode, ds_name, batch, batch_id = batch_id)
                     cnt += num_samples
-                    qbar.desc = f'#{icon}{epoch_stamp} {num_samples}×{seq_len}'
+                    qbar.desc = f'#{icon} {epoch_stamp} {num_samples}×{seq_len}'
                     qbar.update(num_samples)
                 scores, desc, logg = self._after_validation(ds_name, cnt, time() - start) # evalb time is excluded
                 ds_desc  .append(desc)
@@ -164,13 +186,14 @@ class Operator:
         return scores, ds_logg, from_start
 
     def setup_optuna_mode(self, spec_update_fn, trial):
-        if self._optuna_mode is None:
+        if isinstance(self._optuna_mode, str):
+            fpath = self._optuna_mode
             super_recorder = self._recorder
         else:
             self._recorder.detach() # previous trail
-            super_recorder = self._optuna_mode[0]
-        self._optuna_mode = super_recorder, trial, 0
-        self._recorder = super_recorder.new_trial_recorder(spec_update_fn, trial)
+            super_recorder, fpath = self._optuna_mode[:2]
+        self._optuna_mode = super_recorder, fpath, trial, 0
+        self._recorder = super_recorder.new_trial_recorder(spec_update_fn, trial, fpath)
 
     def optuna_model(self, train_params):
         '''Set objective function with argument trial.
@@ -218,11 +241,11 @@ class Operator:
         #     else:
         #         study.trials.pop(tid)
         assert n_trials > 0, 'Optuna with n_trials == 0'
-        fpath = join(self._recorder.create_join(), 'trials.db')
+        fpath = self._optuna_mode = self._recorder.create_join('trials')
         import optuna
         study = optuna.create_study(direction  = 'maximize',
                                     study_name = 'hyper-tune',
-                                    storage    = 'sqlite:///' + fpath,
+                                    storage    = 'sqlite:///' + join(fpath, '.db'),
                                     load_if_exists = True)
         self._recorder.log(f'Start optuna with {n_trials} trials ...')
         study.optimize(self._get_optuna_fn(train_params), n_trials = n_trials) # core

@@ -27,13 +27,11 @@ def get_configs(recorder = None):
                                         penn.data_splits.test_set)
         data_splits = {k:v for k,v in zip((M_TRAIN, M_DEVEL, M_TEST), specs[-1])}
         trapezoid_specs = specs[:-1] + (data_splits, penn.trapezoid_height, get_sole_key(data_config) == C_KTB)
-        from data.trapezoid import TrapezoidalDM
-        dm_cls = TrapezoidalDM
+        from data.trapezoid.dataset import TrapezoidalDM as dm_cls
         prompt = f'Use trapezoidal data (stratifying height: {penn.trapezoid_height})', '2'
     else:
         trapezoid_specs = None
-        from data.triangle import TriangularDM
-        dm_cls = TriangularDM
+        from data.triangle.dataset import TriangularDM as dm_cls
         prompt = f'Use triangular data (stratifying height: +inf)', '3'
     print(byte_style(*prompt))
 

@@ -93,6 +93,27 @@ def lnr_order(vocabs):
         cu.append(cu[-1] + len(ov[i]))
     return OrderX(od, slice(*cu[:2]), slice(*cu[1:3]), slice(*cu[2:4]))
 
+def before_to_seq(vocabs):
+    if 'tag' in vocabs: # label_mode
+        i2t = vocabs['tag']
+        label_vocab = vocabs['label'].__getitem__
+    else:
+        i2t = None
+        if 'label' in vocabs:
+            i2l = vocabs['label']
+            label_vocab = lambda x: i2l[x]
+        elif 'polar' in vocabs:
+            i2p = vocabs['polar']
+            def label_vocab(x):
+                if isinstance(x, np.ndarray):
+                    if x[0] < 0:
+                        return NIL
+                    return ''.join(i2p[xi] for xi in x)
+                return NIL if x < 0 else i2p[x]
+        else:
+            label_vocab = lambda x: f'{x * 100:.2f}%' if x > 0 else NIL
+    return vocabs['token'], i2t, label_vocab
+
 def get_xtype(path, LNR = (-1, 0, 1)):
     return (LNR[0] if path[-1] else LNR[2]) if path else LNR[1]
 
