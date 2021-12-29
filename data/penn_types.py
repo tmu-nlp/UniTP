@@ -74,18 +74,24 @@ class CorpusReader:
         return listdir(self._path.name)
 
     def parsed_sents(self, fileids, keep_str = False):
-        def wrap_tree(cumu_string):
-            if keep_str:
-                return cumu_string
-            tree = Tree.fromstring(cumu_string)
-            if tree.label() == '':
-                tree = tree[0]
-            return tree
-
-        if isinstance(self._path, str):
-            fpath = join(self._path,      fileids)
+        fpath = self._path if isinstance(self._path, str) else self._path.name
+        if isinstance(fileids, (list, tuple, set)):
+            for fn in fileids:
+                yield from CorpusReader.gen_trees(join(fpath, fn), keep_str)
         else:
-            fpath = join(self._path.name, fileids)
+            yield from CorpusReader.gen_trees(join(fpath, fileids), keep_str)
+
+    @staticmethod
+    def wrap_tree(cumu_string, keep_str):
+        if keep_str:
+            return cumu_string
+        tree = Tree.fromstring(cumu_string)
+        if tree.label() == '':
+            tree = tree[0]
+        return tree
+
+    @staticmethod
+    def gen_trees(fpath, keep_str):
         with open(fpath) as fr:
             cumu_string = None
             for line in fr:
@@ -95,19 +101,19 @@ class CorpusReader:
                     continue
                 if line[0] == '(': # end
                     if cumu_string is not None:
-                        yield wrap_tree(cumu_string)
+                        yield CorpusReader.wrap_tree(cumu_string, keep_str)
                     cumu_string = line
                 elif line[0] == '<' or len(line) <= 1: # start or end
                     if cumu_string is None: # not start yet
                         continue
-                    yield wrap_tree(cumu_string)
+                    yield CorpusReader.wrap_tree(cumu_string, keep_str)
                     cumu_string = None
                 elif cumu_string is not None:
                     cumu_string += line
         if cumu_string is not None:
             if keep_str:
                 cumu_string += '\n'
-            yield wrap_tree(cumu_string)
+            yield CorpusReader.wrap_tree(cumu_string, keep_str)
 
 def positional_iadd(a, b, op = None):
     for ai, bi in zip(a, b):

@@ -465,3 +465,14 @@ def bool_start_end(continuous):
     continuity = continuous.any(dim = 1)
     batch_dim = torch.arange(batch_size, device = continuous.device)
     return batch_dim[continuity], min_idx[continuity], max_idx[continuity]
+
+def scatter_2d_add(src, dst, index):
+    # flatten args to scatter_add
+    sb, ss, se = src.shape
+    db, ds, de = dst.shape
+    src = src.reshape(sb * ss, se)
+    frm = dst.reshape(db * ds, de)
+    assert se == de
+    flat = index[:, :, 0] * ds + index[:, :, 1]
+    flat = flat.view(-1, 1).expand_as(src)
+    return frm.scatter_add(0, flat, src).view(db, ds, de)

@@ -2,7 +2,7 @@ from utils.param_ops import HParams
 
 def get_optuna_params(train_params):
     optuna_params = {} # change train_params
-    optuna_params['fine_validation_at_nth_wander'] = 0
+    optuna_params['fine_validation_at_nth_wander'] = 3
     optuna_params['stop_at_nth_wander'] = train_params.stop_at_nth_wander
     optuna_params['fine_validation_each_nth_epoch'] = 5
 

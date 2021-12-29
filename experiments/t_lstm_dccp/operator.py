@@ -9,7 +9,6 @@ from experiments.helper import WarmOptimHelper
 from data.cross.evalb_lcfrs import DiscoEvalb, ExportWriter, read_param
 from utils.shell_io import has_discodop, discodop_eval, byte_style
 from utils.file_io import join
-from copy import deepcopy
 
 train_type = dict(loss_weight = dict(tag    = BaseType(0.3, validator = frac_open_0),
                                      label  = BaseType(0.1, validator = frac_open_0),
@@ -369,6 +368,7 @@ class Dummy:
 
 from visualization import DiscontinuousTensorVis
 from data.cross import explain_error
+from copy import deepcopy
 class DiscoVis(BaseVis):
     def __init__(self, epoch, work_dir, i2vs, head_trees, logger, evalb_lcfrs_kwargs, discodop_prm, thresholds, save_tensors):
         super().__init__(epoch)
@@ -407,7 +407,7 @@ class DiscoVis(BaseVis):
             heads = zip(h_seq_len, h_token, h_tag, h_label, h_right, h_joint, h_direc)
             for bt, td, rt, error in batch_trees(bid_offset, heads, h_segment, i2vs):
                 assert not error
-                head_top_downs.append(deepcopy(td))
+                head_top_downs.append(deepcopy(td)) # td.copy() not works
                 head_trees_for_scores.append(inner_score(bt, td, rt, self._evalb_lcfrs_kwargs, self._xh_writer))
             self._head_batches.append(head_trees_for_scores)
             if self.save_tensors:

@@ -159,7 +159,6 @@ def cat_lines(lhs_lines, rhs_lines, offset = 0, from_top = False):
     return lines
 
 import unicodedata
-def len_ea(string, ea_unit = 2):
+def count_wide_east_asian(string):
     nfc_string = unicodedata.normalize('NFC', string)
-    ea_len = sum((ea_unit if unicodedata.east_asian_width(c) in 'WF' else 1) for c in nfc_string)
-    return int(ea_len + 0.5)
+    return sum(unicodedata.east_asian_width(c) in 'WF' for c in nfc_string)

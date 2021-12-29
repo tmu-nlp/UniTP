@@ -17,6 +17,7 @@ train_type = dict(loss_weight = dict(tag   = BaseType(0.2, validator = frac_open
                                      disco_2d_neg = BaseType(0.5, validator = frac_open_0)),
                   learning_rate     = BaseType(0.001, validator = frac_open_0),
                   disco_2d_negrate  = BaseType(0.05,  validator = frac_close),
+                  inter_2d_negrate  = BaseType(0.99,  validator = frac_close),
                   binary_hinge_loss = true_type,
                   tune_pre_trained  = dict(from_nth_epoch = tune_epoch_type,
                                            lr_factor      = frac_06))
@@ -40,6 +41,8 @@ class DiscoMultiOperator(DiscoOperator):
                 dis_start = dis_end
             if self._train_config.disco_2d_negrate:
                 supervised_signals['disco_2d_negative'] = self._train_config.disco_2d_negrate
+            if self._train_config.inter_2d_negrate:
+                supervised_signals['inter_2d_negative'] = self._train_config.inter_2d_negrate
             # for con_seg in batch['split_segment']:
             #     con_end = con_start + con_seg
             #     print(con_split[:, con_start:con_end] * 1)
@@ -52,7 +55,7 @@ class DiscoMultiOperator(DiscoOperator):
             #     if start < end:
             #         comp = dis_comp[start:end].reshape(shape)
             #         print(comp * 1)
-            supervised_signals['supervision'] = space_layers, disco_layers
+            supervised_signals['supervision'] = space_layers, disco_layers, batch.get('inter_disco', [])
         if 'sub_idx' in batch:
             supervised_signals['sub_idx'] = batch['sub_idx']
         if 'sub_fence' in batch:
@@ -247,12 +250,17 @@ class DiscoMultiOperator(DiscoOperator):
                 loss_weight['disco_2d'] = d2 = trial.suggest_float('disco_2d', 0.0, 1.0)
                 loss_str = 'L=' + height_ratio(t) + height_ratio(l) + height_ratio(f) + height_ratio(d1) + height_ratio(d2)
 
-                if d_d2n := specs['train']['disco_2d_negrate'] > 0:
-                    specs['train']['disco_2d_negrate'] = d_d2n = trial.suggest_loguniform('disco_2d_negrate', 0.0001, 0.1)
+                if (d_d2n := specs['train']['disco_2d_negrate']) > 0:
+                    specs['train']['disco_2d_negrate'] = d_d2n = trial.suggest_loguniform('disco_2d_negrate', 0.0001 * d_d2n, d_d2n)
+
+                if (d_i2n := specs['train']['inter_2d_negrate']) > 0:
+                    specs['train']['inter_2d_negrate'] = d_i2n = trial.suggest_loguniform('inter_2d_negrate', 0.0001 * d_i2n, d_i2n)
+                
+                if d_d2n == 0 and d_i2n == 0:
+                    loss_weight['disco_2d_neg'] = specs['train']['disco_2d_negrate'] = 0
+                else:
                     loss_weight['disco_2d_neg'] = l_d2n = trial.suggest_float('disco_2d_neg', 1e-6, 1.0)
                     loss_str += 'N' + height_ratio(l_d2n)
-                else:
-                    loss_weight['disco_2d_neg'] = specs['train']['disco_2d_negrate'] = 0
 
                 medium_factor = specs['data']
                 medium_factor = specs['data'][get_sole_key(medium_factor)]['medium_factor']
@@ -278,7 +286,8 @@ class DiscoMultiOperator(DiscoOperator):
                 med_str = 'med='
                 if involve_balanced: med_str += f'{height_ratio(bz)}'
                 if multi_medoid:     med_str += 'M' + ''.join(height_ratio(v) for v in med_v)
-                if d_d2n > 0:        med_str += f'Ng={d_d2n:.1e}'
+                if d_d2n > 0:        med_str += f'ND={d_d2n:.1e}'
+                if d_i2n > 0:        med_str += f'NI={d_i2n:.1e}'
                 return med_str + ';' + loss_str + f';lr={lr:.1e}'
 
             self._mode_trees = [], [] # force init

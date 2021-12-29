@@ -204,6 +204,26 @@ def validate_and_maintain(bottom_info, top_down, root_id, trace_dst):
             top_down[pid].children.pop(cid)
     __validate(being_bids, to_be_bids, top_down, checked_nids)
 
+def direct_read_penn(tree, *, cid = 0, nid = 500):
+    this_nid = nid
+    bt = {}
+    td = {}
+    final = nid == 500
+    if tree.height() > 2:
+        children = set()
+        for subtree in tree:
+            nid += 1
+            children.add(nid if subtree.height() > 2 else cid)
+            _bt, _td, cid, nid = direct_read_penn(subtree, cid = cid, nid = nid)
+            bt.update(_bt)
+            td.update(_td)
+        td[this_nid] = TopDown(tree.label(), children)
+    else:
+        bt[cid] = tree[0], tree.label()
+    if final:
+        bt = [(cid, wd, tg) for cid, (wd, tg) in bt.items()]
+        return bt, td, this_nid
+    return bt, td, cid + 1, nid
 
 TraceSrc = namedtuple('TraceSrc', 'pid, cid, lhs, rhs')
 TraceDst = namedtuple('TraceDst', 'typ, tid, pid, cid, bid')
@@ -752,7 +772,7 @@ class SpanTale:
         blocks += f':{last_end - 1}'
         return blocks
 
-from utils.str_ops import len_ea
+from utils.str_ops import count_wide_east_asian
 def draw_str_lines(bottom, top_down, reverse = True, attachment = {}, wrap_len = 1, line_start = ''):
     if reverse:
         LC, MC, RC, MP = '┌┬┐┴'
@@ -778,16 +798,17 @@ def draw_str_lines(bottom, top_down, reverse = True, attachment = {}, wrap_len =
     next_top_down = defaultdict(list)
     wl = wrap_len << 1
     for bid, word, tag in bottom:
-        unit_len = max(len_ea(word), len(tag)) + wl
-        word_line += word.center(unit_len)
+        num_wide_chars = count_wide_east_asian(word)
+        unit_len = max(len(word) + num_wide_chars, len(tag)) + wl
+        word_line += word.center(unit_len - num_wide_chars)
         tag_line  +=  tag.center(unit_len)
-        mid_pos = len(word_line) - round(unit_len // 2)
+        mid_pos = len(tag_line) - round(unit_len // 2)
         start_bars.add(mid_pos)
         next_top_down[bottom_up[bid]].append((bid, mid_pos))
     line_end = ' ' * len(line_start)
     word_line += line_end
-    tag_line += line_end
-    pic_width = len(word_line)
+    tag_line  += line_end
+    pic_width = len(tag_line)
     str_lines.append(word_line)
     str_lines.append(tag_line)
     # print(word_line)

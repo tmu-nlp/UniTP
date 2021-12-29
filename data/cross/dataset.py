@@ -292,6 +292,7 @@ class DynamicCrossDataset(LengthOrderedDataset):
             extra_text_helper = extra_text_helper(text, device, c2i)
         super().__init__(heads, lengths, factors, min_len, max_len, extra_text_helper)
         self._device_cfo = device, continuous_fence_only
+        InterLayerDisco.tensor_args.update(device = device)
 
     def __reset_and_show_factors(self, factors, prefix):
         balanced_prob = factors['balanced']
@@ -366,7 +367,11 @@ class DynamicCrossDataset(LengthOrderedDataset):
                 # 2d: [b, s++] & [b, 2ds--]
                 shape = []
                 components = []
-                for l_space, l_disco in zip(zip_longest(*space_column, fillvalue = []), zip_longest(*column, fillvalue = {})): # all layer slices [(), ] [(), ]
+                condensed_cnt = [0] * batch_size
+                condensed_max_layer_size = []
+                condense_layer = {}
+                condense_exclude = {bid: None for bid, b in enumerate(column) if sum(bool(l) for l in b) == 1}
+                for src_lid, (l_space, l_disco) in enumerate(zip(zip_longest(*space_column, fillvalue = []), zip_longest(*column, fillvalue = {}))): # all layer slices [(), ] [(), ]
                     batch_layer_disco = [] # same dim with space
                     batch_layer_split = [] # splitting points for continuous constituents
                     max_split_len = 0
@@ -378,7 +383,8 @@ class DynamicCrossDataset(LengthOrderedDataset):
                     comp_batch = []
                     max_comp_len = 0
                     max_comp_size = 0
-                    for disco_set in l_disco:
+                    l_condnse_layer = {}
+                    for src_bid, disco_set in enumerate(l_disco):
                         disco_children = []
                         if disco_set:
                             num_comp_size = len(disco_set)
@@ -390,7 +396,23 @@ class DynamicCrossDataset(LengthOrderedDataset):
                             if num_comp_len > max_comp_len:
                                 max_comp_len = num_comp_len
                             comp_batch.append((disco_set, disco_children))
+
+                            if src_bid in condense_exclude:
+                                assert condense_exclude[src_bid] is None
+                                condense_exclude[src_bid] = src_lid
+                            else:
+                                dst_lid = condensed_cnt[src_bid]
+                                condensed_cnt[src_bid] += 1
+                                l_condnse_layer[src_bid] = dst_lid, num_comp_len
+                                if dst_lid < len(condensed_max_layer_size):
+                                    cmls = condensed_max_layer_size[dst_lid]
+                                    if num_comp_len > cmls:
+                                        condensed_max_layer_size[dst_lid] = num_comp_len
+                                else:
+                                    condensed_max_layer_size.append(num_comp_len)
                         batch_layer_disco.append(disco_children)
+                    if l_condnse_layer:
+                        condense_layer[src_lid] = l_condnse_layer
                     split_segment.append(max_split_len + 1)
                     con_split_column.append(batch_layer_split)
                     dis_layer_column.append(batch_layer_disco)
@@ -407,6 +429,8 @@ class DynamicCrossDataset(LengthOrderedDataset):
                 field_columns['dis_disco'] = torch.tensor(fill_bool_layers(batch_size, dis_layer_column, segment), device = device)
                 field_columns['con_split'] = torch.tensor(fill_bool_layers(batch_size, con_split_column, split_segment, True), device = device)
                 if any(components):
+                    if any(condensed_cnt):
+                        field_columns['inter_disco'] = InterLayerDisco(condensed_cnt, condensed_max_layer_size, condense_layer, condense_exclude)
                     start = 0
                     # dis_slice_shape = []
                     comp = np.zeros(sum(b*l*l for b, _, l in shape), dtype = np.bool)
@@ -474,3 +498,105 @@ def fill_bool_layers(batch_size, sample_layers, tensor_seg, remant = False):
 def component_segment(shape):
     shape = np.array([[0, 0, 0]] + shape)
     return np.cumsum(np.prod(shape, 1))
+
+class InterLayerDisco:
+    lhs_dim = rhs_dim = None
+    tensor_args = {}
+
+    def __init__(self, condensed_cnt, condensed_max_layer_size, condense_layer, condense_exclude):
+        bid_s2d = {}
+        for dst_bid, (src_bid, cnt) in enumerate(sorted(enumerate(condensed_cnt), key = lambda x: -x[1])):
+            if cnt == 0: break
+            bid_s2d[src_bid] = dst_bid
+        b_dim = len(bid_s2d)
+        s_dim = sum(condensed_max_layer_size)
+        dst_volumn = [[0, {}] for _ in condensed_max_layer_size] # batch vs. layer
+        for layer in condense_layer.values():
+            for src_bid, (dst_lid, dst_len) in layer.items():
+                dst_volumn[dst_lid][0] += 1
+                dst_volumn[dst_lid][1][bid_s2d[src_bid]] = dst_len
+        for eid, (n, d) in enumerate(dst_volumn):
+            dst_volumn[eid] = n, tuple(d[k] for k in sorted(d))
+        layer_exclude = {}
+        for src_bid, lid in condense_exclude.items():
+            if lid in layer_exclude:
+                layer_exclude[lid].add(src_bid)
+            else:
+                layer_exclude[lid] = {src_bid}
+        self._args = b_dim, s_dim, bid_s2d, condensed_max_layer_size, condense_layer, layer_exclude, dst_volumn
+        if self.lhs_dim and self.rhs_dim:
+            self.create_base(self.lhs_dim, self.rhs_dim, **self.tensor_args)
+
+    def __str__(self):
+        b_dim, s_dim, _, condensed_max_layer_size, condense_layer, _, _ = self._args
+        s = f'D.samples: {b_dim}, Max.comp: {s_dim}\n  L.sizes: '
+        return s + f'{condensed_max_layer_size}\n  Op. {condense_layer}'
+
+    def create_base(self, lhs_dim, rhs_dim, **tensor_args):
+        batch_dim, seq_dim = self._args[:2]
+        batch_seq_dim = batch_dim * seq_dim + 1 #0 as a dump
+        self._lhs = torch.zeros(batch_seq_dim, lhs_dim, **tensor_args)
+        self._rhs = torch.zeros(batch_seq_dim, rhs_dim, **tensor_args)
+
+    def store(self, src_lid, lhs, rhs):
+        _, seq_dim, bid_s2d, condensed_max_layer_size, condense_layer, layer_exclude, _ = self._args
+        if src_lid not in condense_layer:
+            assert src_lid in layer_exclude
+            return
+        lb, ls, le = lhs.shape
+        rb, rs, re = rhs.shape
+        assert lb == rb and ls == rs
+        bs = lb * ls
+        lhs = lhs.reshape(bs, le)
+        rhs = rhs.reshape(bs, re)
+        index = np.zeros(bs, dtype = np.long)
+        layer = condense_layer[src_lid]
+        bid_a2r = {a:r for r,a in enumerate(sorted(layer.keys()|layer_exclude.get(src_lid, set())))}
+        for src_bid, (dst_lid, n_disco) in layer.items():
+            rel_bid = bid_a2r[src_bid] * ls
+            dst_bid = bid_s2d[src_bid] * seq_dim + sum(condensed_max_layer_size[:dst_lid]) + 1
+            for i in range(n_disco):
+                index[rel_bid + i] = dst_bid + i
+                # try:
+                #     print('good', src_lid)
+                # except:
+                #     print(src_lid, lb, ls, le, re)
+                #     breakpoint()
+                # print(src_bid, i, src_bid * ls + i, '=>', dst_bid, dst_lid + i, dst_bid * seq_dim + dst_lid + i)
+        index = torch.tensor(index, device = lhs.device)
+        index.unsqueeze_(-1)
+        self._lhs.scatter_add_(0, index.expand(bs, le), lhs)
+        self._rhs.scatter_add_(0, index.expand(bs, re), rhs)
+
+    def __iter__(self):
+        self._dl_start = 1, 0
+        return self
+
+    def __next__(self):
+        batch_dim, seq_dim, _, condensed_max_layer_size, _, _, dst_volumn = self._args
+        lc, ds = self._dl_start
+        if lc < len(condensed_max_layer_size):
+            lb = lc - 1
+            sl = condensed_max_layer_size[lb]
+            ml = condensed_max_layer_size[lc]
+            dm = ds + sl
+            de = dm + ml
+            self._dl_start = lc + 1, dm
+            lhs = self._lhs[1:].reshape(batch_dim, seq_dim, -1)
+            rhs = self._rhs[1:].reshape(batch_dim, seq_dim, -1)
+            bw, sv = dst_volumn[lb]
+            bv, mv = dst_volumn[lc]
+            assert bw >= bv, 'batch volumn must decrease'
+            device = self.tensor_args.get('device')
+            sl = torch.arange(sl, device = device)
+            ml = torch.arange(ml, device = device)
+            sv = torch.tensor(sv[:bv], device = device)
+            mv = torch.tensor(mv[:bv], device = device)
+            sl.unsqueeze_(0); sv.unsqueeze_(1)
+            ml.unsqueeze_(0); mv.unsqueeze_(1)
+            mt = (sl < sv).unsqueeze(2) & (ml < mv).unsqueeze(1)
+            sm = lhs[:bv, ds:dm], rhs[:bv, dm:de], mt
+            ms = lhs[:bv, dm:de], rhs[:bv, ds:dm], mt.transpose(1, 2)
+            return sm, ms
+        else:
+            raise StopIteration

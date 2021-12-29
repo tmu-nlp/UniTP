@@ -261,6 +261,10 @@ class DiscoMultiStem(MultiStem):
         disco_2d_lhs, disco_2d_op, disco_2d_rhs = disco_2d_form.split('.')
         lhs_dim, lhs_select = _select(disco_2d_lhs, model_dim, space_dim)
         rhs_dim, rhs_select = _select(disco_2d_rhs, model_dim, space_dim)
+        from data.cross.dataset import InterLayerDisco
+        InterLayerDisco.lhs_dim = lhs_dim
+        InterLayerDisco.rhs_dim = rhs_dim
+        InterLayerDisco.tensor_args.update(dtype = self.predict_1d_disco.weight_in.weight.dtype)
         SelectCache.fns = lhs_select, rhs_select
         if disco_2d_op.startswith('biaff'):
             self.biaff_2d_disco = BiaffineAttention(lhs_dim, rhs_dim, disco_2d_op == 'biaff+b')
@@ -278,7 +282,7 @@ class DiscoMultiStem(MultiStem):
                 return self.cat_2d_disco(self._stem_dp(hidden), self._stem_dp)
         self.predict_2d_disco = predict_2d_disco
 
-    def forward(self, unit_emb, existence, supervision = None, disco_2d_negative = 0, **kw_args):
+    def forward(self, unit_emb, existence, supervision = None, disco_2d_negative = 0, inter_2d_negative = 0, **kw_args):
         batch_size, seg_len, model_dim = unit_emb.shape
         h0c0 = self.get_h0c0(batch_size)
         max_iter_n = seg_len << 1 # 2 times
@@ -295,7 +299,7 @@ class DiscoMultiStem(MultiStem):
         layers_of_disco_2d = [] # 1010x0101
         
         if teacher_forcing:
-            space, dis_disco = supervision
+            space, dis_disco, inter_disco = supervision
             layers_of_disco_2d_positive = []
             layers_of_disco_2d_negative = []
         else:
@@ -388,12 +392,14 @@ class DiscoMultiStem(MultiStem):
                                         layers_of_disco_2d_negative,
                                         self.predict_2d_disco(con_lhs, con_rhs),
                                         con_space)
-
                     
                 dis_exist = discontinuous[dis_batch_idx]
                 dis_helper = condense_helper(dis_exist, as_existence = True)
                 get_dis_emb = lambda emb: condense_left(emb[dis_batch_idx], dis_helper)
-                disco_2d_logits = self.predict_2d_disco(*cache.disco_2d(get_dis_emb))
+                card_lhs, card_rhs = cache.disco_2d(get_dis_emb)
+                if inter_2d_negative > 0 and not isinstance(inter_disco, list):
+                    inter_disco.store(l_cnt, card_lhs, card_rhs)
+                disco_2d_logits = self.predict_2d_disco(card_lhs, card_rhs)
             else:
                 disco_2d_logits = None
             layers_of_fence.append(fence_logits)
@@ -411,6 +417,14 @@ class DiscoMultiStem(MultiStem):
             if teacher_forcing:
                 if disco_2d_logits is not None:
                     layers_of_disco_2d.append(disco_2d_logits.reshape(-1))
+                    for (ls, rm, mt), (lm, rs, tm) in inter_disco: # mt &= backward error
+                        negative = self.predict_2d_disco(ls, rm)
+                        mt = mt & (torch.rand_like(negative) < (self._sigmoid(negative) * inter_2d_negative))
+                        layers_of_disco_2d_negative.append(negative[mt].reshape(-1))
+                        negative = self.predict_2d_disco(lm, rs)
+                        tm = tm & (torch.rand_like(negative) < (self._sigmoid(negative) * inter_2d_negative))
+                        layers_of_disco_2d_negative.append(negative[tm].reshape(-1))
+
             else:
                 layer_len = seq_len[:, None]
                 layer_fence_logits[:, 0] = fmax
