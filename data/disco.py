@@ -54,6 +54,7 @@ class DiscoReader(WordBaseReader):
 
         from data.cross.dataset import StaticCrossDataset
         len_sort_ds = StaticCrossDataset(self.dir_join, mode, **common_args)
+        self.loaded_ds[mode] = len_sort_ds
         return post_batch(mode, len_sort_ds, sort_by_length, bucket_length, batch_size)
 
 
@@ -107,7 +108,8 @@ class DiscoMultiReader(WordBaseReader):
               min_len        = 1,
               max_len        = None,
               min_gap        = 0,
-              sort_by_length = True):
+              sort_by_length = True,
+              inter_2d       = False):
         from data.cross.dataset import DynamicCrossDataset
         from tqdm import tqdm
         (from_tree_fn, v2is, has_greedy_sub, continuous_fence_only, word_trace,
@@ -129,6 +131,7 @@ class DiscoMultiReader(WordBaseReader):
                                           min_gap,
                                           extra_text_helper,
                                           c2i,
-                                          continuous_fence_only)
+                                          continuous_fence_only,
+                                          inter_2d)
         self.loaded_ds[mode] = len_sort_ds
         return post_batch(mode, len_sort_ds, sort_by_length, bucket_length, batch_size)

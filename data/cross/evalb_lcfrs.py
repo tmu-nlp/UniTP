@@ -345,6 +345,7 @@ def read_export_samples(fname):
             else:
                 sample.append(line)
 
+from data.cross import C_NT_START
 def parse_export_sample(lines, fallback = None, dptb_split = False):
     bottom = []
     top_down = defaultdict(list)
@@ -366,15 +367,15 @@ def parse_export_sample(lines, fallback = None, dptb_split = False):
     first = len(top_down[0])
     if first > 1:
         assert isinstance(fallback, str)
-        root = max(top_down) + 500
+        root = max(top_down) + C_NT_START
         non_terminals[root] = fallback
         top_down[root] = top_down.pop(0)
         top_down[0] = [root]
     elif first == 1 and not non_terminals:
         assert isinstance(fallback, str)
-        top_down[500].append(top_down[0].pop())
-        top_down[0].append(500)
-        non_terminals[500] = fallback
+        top_down[C_NT_START].append(top_down[0].pop())
+        top_down[0].append(C_NT_START)
+        non_terminals[C_NT_START] = fallback
     root = top_down.pop(0).pop()
     for pid, label in non_terminals.items():
         top_down[pid] = TopDown(label, {n: '--' for n in top_down[pid]})
@@ -384,7 +385,7 @@ def export_string(sent_id, bottom, top_down, root_id):
     lines = f'#BOS {sent_id}\n'
     bottom_up = {}
     has_vroot = False
-    node_dict = defaultdict(lambda: len(node_dict) + 500)
+    node_dict = defaultdict(lambda: len(node_dict) + C_NT_START)
     for pid, td in top_down.items():
         if pid == root_id and td.label == 'VROOT':
             pid = 0

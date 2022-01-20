@@ -19,7 +19,8 @@ try:
             n_comps = np.unique(cid).shape[0]
             comps = comps[:n_comps, :dis_len]
             clear_2d = clear_2d[:dis_len, :dis_len]
-            layer_2d_logits[int(bid)] = clear_2d, cid, comps, n_comps, bool(thresh < 0), thresh, trial
+            fail = n_comps == dis_len and bool(thresh < 0)
+            layer_2d_logits[int(bid)] = clear_2d, cid, comps, n_comps, fail, thresh, trial
         return sections, layer_2d_logits
 except:
     print(byte_style('[HINT] CUDA module xccp_decode', '3'), 'is not compiled for full discontinuity matrix parallelism.', file = stderr)
@@ -282,7 +283,7 @@ class DiscoMultiStem(MultiStem):
                 return self.cat_2d_disco(self._stem_dp(hidden), self._stem_dp)
         self.predict_2d_disco = predict_2d_disco
 
-    def forward(self, unit_emb, existence, supervision = None, disco_2d_negative = 0, inter_2d_negative = 0, **kw_args):
+    def forward(self, unit_emb, existence, supervision = None, disco_2d_intra_rate = 0, disco_2d_inter_rate = 0, **kw_args):
         batch_size, seg_len, model_dim = unit_emb.shape
         h0c0 = self.get_h0c0(batch_size)
         max_iter_n = seg_len << 1 # 2 times
@@ -302,6 +303,7 @@ class DiscoMultiStem(MultiStem):
             space, dis_disco, inter_disco = supervision
             layers_of_disco_2d_positive = []
             layers_of_disco_2d_negative = []
+            layers_of_inter_2d_negative = []
         else:
             layers_of_space = [] # 001132324
             layers_of_weight = []
@@ -350,8 +352,8 @@ class DiscoMultiStem(MultiStem):
                     break
                 
             dis_batch = discontinuous.any(dim = 1)
-            if teacher_forcing and disco_2d_negative:
-                disco_1d_prob = self._sigmoid(disco_1d_logits) * disco_2d_negative
+            if teacher_forcing and disco_2d_intra_rate:
+                disco_1d_prob = self._sigmoid(disco_1d_logits) * disco_2d_intra_rate
                 disco_1d_rand = torch.rand_like(disco_1d_prob, dtype = unit_emb.dtype) < disco_1d_prob
                 disco_1d_rand &= existence
                 if (con_con_rand_batch := dis_batch.logical_not() & disco_1d_rand.any(dim = 1)).any():
@@ -370,7 +372,7 @@ class DiscoMultiStem(MultiStem):
                 if self._continuous_fence_only:
                     fence_logits = continuous_fence(bbt_zeros, continuous, fence_logits)
 
-                if teacher_forcing and disco_2d_negative:
+                if teacher_forcing and disco_2d_intra_rate:
                     con_rand = continuous & disco_1d_rand
                     dis_con_rand_batch = dis_batch & con_rand.any(dim = 1)
                     if dis_con_rand_batch.any():
@@ -397,7 +399,7 @@ class DiscoMultiStem(MultiStem):
                 dis_helper = condense_helper(dis_exist, as_existence = True)
                 get_dis_emb = lambda emb: condense_left(emb[dis_batch_idx], dis_helper)
                 card_lhs, card_rhs = cache.disco_2d(get_dis_emb)
-                if inter_2d_negative > 0 and not isinstance(inter_disco, list):
+                if disco_2d_intra_rate > 0 and hasattr(inter_disco, 'store'):
                     inter_disco.store(l_cnt, card_lhs, card_rhs)
                 disco_2d_logits = self.predict_2d_disco(card_lhs, card_rhs)
             else:
@@ -417,14 +419,6 @@ class DiscoMultiStem(MultiStem):
             if teacher_forcing:
                 if disco_2d_logits is not None:
                     layers_of_disco_2d.append(disco_2d_logits.reshape(-1))
-                    for (ls, rm, mt), (lm, rs, tm) in inter_disco: # mt &= backward error
-                        negative = self.predict_2d_disco(ls, rm)
-                        mt = mt & (torch.rand_like(negative) < (self._sigmoid(negative) * inter_2d_negative))
-                        layers_of_disco_2d_negative.append(negative[mt].reshape(-1))
-                        negative = self.predict_2d_disco(lm, rs)
-                        tm = tm & (torch.rand_like(negative) < (self._sigmoid(negative) * inter_2d_negative))
-                        layers_of_disco_2d_negative.append(negative[tm].reshape(-1))
-
             else:
                 layer_len = seq_len[:, None]
                 layer_fence_logits[:, 0] = fmax
@@ -456,9 +450,9 @@ class DiscoMultiStem(MultiStem):
                     layers_of_disco_2d.append(disco_2d)
                 sections = torch.where(seq_idx < layer_len, sections, torch.zeros_like(sections))
                 layers_of_space.append(sections)
+            # For the next layer,
             weights, unit_emb = blocky_softmax(sections, sub_emb, None, unit_emb)
-
-            seg_len   = unit_emb.shape[1]
+            seg_len = unit_emb.shape[1]
             existence, _ = sections.max(dim = 1, keepdim = True)
             existence = seq_idx[:, :seg_len] < existence
             if not teacher_forcing:
@@ -469,13 +463,21 @@ class DiscoMultiStem(MultiStem):
         fence      = torch.cat(layers_of_fence,     dim = 1) if layers_of_fence else torch.zeros(batch_size, 0, dtype = unit_emb.dtype, device = unit_emb.device)
         disco_1d   = torch.cat(layers_of_disco_1d,  dim = 1)
         if teacher_forcing:
+            for (ls, rm, mt), (lm, rs, tm) in inter_disco: # mt &= backward error
+                negative = self.predict_2d_disco(ls, rm)
+                mt = mt & (torch.rand_like(negative) < (self._sigmoid(negative) * disco_2d_intra_rate))
+                layers_of_inter_2d_negative.append(negative[mt].reshape(-1))
+                negative = self.predict_2d_disco(lm, rs)
+                tm = tm & (torch.rand_like(negative) < (self._sigmoid(negative) * disco_2d_intra_rate))
+                layers_of_inter_2d_negative.append(negative[tm].reshape(-1))
             weight = space = None
             disco_2d = torch.cat(layers_of_disco_2d, dim = 0) if layers_of_disco_2d else None
             disco_2d_positive = torch.cat(layers_of_disco_2d_positive, dim = 0) if layers_of_disco_2d_positive else None
             disco_2d_negative = torch.cat(layers_of_disco_2d_negative, dim = 0) if layers_of_disco_2d_negative else None
+            inter_2d_negative = torch.cat(layers_of_inter_2d_negative, dim = 0) if layers_of_inter_2d_negative else None
         else:
             disco_2d = layers_of_disco_2d
-            disco_2d_positive = disco_2d_negative = None
+            disco_2d_positive = disco_2d_negative = inter_2d_negative = None
             if not layers_of_space:
                 assert not layers_of_weight
                 space  = torch.zeros(batch_size, 0, dtype = batch_dim.dtype, device = batch_dim.device)
@@ -485,7 +487,7 @@ class DiscoMultiStem(MultiStem):
                 weight = torch.cat(layers_of_weight, dim = 1)
             seg_length = torch.stack(seg_length, dim = 1)
 
-        return existence, embeddings, weight, disco_1d, fence, disco_2d, disco_2d_positive, disco_2d_negative, space, segment, seg_length
+        return existence, embeddings, weight, disco_1d, fence, disco_2d, disco_2d_positive, disco_2d_negative, inter_2d_negative, space, segment, seg_length
 
 
 # batch_insert(101011, 4444) -> 1010000011
@@ -542,7 +544,8 @@ class BaseRnnTree(DiscoMultiStem):
                 bottom_existence,
                 ingore_logits = False,
                 **kw_args):
-        (existence, embeddings, weight, disco_1d, fence, disco_2d, disco_2d_pos, disco_2d_neg, space, segment,
+        (existence, embeddings, weight, disco_1d, fence, disco_2d,
+         disco_2d_pos, disco_2d_neg, inter_2d_neg, space, segment,
          seg_length) = super().forward(base_inputs, bottom_existence, **kw_args)
 
         if self._hidden_dim:
@@ -564,7 +567,7 @@ class BaseRnnTree(DiscoMultiStem):
         else:
             layers_of_hidden = tags = labels = None
 
-        return existence, embeddings, weight, disco_1d, fence, disco_2d, disco_2d_pos, disco_2d_neg, space, tags, labels, segment, seg_length
+        return existence, embeddings, weight, disco_1d, fence, disco_2d, disco_2d_pos, disco_2d_neg, inter_2d_neg, space, tags, labels, segment, seg_length
 
     @property
     def model_dim(self):
@@ -689,3 +692,13 @@ class BaseRnnTree(DiscoMultiStem):
     # cate_time = time() - start - svd_time
     # with open('svd_time.csv', 'a+') as fw:
     #     fw.write(f'{dis_size},{dis_max_children},{svd_time},{cate_time}\n')
+
+            # after sections
+            # if (existence != ((unit_emb ** 2).sum(-1) > 0)).any():
+            #     breakpoint()
+                    # fence_comp = ((seq_idx < layer_len) & (sections == 0)).any(dim = 1, keepdim = True)
+                    # if fence_comp.any():
+                    #     print(torch.where(fence_comp.squeeze(-1)))
+                    #     print(torch.where(layer_fence[:, 0].logical_not()))
+                    #     breakpoint()
+                    # sections += fence_comp

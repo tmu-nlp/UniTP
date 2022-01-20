@@ -43,7 +43,8 @@ def get_configs(recorder = None):
                                                    new_medium_factor or penn.medium_factor._nested,
                                                    max_len = penn.max_len,
                                                    min_gap = penn.min_gap,
-                                                   sort_by_length = penn.sort_by_length)
+                                                   sort_by_length = penn.sort_by_length,
+                                                   inter_2d = train_config.disco_2d_inter_rate > 0)
             else:
                 from data.backend import post_batch
                 train_ds.reset_factors(new_medium_factor)

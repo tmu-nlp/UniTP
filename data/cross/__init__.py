@@ -1,9 +1,7 @@
 from collections import namedtuple, defaultdict, Counter
-from copy import deepcopy
-from os import path
-from subprocess import call
 from utils.param_ops import get_sole_key
 TopDown = namedtuple('TopDown', 'label, children')
+C_NT_START = 500
 
 def has_multiple(gen):
     count = 0
@@ -110,7 +108,7 @@ def descendant_path(top_down, pid, cid, path = []):
             c_path = descendant_path(top_down, c, cid, c_path)
             if c_path: return c_path
 
-def __validate(being_bids, to_be_bids, top_down, checked_nids):
+def __validate(being_bids, to_be_bids, top_down, checked_nids, nt_start):
     redundant_bids = being_bids - to_be_bids
     redundant_nids = top_down.keys() - checked_nids
     if to_be_bids ^ being_bids:
@@ -124,7 +122,7 @@ def __validate(being_bids, to_be_bids, top_down, checked_nids):
             _, children = top_down.pop(nid)
             safe = True
             for cid in children:
-                if cid < 500:
+                if cid < nt_start:
                     safe &= cid not in being_bids
                 else:
                     safe &= cid in redundant_nids
@@ -160,7 +158,7 @@ def validate(bottom_info, top_down, root_id):
                     cids.add(cid)
         nids = cids
         cids = set()
-    __validate(being_bids, to_be_bids, top_down, checked_nids)
+    __validate(being_bids, to_be_bids, top_down, checked_nids, 500)
 
 def validate_and_maintain(bottom_info, top_down, root_id, trace_dst):
     cids = set()
@@ -171,13 +169,13 @@ def validate_and_maintain(bottom_info, top_down, root_id, trace_dst):
     checked_nids = set()
     while nids:
         for nid in nids:
-            if nid < 500:
+            if nid < C_NT_START:
                 to_be_bids.add(nid)
             elif nid not in top_down:
                 raise ValueError(f'nid({nid}) not in top_down[\'{set(top_down)}\']')
             checked_nids.add(nid)
             for cid in top_down[nid].children:
-                if cid < 500:
+                if cid < C_NT_START:
                     to_be_bids.add(cid)
                 else:
                     cids.add(cid)
@@ -202,13 +200,13 @@ def validate_and_maintain(bottom_info, top_down, root_id, trace_dst):
             checked_nids.remove(cid)
             pid = bottom_up.pop(cid)
             top_down[pid].children.pop(cid)
-    __validate(being_bids, to_be_bids, top_down, checked_nids)
+    __validate(being_bids, to_be_bids, top_down, checked_nids, C_NT_START)
 
-def direct_read_penn(tree, *, cid = 0, nid = 500):
+def direct_read_penn(tree, *, cid = 0, nid = C_NT_START):
     this_nid = nid
     bt = {}
     td = {}
-    final = nid == 500
+    final = nid == C_NT_START
     if tree.height() > 2:
         children = set()
         for subtree in tree:
@@ -315,14 +313,15 @@ def _read_dpenn(tree,
     trace_dst = defaultdict(list)
     stack = defaultdict(set)
     remaining_PRN_nodes = set()
-    if adjust_as_paper11: fix_for_dptb(tree)
-    remove_irrelevant_trace(tree)
+    if adjust_as_paper11:
+        fix_for_dptb(tree)
+        remove_irrelevant_trace(tree)
     tree = Tree('VROOT', [tree])
     for item in _preorder(tree):
         if isinstance(item, int):
             status = item
             if status == _CMD_BOL:
-                nid = 500 + len(top_down)
+                nid = C_NT_START + len(top_down)
                 top_down[nid] = []
                 stack['__CURRENT__'].add(nid)
         elif status == _CMD_TAG:
@@ -333,7 +332,7 @@ def _read_dpenn(tree,
             
             if wd[0] == '*' and wd[-1].isdigit() and '-' in wd[1:-1]:
                 _args = wd.split('-')
-                if _args[0] in E_DISCO:
+                if _args[0] in E_DISCO or not adjust_as_paper11:
                     tid = _args.pop()
                     tp_ = '-'.join(_args)
                     assert tg == '-NONE-'
@@ -413,7 +412,7 @@ def _read_dpenn(tree,
         top_down[d_pid].children[s_cid] = ftag
         # for better continuity
         if adjust_punct:
-            leftover_x = (x for x in top_down[s_pid].children.keys() - set({d_pid}) if x < 500)
+            leftover_x = (x for x in top_down[s_pid].children.keys() - set({d_pid}) if x < C_NT_START)
             leftover_x = sort_leftover(lhs, rhs, leftover_x)
             if leftover_x and all(bottom[x][2] in E_PENN_PUNCT for x in leftover_x):
                 for x in leftover_x:
@@ -463,7 +462,7 @@ def boundary(top_down, nid):
                 if cid in top_down:
                     cids.append(cid)
                 else:
-                    assert cid < 500
+                    assert cid < C_NT_START
                     coverage.append(cid)
         nids = cids
         cids = []
@@ -721,7 +720,7 @@ def bottom_trees(word, bottom_tag, layers_of_label, fall_back_root_label, perser
     terminals = []
     non_terminals = {}
     top_down = defaultdict(set)
-    NTS = 500
+    NTS = C_NT_START
     for tid, wd_tg in enumerate(zip(word, bottom_tag)):
         terminals.append((tid,) + wd_tg)
         if perserve_sub or layers_of_label[0][tid][0] in '#_':
@@ -782,8 +781,12 @@ def draw_str_lines(bottom, top_down, reverse = True, attachment = {}, wrap_len =
     for pid, td in top_down.items():
         for cid in td.children:
             bottom_up[cid] = pid
+    # count = 0
     while pid in bottom_up:
         pid = bottom_up[pid]
+        # count += 1
+        # if count > 100:
+        #     breakpoint()
     if bottom_up:
         root_id = pid
     else:
@@ -913,6 +916,8 @@ def draw_str_lines(bottom, top_down, reverse = True, attachment = {}, wrap_len =
         # print(line_line)
         # print(cons_line)
         next_top_down = future_top_down
+        # if len(str_lines) > 200:
+        #     raise ValueError('Max')
 
     if reverse:
         str_lines.reverse()

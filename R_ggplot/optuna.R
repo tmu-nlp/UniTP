@@ -43,6 +43,24 @@ load_dm <- function(model_name, corp_name) {
     list(ns = ns, ls = ls)
 }
 
+load_dm_ext <- function(model_name, corp_name) {
+    #, 'm.head', 'm.continuous', 'm.left', 'm.right'
+    data <- melt(data = load_optuna(model_name, corp_name),
+                 id.vars = c('tf', 'df'),
+                 #  measure.vars = c('lr'))
+                 measure.vars = c('l.tag', 'l.label', 'l.joint', 'l.disc', 'l.biaff', 'l.disco_2d_intra', 'l.disco_2d_inter',
+                                  'r.intra', 'r.inter', 'r.sub', 'lr'))
+    ns <- subset(data, variable != 'lr' & variable != 'r.intra' & variable != 'r.inter')
+    ls <- subset(data, variable == 'lr' | variable == 'r.intra' | variable == 'r.inter')
+    ns$variable <- factor(ns$variable,
+                          levels = c('l.tag', 'l.label', 'l.joint', 'l.disc', 'l.biaff', 'l.disco_2d_intra', 'l.disco_2d_inter', 'r.sub'),
+                          labels = c('Tag', 'Label', 'Joint', 'Disc.\nDM Loss Weights', ' Biaff.', 'Intra', 'Inter', '   P.sub'))
+    ls$variable <- factor(ls$variable, levels = c('r.intra', 'r.inter', 'lr'), labels = c('P.intra         \n|        Sampling Rates                         ',
+                                                                                          'P.inter',
+                                                                                          '|\n                 Learning Rate'))
+    list(ns = ns, ls = ls)
+}
+
 break_fn <- function(x) {
     x_max <- max(x)
     x_min <- min(x)
@@ -87,7 +105,7 @@ proc <- function(model_name, corp_name) {
         hc <- "tomato"
         lc <- "cyan"
     } else {
-        data <- load_dm(model_name, corp_name)
+        data <- load_dm_ext(model_name, corp_name)
         ws <- c(5.5, 2)
         legend.position <- 'right'
         hc <- "yellow"
@@ -104,10 +122,10 @@ proc <- function(model_name, corp_name) {
     ggsave(paste0(folder, fname), height = 1.7, width = 5.5)
 }
 
-proc('db', 'tiger')
-proc('db', 'dptb')
+# proc('db', 'tiger')
+# proc('db', 'dptb')
 proc('dm', 'tiger')
-proc('dm', 'dptb')
+# proc('dm', 'dptb')
 
 diff_dev_test <- function(data) {
     p <- ggplot(data, aes(dev.tf, test.tf))
@@ -130,15 +148,15 @@ diff_td_f1 <- function(data) {
 plot_diff <- function(model_name, corp_name, ann_plot) {
     data <- load_corp(paste('diff', 'optuna', model_name, sep = '.'), corp_name)
 
-    numbers <- data$test.tf
-    numbers <- aggregate(numbers, list(num = numbers), length)
-    start.test.tf <- data[which.max(numbers$x),]$test.tf
-    data <- subset(data, test.tf >= start.test.tf)
+    # numbers <- data$test.tf
+    # numbers <- aggregate(numbers, list(num = numbers), length)
+    # start.test.tf <- data[which.max(numbers$x),]$test.tf
+    # data <- subset(data, test.tf >= start.test.tf)
 
-    dx <- density(data$test.tf)
-    dy <- approx(dx$x, dx$y, xout = data$test.tf)$y
-    od <- order(dy)
-    data <- data[od,]
+    # dx <- density(data$test.tf)
+    # dy <- approx(dx$x, dx$y, xout = data$test.tf)$y
+    # od <- order(dy)
+    # data <- data[od,]
 
     gd <- guide_legend(title = 'Count')
     gd <- guides(color = gd, size = gd)
@@ -182,10 +200,10 @@ plot_diff <- function(model_name, corp_name, ann_plot) {
     ggsave(paste0(folder, fname), height = 1.9, width = 5.3)
 }
 
-plot_diff('db', 'tiger', F)
-plot_diff('db', 'dptb', F)
+# plot_diff('db', 'tiger', F)
+# plot_diff('db', 'dptb', F)
 plot_diff('dm', 'tiger', F)
-plot_diff('dm', 'dptb', F)
+# plot_diff('dm', 'dptb', F)
 # en <- read.csv(paste0('optuna.', task, '.en.csv'))
 # en$lang <- rep('DPTB - English', length(en$rank))
 # de <- read.csv(paste0('optuna.', task, '.de.csv'))

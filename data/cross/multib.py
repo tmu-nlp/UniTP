@@ -497,10 +497,6 @@ class TreeKeeper:
         return max(self._gaps.values())
 
     @property
-    def lines(self):
-        return self._lines
-
-    @property
     def word(self):
         # text
         return self._word

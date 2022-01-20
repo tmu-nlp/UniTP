@@ -251,7 +251,8 @@ class DynamicCrossDataset(LengthOrderedDataset):
                  min_gap  = 0,
                  extra_text_helper = None,
                  c2i = None,
-                 continuous_fence_only = True):
+                 continuous_fence_only = True,
+                 inter_2d = False):
 
         text = []
         lengths = []
@@ -291,7 +292,7 @@ class DynamicCrossDataset(LengthOrderedDataset):
             text = sort_by_order(order, text)
             extra_text_helper = extra_text_helper(text, device, c2i)
         super().__init__(heads, lengths, factors, min_len, max_len, extra_text_helper)
-        self._device_cfo = device, continuous_fence_only
+        self._device_cfo = device, continuous_fence_only, inter_2d
         InterLayerDisco.tensor_args.update(device = device)
 
     def __reset_and_show_factors(self, factors, prefix):
@@ -336,7 +337,7 @@ class DynamicCrossDataset(LengthOrderedDataset):
 
     def _collate_fn(self, batch):
         field_columns = {}
-        device, continuous_fence_only = self._device_cfo
+        device, continuous_fence_only, inter_2d = self._device_cfo
         for field, column in zip(self.heads, zip(*batch)):
             if field == 'length':
                 batch_size = len(column)
@@ -367,10 +368,13 @@ class DynamicCrossDataset(LengthOrderedDataset):
                 # 2d: [b, s++] & [b, 2ds--]
                 shape = []
                 components = []
-                condensed_cnt = [0] * batch_size
-                condensed_max_layer_size = []
-                condense_layer = {}
-                condense_exclude = {bid: None for bid, b in enumerate(column) if sum(bool(l) for l in b) == 1}
+                if inter_2d:
+                    condensed_cnt = [0] * batch_size
+                    condensed_max_layer_size = []
+                    condense_layer = {}
+                    condense_exclude = {bid: None for bid, b in enumerate(column) if sum(bool(l) for l in b) == 1}
+                    condense_last_disco = {}
+                    condense_kinship = {bid: [] for bid in range(batch_size)}
                 for src_lid, (l_space, l_disco) in enumerate(zip(zip_longest(*space_column, fillvalue = []), zip_longest(*column, fillvalue = {}))): # all layer slices [(), ] [(), ]
                     batch_layer_disco = [] # same dim with space
                     batch_layer_split = [] # splitting points for continuous constituents
@@ -397,19 +401,26 @@ class DynamicCrossDataset(LengthOrderedDataset):
                                 max_comp_len = num_comp_len
                             comp_batch.append((disco_set, disco_children))
 
-                            if src_bid in condense_exclude:
-                                assert condense_exclude[src_bid] is None
-                                condense_exclude[src_bid] = src_lid
-                            else:
-                                dst_lid = condensed_cnt[src_bid]
-                                condensed_cnt[src_bid] += 1
-                                l_condnse_layer[src_bid] = dst_lid, num_comp_len
-                                if dst_lid < len(condensed_max_layer_size):
-                                    cmls = condensed_max_layer_size[dst_lid]
-                                    if num_comp_len > cmls:
-                                        condensed_max_layer_size[dst_lid] = num_comp_len
+                            if inter_2d:
+                                if src_bid in condense_exclude:
+                                    assert condense_exclude[src_bid] is None
+                                    condense_exclude[src_bid] = src_lid
                                 else:
-                                    condensed_max_layer_size.append(num_comp_len)
+                                    dst_lid = condensed_cnt[src_bid]
+                                    condensed_cnt[src_bid] += 1
+                                    l_condnse_layer[src_bid] = dst_lid, num_comp_len
+                                    if dst_lid < len(condensed_max_layer_size):
+                                        cmls = condensed_max_layer_size[dst_lid]
+                                        if num_comp_len > cmls:
+                                            condensed_max_layer_size[dst_lid] = num_comp_len
+                                    else:
+                                        condensed_max_layer_size.append(num_comp_len)
+                                    if src_bid in condense_last_disco:
+                                        last_src_lid = condense_last_disco[src_bid]
+                                        condense_kinship[src_bid].append(disco_inter_gen(column[src_bid][last_src_lid],
+                                                                                         space_column[src_bid][last_src_lid:src_lid],
+                                                                                         disco_set))
+                                condense_last_disco[src_bid] = src_lid
                         batch_layer_disco.append(disco_children)
                     if l_condnse_layer:
                         condense_layer[src_lid] = l_condnse_layer
@@ -429,8 +440,8 @@ class DynamicCrossDataset(LengthOrderedDataset):
                 field_columns['dis_disco'] = torch.tensor(fill_bool_layers(batch_size, dis_layer_column, segment), device = device)
                 field_columns['con_split'] = torch.tensor(fill_bool_layers(batch_size, con_split_column, split_segment, True), device = device)
                 if any(components):
-                    if any(condensed_cnt):
-                        field_columns['inter_disco'] = InterLayerDisco(condensed_cnt, condensed_max_layer_size, condense_layer, condense_exclude)
+                    if inter_2d and any(condensed_cnt):
+                        field_columns['inter_disco'] = InterLayerDisco(condensed_cnt, condensed_max_layer_size, condense_layer, condense_exclude, condense_kinship)
                     start = 0
                     # dis_slice_shape = []
                     comp = np.zeros(sum(b*l*l for b, _, l in shape), dtype = np.bool)
@@ -503,7 +514,7 @@ class InterLayerDisco:
     lhs_dim = rhs_dim = None
     tensor_args = {}
 
-    def __init__(self, condensed_cnt, condensed_max_layer_size, condense_layer, condense_exclude):
+    def __init__(self, condensed_cnt, condensed_max_layer_size, condense_layer, condense_exclude, condense_kinship):
         bid_s2d = {}
         for dst_bid, (src_bid, cnt) in enumerate(sorted(enumerate(condensed_cnt), key = lambda x: -x[1])):
             if cnt == 0: break
@@ -523,12 +534,26 @@ class InterLayerDisco:
                 layer_exclude[lid].add(src_bid)
             else:
                 layer_exclude[lid] = {src_bid}
-        self._args = b_dim, s_dim, bid_s2d, condensed_max_layer_size, condense_layer, layer_exclude, dst_volumn
+        kinship = []
+        for src_bid, layers in condense_kinship.items():
+            for dst_lid, sm_gen in enumerate(layers):
+                if dst_lid < len(kinship):
+                    layer = kinship[dst_lid]
+                else:
+                    layer = ([], [], [])
+                    kinship.append(layer)
+                bl, sl, ml = layer
+                for si, mi in sm_gen:
+                    bl.append(bid_s2d[src_bid])
+                    sl.append(si)
+                    ml.append(mi)
+
+        self._args = b_dim, s_dim, bid_s2d, condensed_max_layer_size, condense_layer, layer_exclude, dst_volumn, kinship
         if self.lhs_dim and self.rhs_dim:
             self.create_base(self.lhs_dim, self.rhs_dim, **self.tensor_args)
 
     def __str__(self):
-        b_dim, s_dim, _, condensed_max_layer_size, condense_layer, _, _ = self._args
+        b_dim, s_dim, _, condensed_max_layer_size, condense_layer, _, _, _ = self._args
         s = f'D.samples: {b_dim}, Max.comp: {s_dim}\n  L.sizes: '
         return s + f'{condensed_max_layer_size}\n  Op. {condense_layer}'
 
@@ -539,7 +564,7 @@ class InterLayerDisco:
         self._rhs = torch.zeros(batch_seq_dim, rhs_dim, **tensor_args)
 
     def store(self, src_lid, lhs, rhs):
-        _, seq_dim, bid_s2d, condensed_max_layer_size, condense_layer, layer_exclude, _ = self._args
+        _, seq_dim, bid_s2d, condensed_max_layer_size, condense_layer, layer_exclude, _, _ = self._args
         if src_lid not in condense_layer:
             assert src_lid in layer_exclude
             return
@@ -573,7 +598,7 @@ class InterLayerDisco:
         return self
 
     def __next__(self):
-        batch_dim, seq_dim, _, condensed_max_layer_size, _, _, dst_volumn = self._args
+        batch_dim, seq_dim, _, condensed_max_layer_size, _, _, dst_volumn, kinship = self._args
         lc, ds = self._dl_start
         if lc < len(condensed_max_layer_size):
             lb = lc - 1
@@ -594,9 +619,29 @@ class InterLayerDisco:
             mv = torch.tensor(mv[:bv], device = device)
             sl.unsqueeze_(0); sv.unsqueeze_(1)
             ml.unsqueeze_(0); mv.unsqueeze_(1)
-            mt = (sl < sv).unsqueeze(2) & (ml < mv).unsqueeze(1)
+            mt = (sl < sv).unsqueeze(2) & (ml < mv).unsqueeze(1) # [bs, sl, ml]
+            mt[kinship[lb]] = False
             sm = lhs[:bv, ds:dm], rhs[:bv, dm:de], mt
             ms = lhs[:bv, dm:de], rhs[:bv, ds:dm], mt.transpose(1, 2)
             return sm, ms
         else:
             raise StopIteration
+
+def enumerate_values(disco_set):
+    map = []
+    for bvs in disco_set.values():
+        map.extend(bvs)
+    map.sort()
+    return {v:k for k, v in enumerate(map)}
+
+def disco_inter_gen(bottom_disco, layers_of_space, top_disco):
+    top_map = enumerate_values(top_disco)
+    bottom_map = enumerate_values(bottom_disco)
+    for bk, bvs in bottom_disco.items():
+        for space in layers_of_space[1:]:
+            bk = space[bk]
+        for tvs in top_disco.values():
+            if bk in tvs:
+                tk = top_map[bk]
+                for bv in bvs:
+                    yield (bottom_map[bv], tk)

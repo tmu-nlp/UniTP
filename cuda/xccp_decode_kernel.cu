@@ -338,10 +338,18 @@ __global__ void kernel_sparse_setup(
   torch::PackedTensorAccessor32<bool,2,torch::RestrictPtrTraits> con_fence) {        // [    bs,     sl]
   const int bid = blockIdx.x; // dis_bs
   const int sid = blockIdx.y; // dis_sl
+  const int dis_len = dis_length[bid];
   // const bool is_max = ;
-  if (sid >= dis_length[bid]) return;
+  if (sid >= dis_len) return;
+  const int d_bid = dis_bid[bid];
+  const int d_sid = dis_sid[bid][sid];
+  const int sid_ = sid + 1;
+  const int d_sid_ = d_sid + 1;
 
-  con_fence[dis_bid[bid]][dis_sid[bid][sid]] = dis_max[bid][sid]; // 64bit access?
+  con_fence[d_bid][d_sid] = dis_max[bid][sid]; // 64bit access?
+
+  if (d_sid_ < con_fence.size(1) and sid_ < dis_len and d_sid_ < dis_sid[bid][sid_] and not con_fence[d_bid][d_sid_])
+    con_fence[d_bid][d_sid_] = true;
 }
 
 template <typename index_t>

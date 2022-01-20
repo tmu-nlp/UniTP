@@ -1,13 +1,13 @@
 from utils.yaml_io import load_yaml
-from utils.file_io import isdir, isfile, join, listdir, create_join
+from utils.file_io import isdir, isfile, join, listdir, create_join, dirname
 from utils.param_ops import get_sole_key
 from sys import argv
 
 _sv_file = 'settings_and_validation.yaml'
-_, instance_dir = argv
+_, trial_dir = argv
+instance_dir = dirname(trial_dir)
 is_dccp = '_dccp/' in instance_dir
 assert is_dccp or '_xccp/' in instance_dir
-trial_dir = join(instance_dir, 'trials')
 rt_file = join(trial_dir, 'register_and_tests.yaml')
 sv_file = join(instance_dir, _sv_file)
 assert isdir(trial_dir) and isfile(rt_file) and isfile(sv_file)
@@ -40,11 +40,12 @@ with open(join(csv_dir, '.'.join(optuna_hyper)), 'w') as fwh,\
         factor_head = tuple('b.' + x for x in binarization)
     else:
         # has_neg = sv['train']['disco_2d_negrate'] > 0
-        losses = common_head[:-1] + ('fence', 'disco_1d', 'disco_2d', 'disco_2d_neg')
-        model_head = ('disc', 'biaff', 'neg')
+        # losses = common_head[:-1] + ('fence', 'disco_1d', 'disco_2d', 'disco_2d_neg')
+        # model_head = ('disc', 'biaff', 'neg')
+        losses = common_head[:-1] + ('fence', 'disco_1d', 'disco_2d', 'disco_2d_intra', 'disco_2d_inter')
+        model_head = ('disc', 'biaff', 'disco_2d_intra', 'disco_2d_inter')
         medoids = 'head', 'continuous', 'left', 'random', 'right'
-        factor_head = ('sub', 'neg') + medoids
-        factor_head = tuple('m.' + x for x in factor_head)
+        factor_head = tuple('r.' + x for x in ('sub', 'intra', 'inter') + medoids)
     head_loss = tuple('l.' + x for x in common_head + model_head)
     fwh.write(','.join(head_loss + factor_head) + ',lr,tf,df\n')
     fwd.write('dev.tf,test.tf,test.df,n.step\n')
@@ -69,7 +70,8 @@ with open(join(csv_dir, '.'.join(optuna_hyper)), 'w') as fwh,\
         else:
             trial_factors= trial_data['medium_factor']
             values.append(trial_factors['balanced'])
-            values.append(trial_sv['train']['disco_2d_negrate'])
+            values.append(trial_sv['train']['disco_2d_intra_rate'])
+            values.append(trial_sv['train']['disco_2d_inter_rate'])
             values.extend(trial_factors['others'][x] for x in (medoids))
         values.append(trial_sv['train']['learning_rate'])
         assert head_len == len(values)

@@ -6,7 +6,8 @@ from utils.param_ops import HParams
 
 from experiments.t_xbert_dccp import get_any_disco
 from experiments.t_xbert_xccp.model import DiscoPlmTree, model_type
-from experiments.t_lstm_xccp.operator import DiscoMultiOperator, train_type
+from experiments.t_xbert_xccp.operator import DiscoMultiOperator_lr
+from experiments.t_lstm_xccp.operator import train_type
 
 def get_configs(recorder = None):
     if recorder is None:
@@ -33,13 +34,21 @@ def get_configs(recorder = None):
                               None,
                               DatasetHelper)
     
-    def get_datasets(mode):
+    def get_datasets(mode, new_medium_factor = None):
         datasets = {}
         if mode == M_TRAIN:
-            datasets[corp_name] = reader.batch(M_TRAIN, penn.batch_size, penn.bucket_len, penn.medium_factor._nested,
-                                               max_len = penn.max_len,
-                                               min_gap = penn.min_gap,
-                                               sort_by_length = penn.sort_by_length)
+            train_ds = reader.loaded_ds.get(mode)
+            assert new_medium_factor is None, 'should not optuna medium_factor for xbert'
+            if train_ds is None:
+                datasets[corp_name] = reader.batch(M_TRAIN, penn.batch_size, penn.bucket_len,
+                                                   new_medium_factor or penn.medium_factor._nested,
+                                                   max_len = penn.max_len,
+                                                   min_gap = penn.min_gap,
+                                                   sort_by_length = penn.sort_by_length,
+                                                   inter_2d = train_config.disco_2d_inter_rate > 0)
+            else:
+                from data.backend import post_batch
+                datasets[corp_name] = post_batch(mode, train_ds, penn.sort_by_length, penn.bucket_len, penn.batch_size)
         else:
             datasets[corp_name] = reader.batch(mode, penn.batch_size << 1, 0)
         return datasets
@@ -50,4 +59,4 @@ def get_configs(recorder = None):
     model.to(reader.device)
     from data.cross.multib import MxDM
     get_dm = lambda i2vs, num_threads: MxDM(penn.batch_size << 1, i2vs, num_threads)
-    return DiscoMultiOperator(model, get_datasets, recorder, reader.i2vs, get_dm, train_config, recorder.evalb)
+    return DiscoMultiOperator_lr(model, get_datasets, recorder, reader.i2vs, get_dm, train_config, recorder.evalb)

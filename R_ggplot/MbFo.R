@@ -19,7 +19,7 @@ plot_corp <- function(corp, first_row) {
     dm <- load_model_corp('xbert_xccp', corp)
     data <- rbind(db, dm)
     data <- subset(data, metric == 'multib' & bin < 9 | metric == 'fanout' & bin < 4)
-    data$metric <- factor(data$metric, levels = c('fanout', 'multib'), labels = c('Fan-out', 'Multi-branching Arity'))
+    data$metric <- factor(data$metric, levels = c('fanout', 'multib'), labels = c('Fan-out (k)', 'Multi-branching Arity (n-ary)'))
     data$corp <- factor(data$corp, levels = c('dptb', 'tiger'), labels = c('DPTB', 'Tiger'))
     data$model <- factor(data$model, levels = c('xbert_dccp', 'xbert_xccp'), labels = c('DB', 'DM'))
     # print(data)
@@ -71,7 +71,7 @@ plot_corp <- function(corp, first_row) {
                    axis.title.x.bottom = element_blank(),
                    plot.margin = unit(c(0,0,0,0),"cm"))
 
-    gp <- guide_legend(title = "PreLM Model")
+    gp <- guide_legend(title = "PLM Model")
     p <- p + guides(shape = gp, color = gp)
     p <- p + scale_x_continuous(breaks = int_breaks,
                                 sec.axis = sec_axis(~.,

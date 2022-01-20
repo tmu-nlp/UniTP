@@ -1,6 +1,4 @@
 import torch
-from torch import nn
-from utils.operator import Operator
 from utils.param_ops import get_sole_key
 from time import time
 from utils.math_ops import is_bin_times
@@ -14,10 +12,11 @@ train_type = dict(loss_weight = dict(tag   = BaseType(0.2, validator = frac_open
                                      fence = BaseType(0.5, validator = frac_open_0),
                                      disco_1d = BaseType(0.5, validator = frac_open_0),
                                      disco_2d = BaseType(0.5, validator = frac_open_0),
-                                     disco_2d_neg = BaseType(0.5, validator = frac_open_0)),
-                  learning_rate     = BaseType(0.001, validator = frac_open_0),
-                  disco_2d_negrate  = BaseType(0.05,  validator = frac_close),
-                  inter_2d_negrate  = BaseType(0.99,  validator = frac_close),
+                                     disco_2d_intra = BaseType(0.5, validator = frac_open_0),
+                                     disco_2d_inter = BaseType(0.5, validator = frac_open_0)),
+                  learning_rate       = BaseType(0.001, validator = frac_open_0),
+                  disco_2d_intra_rate = BaseType(0.01,  validator = frac_close),
+                  disco_2d_inter_rate = BaseType(1,     validator = frac_close),
                   binary_hinge_loss = true_type,
                   tune_pre_trained  = dict(from_nth_epoch = tune_epoch_type,
                                            lr_factor      = frac_06))
@@ -39,10 +38,10 @@ class DiscoMultiOperator(DiscoOperator):
                 space_layers.append(all_space[:, dis_start:dis_end])
                 disco_layers.append(dis_disco[:, dis_start:dis_end])
                 dis_start = dis_end
-            if self._train_config.disco_2d_negrate:
-                supervised_signals['disco_2d_negative'] = self._train_config.disco_2d_negrate
-            if self._train_config.inter_2d_negrate:
-                supervised_signals['inter_2d_negative'] = self._train_config.inter_2d_negrate
+            if self._train_config.disco_2d_intra_rate:
+                supervised_signals['disco_2d_intra_rate'] = self._train_config.disco_2d_intra_rate
+            if self._train_config.disco_2d_inter_rate:
+                supervised_signals['disco_2d_inter_rate'] = self._train_config.disco_2d_inter_rate
             # for con_seg in batch['split_segment']:
             #     con_end = con_start + con_seg
             #     print(con_split[:, con_start:con_end] * 1)
@@ -67,7 +66,7 @@ class DiscoMultiOperator(DiscoOperator):
         batch_time = time()
         (batch_size, batch_len, static, top3_label_logits,
          existences, embeddings, weights, disco_1d_logits, fence_logits, disco_2d_logits,
-         disco_2d_positive, disco_2d_negative, space, tag_logits, label_logits,
+         disco_2d_positive, disco_2d_negative, inter_2d_negative, space, tag_logits, label_logits,
          segment, seg_length) = self._model(batch['token'], self._tune_pre_trained, **supervised_signals)
         batch_time = time() - batch_time
 
@@ -103,6 +102,11 @@ class DiscoMultiOperator(DiscoOperator):
                 disco_2d_negative_accuracy = disco_2d_negative <= 0
                 if not self._train_config.binary_hinge_loss:
                     disco_2d_negative = _sigmoid(disco_2d_negative)
+            
+            if has_inter_2d_negative := (inter_2d_negative is not None):
+                inter_2d_negative_accuracy = inter_2d_negative <= 0
+                if not self._train_config.binary_hinge_loss:
+                    inter_2d_negative = _sigmoid(inter_2d_negative)
                     
             tag_loss, label_loss = self._model.get_losses(batch, tag_logits, label_logits)
             if self._train_config.binary_hinge_loss:
@@ -114,6 +118,8 @@ class DiscoMultiOperator(DiscoOperator):
                     disco_2d_posloss = hinge_loss(disco_2d_positive, torch.ones_like(disco_2d_positive, dtype = torch.bool), None)
                 if has_disco_2d_negative:
                     disco_2d_negloss = hinge_loss(disco_2d_negative, torch.zeros_like(disco_2d_negative, dtype = torch.bool), None)
+                if has_inter_2d_negative:
+                    inter_2d_negloss = hinge_loss(inter_2d_negative, torch.zeros_like(inter_2d_negative, dtype = torch.bool), None)
             else:
                 fence_loss = binary_cross_entropy(fence_logits, gold_fences, None)
                 disco_1d_loss = binary_cross_entropy(disco_1d_logits, batch['dis_disco'], None)
@@ -123,6 +129,8 @@ class DiscoMultiOperator(DiscoOperator):
                     disco_2d_posloss = binary_cross_entropy(disco_2d_positive, torch.ones_like(disco_2d_positive, dtype = torch.bool), None)
                 if has_disco_2d_negative:
                     disco_2d_negloss = binary_cross_entropy(disco_2d_negative, torch.zeros_like(disco_2d_negative, dtype = torch.bool), None)
+                if has_inter_2d_negative:
+                    inter_2d_negloss = binary_cross_entropy(inter_2d_negative, torch.zeros_like(inter_2d_negative, dtype = torch.bool), None)
 
             total_loss = self._train_config.loss_weight.tag * tag_loss
             total_loss = self._train_config.loss_weight.label * label_loss + total_loss
@@ -131,9 +139,11 @@ class DiscoMultiOperator(DiscoOperator):
             if has_disco_2d:
                 total_loss = self._train_config.loss_weight.disco_2d * disco_2d_loss + total_loss
             if has_disco_2d_positive:
-                total_loss = self._train_config.loss_weight.disco_2d_neg * disco_2d_posloss + total_loss
+                total_loss = self._train_config.loss_weight.disco_2d_intra * disco_2d_posloss + total_loss
             if has_disco_2d_negative:
-                total_loss = self._train_config.loss_weight.disco_2d_neg * disco_2d_negloss + total_loss
+                total_loss = self._train_config.loss_weight.disco_2d_intra * disco_2d_negloss + total_loss
+            if has_inter_2d_negative:
+                total_loss = self._train_config.loss_weight.disco_2d_inter * inter_2d_negloss + total_loss
             total_loss.backward()
             
             if hasattr(self._model, 'tensorboard'):
@@ -144,20 +154,28 @@ class DiscoMultiOperator(DiscoOperator):
                                       Fence = fraction(fences == gold_fences),
                                       Disco_1D = fraction(disco_1d == batch['dis_disco']),
                                       Disco_2D = fraction(disco_2d == batch['dis_component']) if has_disco_2d else None,
-                                      Disco_2d_Pos = fraction(disco_2d_positive_accuracy) if has_disco_2d_positive else None,
-                                      Disco_2D_Neg = fraction(disco_2d_negative_accuracy) if has_disco_2d_negative else None)
+                                      Disco_2D_Intra_P = fraction(disco_2d_positive_accuracy) if has_disco_2d_positive else None,
+                                      Disco_2D_Intra_N = fraction(disco_2d_negative_accuracy) if has_disco_2d_negative else None,
+                                      Disco_2D_Inter_N = fraction(inter_2d_negative_accuracy) if has_inter_2d_negative else None)
             self.recorder.tensorboard(self.global_step, 'Loss/%s',
                                       Tag   = tag_loss,
                                       Label = label_loss,
                                       Fence = fence_loss,
                                       Disco_1D = disco_1d_loss,
                                       Disco_2D = disco_2d_loss if has_disco_2d else None,
-                                      Disco_2D_Pos = disco_2d_posloss if has_disco_2d_positive else None,
-                                      Disco_2D_Neg = disco_2d_negloss if has_disco_2d_negative else None,
+                                      Disco_2D_Intra_P = disco_2d_posloss if has_disco_2d_positive else None,
+                                      Disco_2D_Intra_N = disco_2d_negloss if has_disco_2d_negative else None,
+                                      Disco_2D_Inter_N = inter_2d_negloss if has_inter_2d_negative else None,
                                       Total = total_loss)
             batch_kwargs = dict(Length = batch_len, SamplePerSec = batch_len / batch_time)
             if 'segment' in batch:
                 batch_kwargs['Height'] = batch['segment'].shape[0]
+            if has_disco_2d_positive:
+                batch_kwargs['Disco_2D_Intra_P'] = disco_2d_positive_accuracy.shape[0]
+            if has_disco_2d_negative:
+                batch_kwargs['Disco_2D_Intra_N'] = disco_2d_negative_accuracy.shape[0]
+            if has_inter_2d_negative:
+                batch_kwargs['Disco_2D_Inter_N'] = inter_2d_negative_accuracy.shape[0]
             self.recorder.tensorboard(self.global_step, 'Batch/%s', **batch_kwargs)
         else:
             vis, _, _, pending_heads, _ = self._vis_mode
@@ -249,18 +267,20 @@ class DiscoMultiOperator(DiscoOperator):
                 loss_weight['disco_1d'] = d1 = trial.suggest_float('disco_1d', 0.0, 1.0)
                 loss_weight['disco_2d'] = d2 = trial.suggest_float('disco_2d', 0.0, 1.0)
                 loss_str = 'L=' + height_ratio(t) + height_ratio(l) + height_ratio(f) + height_ratio(d1) + height_ratio(d2)
-
-                if (d_d2n := specs['train']['disco_2d_negrate']) > 0:
-                    specs['train']['disco_2d_negrate'] = d_d2n = trial.suggest_loguniform('disco_2d_negrate', 0.0001 * d_d2n, d_d2n)
-
-                if (d_i2n := specs['train']['inter_2d_negrate']) > 0:
-                    specs['train']['inter_2d_negrate'] = d_i2n = trial.suggest_loguniform('inter_2d_negrate', 0.0001 * d_i2n, d_i2n)
-                
-                if d_d2n == 0 and d_i2n == 0:
-                    loss_weight['disco_2d_neg'] = specs['train']['disco_2d_negrate'] = 0
+                    
+                if (d_d2a := specs['train']['disco_2d_intra_rate']) > 0:
+                    specs['train']['disco_2d_intra_rate'] = d_d2a = trial.suggest_loguniform('disco_2d_intra_rate', 1e-6, d_d2a)
+                    loss_weight['disco_2d_intra'] = l_d2a = trial.suggest_float('disco_2d_intra', 1e-6, 1.0)
+                    loss_str += '.' + height_ratio(l_d2a)
                 else:
-                    loss_weight['disco_2d_neg'] = l_d2n = trial.suggest_float('disco_2d_neg', 1e-6, 1.0)
-                    loss_str += 'N' + height_ratio(l_d2n)
+                    loss_weight['disco_2d_intra'] = specs['train']['disco_2d_intra_rate'] = 0
+
+                if (d_i2b := specs['train']['disco_2d_inter_rate']) > 0:
+                    specs['train']['disco_2d_inter_rate'] = d_i2b = trial.suggest_loguniform('disco_2d_inter_rate', 1e-6, d_i2b)
+                    loss_weight['disco_2d_inter'] = d_i2n = trial.suggest_float('disco_2d_inter', 1e-6, 1.0)
+                    loss_str += ':' + height_ratio(d_i2n)
+                else:
+                    loss_weight['disco_2d_inter'] = specs['train']['disco_2d_inter_rate'] = 0
 
                 medium_factor = specs['data']
                 medium_factor = specs['data'][get_sole_key(medium_factor)]['medium_factor']
@@ -283,12 +303,15 @@ class DiscoMultiOperator(DiscoOperator):
                 lr = specs['train']['learning_rate']
                 specs['train']['learning_rate'] = lr = trial.suggest_loguniform('learning_rate', 1e-6, lr)
                 self._train_config._nested.update(specs['train'])
-                med_str = 'med='
+                med_str = ''
+                rate_str = []
                 if involve_balanced: med_str += f'{height_ratio(bz)}'
-                if multi_medoid:     med_str += 'M' + ''.join(height_ratio(v) for v in med_v)
-                if d_d2n > 0:        med_str += f'ND={d_d2n:.1e}'
-                if d_i2n > 0:        med_str += f'NI={d_i2n:.1e}'
-                return med_str + ';' + loss_str + f';lr={lr:.1e}'
+                if multi_medoid:     med_str += '[' + ''.join(height_ratio(v) for v in med_v) + ']'
+                if med_str:          med_str = 'med=' + med_str
+                if d_d2a > 0:       rate_str.append(f'.={d_d2a:.1e}')
+                if d_i2n > 0:       rate_str.append(f':={d_i2n:.1e}')
+                rate_str.append(f'lr={lr:.1e}')
+                return med_str + ';' + loss_str + ';' + ','.join(rate_str)
 
             self._mode_trees = [], [] # force init
             self.setup_optuna_mode(spec_update_fn, trial)
@@ -297,7 +320,7 @@ class DiscoMultiOperator(DiscoOperator):
         return obj_fn
 
 from utils.vis import VisRunner
-from utils.file_io import remove, isdir, mkdir, listdir, join, isfile
+from utils.file_io import remove, isdir, mkdir, listdir, join
 from data.cross.multib import disco_tree, draw_str_lines
 from itertools import count
 
@@ -337,6 +360,7 @@ class DiscoMultiVis(DiscoVis):
                 mkdir(draw_trees)
         self._draw_trees = draw_trees
         self._headedness_stat = join(work_dir, f'data.{epoch}.headedness'), {}
+        self._disco_2d_stat = join(work_dir, f'data.{epoch}.2d.csv'), ['threshold,attempt,size\n']
 
     def _process(self, batch_id, batch):
         bid_offset, _ = self._evalb.total_missing
@@ -390,28 +414,30 @@ class DiscoMultiVis(DiscoVis):
                         tag_line += ' overdone'
 
                 has_n_comps = has_n_fallback = 0
-                if has_disco_2d and any(sid in l for l in d_disco_2d):
+                if has_disco_2d and (s_disco_2d := [(lid, d2d[sid]) for lid, d2d in enumerate(d_disco_2d) if sid in d2d]):
+                    if error and (eid := error[0]) > 0 and any(lid <= eid for lid, _ in s_disco_2d):
+                        s_disco_2d = [(lid, s2d) for lid, s2d in s_disco_2d if lid <= eid]
                     base_lines = ['2D ']
-                    base_lines += [''] * max(len(l[sid][0]) for l in d_disco_2d if sid in l)
-                    for lid, l_disco_2d in enumerate(d_disco_2d):
-                        if sid in l_disco_2d:
-                            new_lines = f'#{lid + 1}'
-                            mat, _, _, n_comps, fallback, thresh, n_trial = l_disco_2d[sid]
-                            if fallback:
-                                new_lines += '**'
-                                has_n_fallback += 1
-                            else:
-                                if n_comps > 1:
-                                    new_lines += f'*{n_comps}'
-                                    has_n_comps = max(has_n_comps, n_comps)
-                                if thresh != 0.5:
-                                    new_lines += f'!{thresh:0.2f}'
-                            if n_trial > 1:
-                                new_lines += f'@{n_trial}'
-                            new_lines = [new_lines]
-                            for row in mat:
-                                new_lines.append(''.join(space_height_ratio(val) for val in row) + ' | ')
-                            base_lines = cat_lines(base_lines, new_lines)
+                    base_lines += [''] * max(len(s2d[0]) for _, s2d in s_disco_2d)
+                    _, csv_list = self._disco_2d_stat
+                    for lid, (mat, _, _, n_comps, fallback, thresh, n_trial) in s_disco_2d:
+                        new_lines = f'#{lid + 1}'
+                        if fallback:
+                            new_lines += '**'
+                            has_n_fallback += 1
+                        else:
+                            if n_comps > 1:
+                                new_lines += f'*{n_comps}'
+                                has_n_comps = max(has_n_comps, n_comps)
+                            if thresh != 0.5:
+                                new_lines += f'!{thresh:0.2f}'
+                        if n_trial > 1:
+                            new_lines += f'@{n_trial}'
+                        new_lines = [new_lines]
+                        for row in mat:
+                            new_lines.append(''.join(space_height_ratio(val) for val in row) + ' | ')
+                        base_lines = cat_lines(base_lines, new_lines)
+                        csv_list.append(f'{1 if fallback else thresh},{n_trial},{len(mat)}\n')
                     disco_2d_lines = '\n\n' + '\n'.join(base_lines)
                 else:
                     disco_2d_lines = ''
@@ -474,6 +500,9 @@ class DiscoMultiVis(DiscoVis):
                 for h, c in sorted(head_cnts.items(), key = lambda x: x[1], reverse = True):
                     line += f'{h}({c}); '
                 fw.write(line[:-2] + '\n')
+        fname, csv_list = self._disco_2d_stat
+        with open(fname, 'w') as fw:
+            fw.writelines(csv_list)
         return super()._after()
 
 class ParallelVis(BinaryParallelVis):
