@@ -246,13 +246,13 @@ class DynamicCrossDataset(LengthOrderedDataset):
                  tree_keepers,
                  device,
                  factors = None,
-                 min_len = 0,
-                 max_len = None,
-                 min_gap  = 0,
                  extra_text_helper = None,
                  c2i = None,
                  continuous_fence_only = True,
-                 inter_2d = False):
+                 min_len = 0,
+                 max_len = None,
+                 min_gap  = 0,
+                 inter_2d = 0):
 
         text = []
         lengths = []
@@ -280,14 +280,15 @@ class DynamicCrossDataset(LengthOrderedDataset):
             heads = heads[:-1]
             tree_keepers = static_signals
             lines = ['Load ' + byte_style('static D.M. treebank', '3')]
+            rate = 0
         else:
-            factors, lines = self.__reset_and_show_factors(factors, 'Load ')
+            factors, lines, rate = self.__reset_and_show_factors(factors, 'Load ')
         print('\n'.join(lines))
 
         order = sorting_order(text)
         lengths, tree_keepers = (sort_by_order(order, x) for x in (lengths, tree_keepers))
             
-        self._keepers_heads = tree_keepers, heads
+        self._keepers_heads = tree_keepers, heads, rate
         if extra_text_helper:
             text = sort_by_order(order, text)
             extra_text_helper = extra_text_helper(text, device, c2i)
@@ -297,6 +298,7 @@ class DynamicCrossDataset(LengthOrderedDataset):
 
     def __reset_and_show_factors(self, factors, prefix):
         balanced_prob = factors['balanced']
+        more_sub_prob = factors['more_sub']
         original_prob = 1 - balanced_prob
         train_factors = {}
         lines = ' F\Balanced'
@@ -304,6 +306,7 @@ class DynamicCrossDataset(LengthOrderedDataset):
             lines += '          Yes'
         if original_prob:
             lines += '      No (Origin without _SUB)'
+        if more_sub_prob: lines += f' [+{100 * more_sub_prob:.0f}% random _SUB]'
         lines = [prefix + byte_style('dynamic D.M. treebank', '7'), byte_style(lines, '2')]
         for factor, o_prob in factors['others'].items():
             line = ''
@@ -317,20 +320,23 @@ class DynamicCrossDataset(LengthOrderedDataset):
                 line += f'{prob * 100:.0f}%'.rjust(18)
             if line:
                 lines.append(f'  ::{ factor}::'.ljust(15) + line)
-        return train_factors, lines
+        return train_factors, lines, more_sub_prob
 
-    def reset_factors(self, factors):
-        factors, lines = self.__reset_and_show_factors(factors, 'Reset ')
+    def reset_factors(self, factors, inter_2d = 0):
+        factors, lines, rate = self.__reset_and_show_factors(factors, 'Reset ')
+        self._keepers_heads = self._keepers_heads[:2] + (rate,)
+        self._device_cfo = self._device_cfo[:2] + (inter_2d,)
+        if inter_2d: lines.append(f'  Max. inter-height: {inter_2d}')
         print('\n'.join(lines))
         self._reset_factors(factors)
 
     def at_idx(self, idx, factor, length, helper_outputs):
-        tree_keepers, heads = self._keepers_heads
+        tree_keepers, heads, rate = self._keepers_heads
         tk = tree_keepers[idx]
         if factor is None:
             signals = tk
         else:
-            signals = tk.word_tag + tk.stratify(factor[1:], factor[0] == '+')
+            signals = tk.word_tag + tk.stratify(factor[1:], factor[0] == '+', rate)
         sample = {h:s for h, s  in zip(heads, signals)}
         sample['length'] = length
         return sample
@@ -374,7 +380,7 @@ class DynamicCrossDataset(LengthOrderedDataset):
                     condense_layer = {}
                     condense_exclude = {bid: None for bid, b in enumerate(column) if sum(bool(l) for l in b) == 1}
                     condense_last_disco = {}
-                    condense_kinship = {bid: [] for bid in range(batch_size)}
+                    condense_kinship = {}
                 for src_lid, (l_space, l_disco) in enumerate(zip(zip_longest(*space_column, fillvalue = []), zip_longest(*column, fillvalue = {}))): # all layer slices [(), ] [(), ]
                     batch_layer_disco = [] # same dim with space
                     batch_layer_split = [] # splitting points for continuous constituents
@@ -416,11 +422,22 @@ class DynamicCrossDataset(LengthOrderedDataset):
                                     else:
                                         condensed_max_layer_size.append(num_comp_len)
                                     if src_bid in condense_last_disco:
-                                        last_src_lid = condense_last_disco[src_bid]
-                                        condense_kinship[src_bid].append(disco_inter_gen(column[src_bid][last_src_lid],
-                                                                                         space_column[src_bid][last_src_lid:src_lid],
-                                                                                         disco_set))
-                                condense_last_disco[src_bid] = src_lid
+                                        for oid, last_src_lid in enumerate(reversed(condense_last_disco[src_bid])):
+                                            if src_bid not in condense_kinship:
+                                                kinship = []
+                                                condense_kinship[src_bid] = {oid: kinship}
+                                            elif oid not in condense_kinship[src_bid]:
+                                                condense_kinship[src_bid][oid] = kinship = []
+                                            else:
+                                                kinship = condense_kinship[src_bid][oid]
+                                            kinship.append(disco_inter_gen(column[src_bid][last_src_lid],
+                                                                           space_column[src_bid][last_src_lid:src_lid],
+                                                                           disco_set,
+                                                                           src_lid - last_src_lid > inter_2d))
+                                if src_bid in condense_last_disco:
+                                    condense_last_disco[src_bid].append(src_lid)
+                                else:
+                                    condense_last_disco[src_bid] = [src_lid]
                         batch_layer_disco.append(disco_children)
                     if l_condnse_layer:
                         condense_layer[src_lid] = l_condnse_layer
@@ -534,21 +551,26 @@ class InterLayerDisco:
                 layer_exclude[lid].add(src_bid)
             else:
                 layer_exclude[lid] = {src_bid}
-        kinship = []
-        for src_bid, layers in condense_kinship.items():
-            for dst_lid, sm_gen in enumerate(layers):
-                if dst_lid < len(kinship):
-                    layer = kinship[dst_lid]
+        ordered_kinship = {}
+        for src_bid, o_layers in condense_kinship.items():
+            for oid, layers in o_layers.items():
+                if oid in ordered_kinship:
+                    kinship = ordered_kinship[oid]
                 else:
-                    layer = ([], [], [])
-                    kinship.append(layer)
-                bl, sl, ml = layer
-                for si, mi in sm_gen:
-                    bl.append(bid_s2d[src_bid])
-                    sl.append(si)
-                    ml.append(mi)
+                    kinship = ordered_kinship[oid] = []
+                for dst_lid, sm_gen in enumerate(layers):
+                    if dst_lid < len(kinship):
+                        layer = kinship[dst_lid]
+                    else:
+                        layer = ([], [], [])
+                        kinship.append(layer)
+                    bl, sl, ml = layer
+                    for si, mi in sm_gen:
+                        bl.append(bid_s2d[src_bid])
+                        sl.append(si)
+                        ml.append(mi)
 
-        self._args = b_dim, s_dim, bid_s2d, condensed_max_layer_size, condense_layer, layer_exclude, dst_volumn, kinship
+        self._args = b_dim, s_dim, bid_s2d, condensed_max_layer_size, condense_layer, layer_exclude, dst_volumn, ordered_kinship
         if self.lhs_dim and self.rhs_dim:
             self.create_base(self.lhs_dim, self.rhs_dim, **self.tensor_args)
 
@@ -582,50 +604,39 @@ class InterLayerDisco:
             dst_bid = bid_s2d[src_bid] * seq_dim + sum(condensed_max_layer_size[:dst_lid]) + 1
             for i in range(n_disco):
                 index[rel_bid + i] = dst_bid + i
-                # try:
-                #     print('good', src_lid)
-                # except:
-                #     print(src_lid, lb, ls, le, re)
-                #     breakpoint()
-                # print(src_bid, i, src_bid * ls + i, '=>', dst_bid, dst_lid + i, dst_bid * seq_dim + dst_lid + i)
         index = torch.tensor(index, device = lhs.device)
         index.unsqueeze_(-1)
         self._lhs.scatter_add_(0, index.expand(bs, le), lhs)
         self._rhs.scatter_add_(0, index.expand(bs, re), rhs)
 
-    def __iter__(self):
-        self._dl_start = 1, 0
-        return self
-
-    def __next__(self):
-        batch_dim, seq_dim, _, condensed_max_layer_size, _, _, dst_volumn, kinship = self._args
-        lc, ds = self._dl_start
-        if lc < len(condensed_max_layer_size):
-            lb = lc - 1
-            sl = condensed_max_layer_size[lb]
-            ml = condensed_max_layer_size[lc]
-            dm = ds + sl
-            de = dm + ml
-            self._dl_start = lc + 1, dm
-            lhs = self._lhs[1:].reshape(batch_dim, seq_dim, -1)
-            rhs = self._rhs[1:].reshape(batch_dim, seq_dim, -1)
-            bw, sv = dst_volumn[lb]
-            bv, mv = dst_volumn[lc]
-            assert bw >= bv, 'batch volumn must decrease'
-            device = self.tensor_args.get('device')
-            sl = torch.arange(sl, device = device)
-            ml = torch.arange(ml, device = device)
-            sv = torch.tensor(sv[:bv], device = device)
-            mv = torch.tensor(mv[:bv], device = device)
-            sl.unsqueeze_(0); sv.unsqueeze_(1)
-            ml.unsqueeze_(0); mv.unsqueeze_(1)
-            mt = (sl < sv).unsqueeze(2) & (ml < mv).unsqueeze(1) # [bs, sl, ml]
-            mt[kinship[lb]] = False
-            sm = lhs[:bv, ds:dm], rhs[:bv, dm:de], mt
-            ms = lhs[:bv, dm:de], rhs[:bv, ds:dm], mt.transpose(1, 2)
-            return sm, ms
-        else:
-            raise StopIteration
+    def get(self, max_order = 0):
+        device = self.tensor_args.get('device')
+        batch_dim, seq_dim, _, cmls, _, _, dstv, ok = self._args
+        lhs = self._lhs[1:].reshape(batch_dim, seq_dim, -1)
+        rhs = self._rhs[1:].reshape(batch_dim, seq_dim, -1)
+        for o in range(min(max_order, max(ok.keys())) + 1):
+            ds = 0
+            for sl, ml, (bw, sv), (bv, mv), kl in zip(cmls, cmls[o+1:], dstv, dstv[o+1:], ok[o]):
+                assert bw >= bv, 'batch volumn must decrease'
+                dm = ds + sl
+                de = dm + ml
+                sl = torch.arange(sl, device = device)
+                ml = torch.arange(ml, device = device)
+                sv = torch.tensor(sv[:bv], device = device)
+                mv = torch.tensor(mv[:bv], device = device)
+                sl.unsqueeze_(0); sv.unsqueeze_(1)
+                ml.unsqueeze_(0); mv.unsqueeze_(1)
+                mt = (sl < sv).unsqueeze(2) & (ml < mv).unsqueeze(1) # [bs, sl, ml]
+                mt[kl] = False
+                sm = lhs[:bv, ds:dm], rhs[:bv, dm:de], mt
+                ms = lhs[:bv, dm:de], rhs[:bv, ds:dm], mt.transpose(1, 2)
+                # print(cmls, dstv)
+                # print(ds, dm, de, o)
+                # print([x.shape for x in sm])
+                # print([x.shape for x in ms])
+                # breakpoint()
+                yield sm, ms
+                ds = dm
 
 def enumerate_values(disco_set):
     map = []
@@ -634,14 +645,19 @@ def enumerate_values(disco_set):
     map.sort()
     return {v:k for k, v in enumerate(map)}
 
-def disco_inter_gen(bottom_disco, layers_of_space, top_disco):
+def disco_inter_gen(bottom_disco, layers_of_space, top_disco, get_all):
     top_map = enumerate_values(top_disco)
     bottom_map = enumerate_values(bottom_disco)
-    for bk, bvs in bottom_disco.items():
-        for space in layers_of_space[1:]:
-            bk = space[bk]
-        for tvs in top_disco.values():
-            if bk in tvs:
-                tk = top_map[bk]
-                for bv in bvs:
-                    yield (bottom_map[bv], tk)
+    if get_all:
+        for tv in top_map.values():
+            for bv in bottom_map.values():
+                yield (bv, tv)
+    else:
+        for bk, bvs in bottom_disco.items():
+            for space in layers_of_space[1:]:
+                bk = space[bk]
+            for tvs in top_disco.values():
+                if get_all or bk in tvs:
+                    tk = top_map[bk]
+                    for bv in bvs:
+                        yield (bottom_map[bv], tk)

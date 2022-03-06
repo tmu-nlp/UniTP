@@ -2,7 +2,7 @@ import torch
 from utils.operator import Operator
 from utils.param_ops import get_sole_key
 from time import time
-from utils.math_ops import is_bin_times
+from utils.math_ops import is_bin_times #, f_score
 from utils.types import M_TRAIN, BaseType, frac_open_0, frac_06, frac_close, tune_epoch_type
 from models.utils import PCA, fraction
 from experiments.helper import WarmOptimHelper
@@ -255,7 +255,7 @@ class DiscoOperator(Operator):
     @staticmethod
     def combine_scores_and_decide_key(epoch, ds_scores):
         scores = ds_scores[get_sole_key(ds_scores)]
-        scores['key'] = scores.get('TF', 0.0)
+        scores['key'] = scores.get('TF', 0.0) #f_score(scores.get('TF', 0.0), scores.get('DF', 0.0))
         return scores
         
     def _get_optuna_fn(self, train_params):
@@ -346,12 +346,12 @@ def batch_trees(bid_offset, heads_gen, segments, i2vs, fall_back_root_label = No
         words = tuple(i2vs.token[i] for i in s_token[1:bottom_end])
         yield disco_tree(words, tags, layers_of_label, layers_of_right, layers_of_joint, layers_of_direc, fall_back_root_label)
 
-def inner_score(bt, td, rt, prm_args, export_writer = None):
+def inner_score(bt, td, prm_args, export_writer = None):
     if export_writer:
-        export_writer.add(bt, td, rt)
+        export_writer.add(bt, td)
     bt, td = new_word_label(bt, td, word_fn = prm_args.word_fn, label_fn = prm_args.label_fn)
-    filter_words(bt, td, rt, 'remove', prm_args.DELETE_WORD)
-    brac_cnt, brac_mul = bracketing(bt, td, rt, False, prm_args.DELETE_LABEL) if td else Counter()
+    filter_words(bt, td, prm_args.DELETE_WORD)
+    brac_cnt, brac_mul = bracketing(bt, td, excluded_labels = prm_args.DELETE_LABEL) if td else Counter()
     return brac_cnt, brac_mul, set(bt)
 
 class Dummy:
@@ -405,10 +405,10 @@ class DiscoVis(BaseVis):
             head_top_downs = []
             head_trees_for_scores = []
             heads = zip(h_seq_len, h_token, h_tag, h_label, h_right, h_joint, h_direc)
-            for bt, td, rt, error in batch_trees(bid_offset, heads, h_segment, i2vs):
+            for bt, td, error in batch_trees(bid_offset, heads, h_segment, i2vs):
                 assert not error
                 head_top_downs.append(deepcopy(td)) # td.copy() not works
-                head_trees_for_scores.append(inner_score(bt, td, rt, self._evalb_lcfrs_kwargs, self._xh_writer))
+                head_trees_for_scores.append(inner_score(bt, td, self._evalb_lcfrs_kwargs, self._xh_writer))
             self._head_batches.append(head_trees_for_scores)
             if self.save_tensors:
                 self._dtv.set_head(batch_id, h_token.shape[1], h_token, h_tag, h_label, h_right, h_joint, h_direc, head_top_downs, h_segment, h_seq_len)
@@ -421,10 +421,10 @@ class DiscoVis(BaseVis):
         data_top_downs = []
         data_trees_for_scores = []
         data = zip(d_seq_len, h_token, d_tag, d_label, d_right, d_joint, d_direc)
-        for sid, (bt, td, rt, error) in enumerate(batch_trees(bid_offset, data, d_segment, i2vs, 'VROOT')):
+        for sid, (bt, td, error) in enumerate(batch_trees(bid_offset, data, d_segment, i2vs, 'VROOT')):
             data_errors.append(error)
             data_top_downs.append(deepcopy(td))
-            data_trees_for_scores.append(inner_score(bt, td, rt, self._evalb_lcfrs_kwargs, self._xd_writer))
+            data_trees_for_scores.append(inner_score(bt, td, self._evalb_lcfrs_kwargs, self._xd_writer))
             if error: self._v_errors[sid] = error
         scores = []
         evalb = DiscoEvalb()

@@ -1,4 +1,4 @@
-from copy import copy, deepcopy
+memory_in_gigabyte = None
 
 class BaseWrapper:
     def __init__(self, item, to_str):
@@ -127,6 +127,7 @@ hidden_dim = BaseType(200, validator = valid_size)
 half_hidden_dim = BaseType(100, validator = valid_size)
 train_batch_size = BaseType(80, validator = valid_size)
 train_bucket_len = BaseType(4, validator = valid_epoch)
+inter_height_2d  = BaseType(7, validator = valid_epoch)
 tune_epoch_type  = BaseType(None, as_exception = True, validator = valid_epoch)
 train_max_len    = BaseType(None, validator = valid_size, as_exception = True)
 trapezoid_height = BaseType(-1, valid_size, (None, 0, 1), as_index = True)

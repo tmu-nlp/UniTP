@@ -12,8 +12,8 @@ train_type = dict(loss_weight = dict(tag   = BaseType(0.2, validator = frac_open
                                      fence = BaseType(0.5, validator = frac_open_0),
                                      disco_1d = BaseType(0.5, validator = frac_open_0),
                                      disco_2d = BaseType(0.5, validator = frac_open_0),
-                                     disco_2d_intra = BaseType(0.5, validator = frac_open_0),
-                                     disco_2d_inter = BaseType(0.5, validator = frac_open_0)),
+                                     disco_2d_intra = BaseType(0.5, validator = frac_close),
+                                     disco_2d_inter = BaseType(0.5, validator = frac_close)),
                   learning_rate       = BaseType(0.001, validator = frac_open_0),
                   disco_2d_intra_rate = BaseType(0.01,  validator = frac_close),
                   disco_2d_inter_rate = BaseType(1,     validator = frac_close),
@@ -54,7 +54,7 @@ class DiscoMultiOperator(DiscoOperator):
             #     if start < end:
             #         comp = dis_comp[start:end].reshape(shape)
             #         print(comp * 1)
-            supervised_signals['supervision'] = space_layers, disco_layers, batch.get('inter_disco', [])
+            supervised_signals['supervision'] = space_layers, disco_layers, batch.get('inter_disco')
         if 'sub_idx' in batch:
             supervised_signals['sub_idx'] = batch['sub_idx']
         if 'sub_fence' in batch:
@@ -283,7 +283,9 @@ class DiscoMultiOperator(DiscoOperator):
                     loss_weight['disco_2d_inter'] = specs['train']['disco_2d_inter_rate'] = 0
 
                 medium_factor = specs['data']
-                medium_factor = specs['data'][get_sole_key(medium_factor)]['medium_factor']
+                medium_factor = specs['data'][get_sole_key(medium_factor)]
+                medium_factor['max_inter_height'] = mih = trial.suggest_int('max_inter_height', 0, 9)
+                medium_factor = medium_factor['medium_factor']
 
                 if involve_balanced := medium_factor['balanced'] > 0:
                     medium_factor['balanced'] = bz = trial.suggest_float('balanced', 0.0, 1.0)
@@ -299,7 +301,7 @@ class DiscoMultiOperator(DiscoOperator):
                     for k, v in zip(med_k, med_v):
                         medium_factor['others'][k] = float(v)
 
-                self._train_materials = medium_factor, self._train_materials[1]
+                self._train_materials = (medium_factor, mih), self._train_materials[1]
                 lr = specs['train']['learning_rate']
                 specs['train']['learning_rate'] = lr = trial.suggest_loguniform('learning_rate', 1e-6, lr)
                 self._train_config._nested.update(specs['train'])
@@ -311,7 +313,7 @@ class DiscoMultiOperator(DiscoOperator):
                 if d_d2a > 0:       rate_str.append(f'.={d_d2a:.1e}')
                 if d_i2n > 0:       rate_str.append(f':={d_i2n:.1e}')
                 rate_str.append(f'lr={lr:.1e}')
-                return med_str + ';' + loss_str + ';' + ','.join(rate_str)
+                return med_str + f'h{mih};' + loss_str + ';' + ','.join(rate_str)
 
             self._mode_trees = [], [] # force init
             self.setup_optuna_mode(spec_update_fn, trial)
@@ -360,7 +362,7 @@ class DiscoMultiVis(DiscoVis):
                 mkdir(draw_trees)
         self._draw_trees = draw_trees
         self._headedness_stat = join(work_dir, f'data.{epoch}.headedness'), {}
-        self._disco_2d_stat = join(work_dir, f'data.{epoch}.2d.csv'), ['threshold,attempt,size\n']
+        self._disco_2d_stat = join(work_dir, f'data.{epoch}.2d.csv'), ['threshold,attempt,size,comp\n']
 
     def _process(self, batch_id, batch):
         bid_offset, _ = self._evalb.total_missing
@@ -371,10 +373,10 @@ class DiscoMultiVis(DiscoVis):
              d_tag, d_label, d_space, d_weight, d_disco_2d, d_segment, d_seg_length) = batch
             head_lines = []
             head_trees_for_scores = []
-            for btm, td, rt, error in batch_trees(h_token, h_tag, h_label, h_space, h_segment, h_seg_length, i2vs):
+            for btm, td, error in batch_trees(h_token, h_tag, h_label, h_space, h_segment, h_seg_length, i2vs):
                 assert not error
                 head_lines.append('\n'.join(draw_str_lines(btm, td, attachment = ' (Gold)')))
-                head_trees_for_scores.append(inner_score(btm, td, rt, self._evalb_lcfrs_kwargs, self._xh_writer))
+                head_trees_for_scores.append(inner_score(btm, td, self._evalb_lcfrs_kwargs, self._xh_writer))
             self._head_batches.append((head_trees_for_scores, head_lines))
         else:
             (_, h_token, d_tag, d_label, d_space, d_weight, d_disco_2d, d_segment, d_seg_length) = batch
@@ -384,8 +386,8 @@ class DiscoMultiVis(DiscoVis):
         # data_errors = []
         self._evalb.add_batch_line(batch_id)
         evalb_lines = []
-        for sid, (btm, td, rt, error) in enumerate(batch_trees(h_token, d_tag, d_label, d_space, d_segment, d_seg_length, i2vs, 'VROOT')):
-            pred_gold = inner_score(btm, td, rt, self._evalb_lcfrs_kwargs, self._xd_writer) + head_trees_for_scores[sid]
+        for sid, (btm, td, error) in enumerate(batch_trees(h_token, d_tag, d_label, d_space, d_segment, d_seg_length, i2vs, 'VROOT')):
+            pred_gold = inner_score(btm, td, self._evalb_lcfrs_kwargs, self._xd_writer) + head_trees_for_scores[sid]
             if self._draw_trees: evalb_lines.append(self._evalb.add(*pred_gold))
             if error: self._v_errors[bid_offset + sid] = error
         if self._draw_trees:
@@ -394,7 +396,7 @@ class DiscoMultiVis(DiscoVis):
             c_cnt = d_cnt = m_cnt = 0
             d_has_n_comps = d_has_n_fallback = m_has_n_comps = m_has_n_fallback = 0
             _, head_stat = self._headedness_stat
-            for sid, (btm, td, rt, error, wns, stat) in enumerate(batch_trees(h_token, d_tag, d_label, d_space, d_segment, d_seg_length, i2vs, 'VROOT', d_weight)):
+            for sid, (btm, td, error, wns, stat) in enumerate(batch_trees(h_token, d_tag, d_label, d_space, d_segment, d_seg_length, i2vs, 'VROOT', d_weight)):
                 for lb, (lbc, hc) in stat.items():
                     if lb in head_stat:
                         label_cnt, head_cnts = head_stat[lb]
@@ -437,19 +439,17 @@ class DiscoMultiVis(DiscoVis):
                         for row in mat:
                             new_lines.append(''.join(space_height_ratio(val) for val in row) + ' | ')
                         base_lines = cat_lines(base_lines, new_lines)
-                        csv_list.append(f'{1 if fallback else thresh},{n_trial},{len(mat)}\n')
+                        csv_list.append(f'{1 if fallback else thresh},{n_trial},{len(mat)},{n_comps}\n')
                     disco_2d_lines = '\n\n' + '\n'.join(base_lines)
                 else:
                     disco_2d_lines = ''
 
                 heights = {}
                 for nid, height in wns.items(): # weight_nodes
-                    if nid != rt:
-                        heights[nid] = f'#{height}'
-                    else:
+                    if nid == 0:
                         heights[nid] = f'#{height} (Predicted)'
-                if rt not in heights:
-                    heights[rt] = ' (Predicted)'
+                    else:
+                        heights[nid] = f'#{height}'
 
                 if bracket_match == g_num_brackets:
                     if tag_match == g_tag_count:

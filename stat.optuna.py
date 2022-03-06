@@ -45,7 +45,7 @@ with open(join(csv_dir, '.'.join(optuna_hyper)), 'w') as fwh,\
         losses = common_head[:-1] + ('fence', 'disco_1d', 'disco_2d', 'disco_2d_intra', 'disco_2d_inter')
         model_head = ('disc', 'biaff', 'disco_2d_intra', 'disco_2d_inter')
         medoids = 'head', 'continuous', 'left', 'random', 'right'
-        factor_head = tuple('r.' + x for x in ('sub', 'intra', 'inter') + medoids)
+        factor_head = tuple('r.' + x for x in ('sub', 'intra', 'inter') + medoids) + ('max_inter_height',)
     head_loss = tuple('l.' + x for x in common_head + model_head)
     fwh.write(','.join(head_loss + factor_head) + ',lr,tf,df\n')
     fwd.write('dev.tf,test.tf,test.df,n.step\n')
@@ -73,6 +73,7 @@ with open(join(csv_dir, '.'.join(optuna_hyper)), 'w') as fwh,\
             values.append(trial_sv['train']['disco_2d_intra_rate'])
             values.append(trial_sv['train']['disco_2d_inter_rate'])
             values.extend(trial_factors['others'][x] for x in (medoids))
+            values.append(trial_data['max_inter_height'])
         values.append(trial_sv['train']['learning_rate'])
         assert head_len == len(values)
         if (tf := rt[inst_id]['TF']) > tfmax:

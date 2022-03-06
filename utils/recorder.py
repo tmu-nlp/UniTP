@@ -72,6 +72,7 @@ class Recorder:
             assert isfile(sv_file), f"'{sv_file}' is not found."
 
         self._instance_dir = instance, instance_dir
+        self._initial_rt = rt[instance]
         self._module     = task_module
         self._ckpt_fname = join(instance_dir, 'checkpoint')
         self._model_dir  = create_join(instance_dir, 'models')
@@ -85,8 +86,9 @@ class Recorder:
         self.log(datetime.now())
 
     def new_trial_recorder(self, specs_update_fn, trial, fpath):
+        assert self._initial_rt, 'Current version does not allow direct optuna'
         specs = load_yaml(*self._sv_file_lock, wait = False)
-        specs.pop('optuna', None)
+        # specs.pop('optuna', None)
         results        = specs.pop('results')
         best_model     = max(results, key = lambda x: results[x]);
         best_score     = results.pop(best_model)
@@ -111,31 +113,31 @@ class Recorder:
         children_rt = load_yaml(rt_file, rt_lock, wait = False)
         test_kv = ((k, v['key']) for k, v in children_rt.items() if v and 'key' in v)
         test_kv = sorted(test_kv, key = lambda x: x[1], reverse = True)[:self._keep_top_k]
-        top_k = set(k for k, _ in test_kv)
 
-        optuna_top_k = {}
+        tid2fname = {}
         for fname in listdir(fpath):
             if not isdir(idir := join(fpath, fname)) or '.' not in fname:
                 continue
             trial_id, trial_string = fname.split('.', 1)
             if not trial_id.isdecimal():
                 continue
-            if trial_id in top_k:
+            tid2fname[trial_id] = trial_string, fname, idir
+
+        with open(join(fpath, 'rank.txt'), 'w') as fw:
+            for trial_id, key_score in test_kv:
+                trial_string, fname, idir = tid2fname[trial_id]
                 sv_file, sv_lock = _sv_file_lock(idir)
                 trial_results = load_yaml(sv_file, sv_lock)['results']
                 best_validated_model, score = max(trial_results.items(), key = lambda x: x[1])
-                best_trial = f'O{trial_id}-{best_validated_model}'
-                link(join(fpath, fname, 'models', best_validated_model),
-                     join(instance_dir, 'models', best_trial))
-                optuna_top_k[best_trial] = f'{trial_string}@{score}'
+                fw.write(f'[{key_score}] {trial_string}-O{trial_id}.{best_validated_model}-dev@{score}\n')
 
-        for fname in listdir(join(instance_dir, 'models')):
-            if fname[0] == 'O' and isfile(fpath := join(instance_dir, 'models', fname)):
-                remove(fpath)
-        main_specs = load_yaml(*self._sv_file_lock, wait = False)
-        main_specs['optuna'] = optuna_top_k
-        save_yaml(main_specs, *self._sv_file_lock, wait_lock = False)
-        return children_rt[test_kv[0][0]]
+        # for fname in listdir(join(instance_dir, 'models')):
+        #     if fname[0] == 'O' and isfile(fpath := join(instance_dir, 'models', fname)):
+        #         remove(fpath)
+        # main_specs = load_yaml(*self._sv_file_lock, wait = False)
+        # main_specs['optuna'] = optuna_top_k
+        # save_yaml(main_specs, *self._sv_file_lock, wait_lock = False)
+        return self._initial_rt #children_rt[test_kv[0][0]]
         # for fname in listdir(join(instance_dir, 'trials')):
         #     if '.' in fname:
         #         thatsit = fname.split('.')[0] == best_child
@@ -345,10 +347,10 @@ class Recorder:
                     except ValueError as e:
                         self.msg(byte_style('Optimzer loading error:' , '3'), e)
             epoch, fine_validation, global_step = checkpoint['status']
-            self._key = checkpoint['key']
+            self._key = key = checkpoint['key']
             
-            self.log('Model restored from', model_fname)
-            Recorder.msg('Restore model (' + byte_style(f'{epoch:.2f}', '3') + ') with dev score ' + byte_style(f'{self._key:.2f}', '3'))
+            self.log('Model restored from', model_fname, f'dev[{key:.2f}]')
+            Recorder.msg('Restore model (' + byte_style(f'{epoch:.2f}', '3') + ') with dev score ' + byte_style(f'{key:.2f}', '3'))
             if isinstance(restore_nth_best_validated_model, int):
                 return epoch, global_step
             epoch = int(epoch)

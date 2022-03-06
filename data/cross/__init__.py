@@ -1,103 +1,10 @@
 from collections import namedtuple, defaultdict, Counter
+from curses.ascii import isdigit
 from utils.param_ops import get_sole_key
 TopDown = namedtuple('TopDown', 'label, children')
-C_NT_START = 500
+C_VROOT = 'VROOT'
+do_nothing = lambda x: x
 
-def has_multiple(gen):
-    count = 0
-    for state in gen:
-        count += state
-        if count > 1:
-            return True
-    return False
-
-# def list_swap(bottom, lhs, rhs):
-#     bottom[lhs], bottom[rhs] = bottom[rhs], bottom[lhs]
-from utils.shell_io import byte_style
-
-def _read_graph(graph, make_up_for_no_nt = True):
-    bottom_up = {}
-    top_down = {}
-    single_attachment = set()
-    terminals, non_terminals = graph[0]
-    bottom = [(t.get('id'), t.get('word'), t.get('pos')) for t in terminals]
-
-    for nt in non_terminals:
-        p_node = nt.get('id')
-        label = nt.get('cat')
-        children = {}
-
-        for edge in nt:
-            if edge.tag == 'secedge':
-                continue
-            node = edge.get('idref')
-            children[node] = edge.get('label')
-            assert node not in single_attachment, 'multi-attachment'
-            single_attachment.add(node)
-            top_down[p_node] = TopDown(label, children)
-            bottom_up[node] = p_node
-
-    if top_down:
-        while p_node in bottom_up: # to root
-            p_node = bottom_up[p_node]
-    elif make_up_for_no_nt:
-        p_node = graph.get('id') + '_VROOT'
-        top_down[p_node] = TopDown('VROOT', {bid: '--' for bid, _, _ in bottom})
-
-    validate(bottom, top_down, p_node)
-    return bottom, top_down, p_node
-
-_CMD_TAG = 0
-_CMD_BOL = 1
-_CMD_EOL = 2
-E_DISCO = '*T*', '*ICH*', '*EXP*', '*RNR*'
-from data.delta import preproc_cnf
-
-def remove_irrelevant_trace(tree):
-    bottom = list(enumerate(tree.pos()))
-    bottom.reverse()
-    for bid, (word, tag) in bottom:
-        is_not_trace   = tag != '-NONE-'
-        is_disco_trace = any(word.startswith(tc) for tc in E_DISCO)
-        if is_not_trace or is_disco_trace:
-            continue
-        
-        tag_path = tree.leaf_treeposition(bid)[:-1]
-        syn_path = tag_path[:-1] # leaf must be unary
-        if len(tree[syn_path]) > 1: # more than one child
-            # NP (SBAR) (-NONE- *-1)
-            syn_path = tag_path
-        else: # NP -NONE- *-1
-            while syn_path and len(tree[syn_path[:-1]]) == 1:
-                syn_path = syn_path[:-1]
-        del tree[syn_path]
-
-def remove_eq(label):
-    pos = label.find('=')
-    if pos < 0:
-        return label
-    return label[:pos]
-
-def _preorder(tree):
-    if tree.height() < 3:
-        assert len(tree) == 1
-        word = tree[0]
-        if '\\' in word: # single \ in nltk.cp.tb
-            word = word.replace('\\', '')
-        elif word == '-LRB-':
-            word = '('
-        elif word == '-RRB-':
-            word = ')'
-        yield _CMD_TAG
-        yield word, tree.label()
-    else:
-        for child in tree:
-            yield from _preorder(child)
-        yield _CMD_BOL
-        for child in reversed(tree):
-            yield remove_eq(child.label())
-        yield _CMD_EOL
-        yield remove_eq(tree.label())
 
 def descendant_path(top_down, pid, cid, path = []):
     assert cid in top_down, f'invalid pid'
@@ -108,188 +15,32 @@ def descendant_path(top_down, pid, cid, path = []):
             c_path = descendant_path(top_down, c, cid, c_path)
             if c_path: return c_path
 
-def __validate(being_bids, to_be_bids, top_down, checked_nids, nt_start):
-    redundant_bids = being_bids - to_be_bids
-    redundant_nids = top_down.keys() - checked_nids
-    if to_be_bids ^ being_bids:
-        if to_be_bids - being_bids:
-            msg = f'Lacking bids: {to_be_bids - being_bids}'
-        else:
-            msg = f'Redundant bids: {redundant_bids}'
-        raise ValueError(msg)
-    elif redundant_nids:
-        for nid in redundant_nids:
-            _, children = top_down.pop(nid)
-            safe = True
-            for cid in children:
-                if cid < nt_start:
-                    safe &= cid not in being_bids
-                else:
-                    safe &= cid in redundant_nids
-                if not safe:
-                    break
-            if not safe:
-                raise ValueError(f'Redundant nids: {redundant_nids}')
-
-    if checked_nids ^ top_down.keys():
-        if checked_nids - top_down.keys():
-            msg = f'Should not happen here {checked_nids - top_down.keys()}'
-        else:
-            msg = f'Redundant nids: {redundant_nids}'
-        raise ValueError(msg)
-
-def validate(bottom_info, top_down, root_id):
-    cids = set()
-    nids = [root_id]
-    to_be_bids = set()
-    being_bids = set(bid for bid, _, _ in bottom_info)
-    checked_nids = set()
+def validate(bottom_info, top_down,
+             single_attachment = True,
+             check_redundancy  = True):
+    existing_bids = set(bid for bid, _, _ in bottom_info)
+    nids, cids = [0], set()
+    bid_refs, nid_refs = set(), set()
     while nids:
         for nid in nids:
-            if nid in being_bids:
-                to_be_bids.add(nid)
-            elif nid not in top_down:
-                raise ValueError(f'nid({nid}) not in top_down[\'{set(top_down)}\']')
-            checked_nids.add(nid)
-            for cid in top_down[nid].children:
-                if cid in being_bids:
-                    to_be_bids.add(cid)
-                else:
+            if nid > 0:
+                assert nid in existing_bids, f'Refering to non-existing bid({nid})'
+                assert nid not in bid_refs, f'Repeating bid({nid})'
+                bid_refs.add(nid)
+            else:
+                assert nid in top_down, f'Lacking nid({nid}) in top_down.keys'
+                if single_attachment:
+                    assert nid not in nid_refs, f'Multi-attachment [configurable] nid({nid})'
+                nid_refs.add(nid)
+                for cid in top_down[nid].children:
                     cids.add(cid)
         nids = cids
         cids = set()
-    __validate(being_bids, to_be_bids, top_down, checked_nids, 500)
-
-def validate_and_maintain(bottom_info, top_down, root_id, trace_dst):
-    cids = set()
-    nids = [root_id]
-    bottom_up = {}
-    to_be_bids = set()
-    being_bids = set(bottom_info)
-    checked_nids = set()
-    while nids:
-        for nid in nids:
-            if nid < C_NT_START:
-                to_be_bids.add(nid)
-            elif nid not in top_down:
-                raise ValueError(f'nid({nid}) not in top_down[\'{set(top_down)}\']')
-            checked_nids.add(nid)
-            for cid in top_down[nid].children:
-                if cid < C_NT_START:
-                    to_be_bids.add(cid)
-                else:
-                    cids.add(cid)
-                bottom_up[cid] = nid
-        nids = cids
-        cids = set()
-    remove_bids = [bid for bid, (_, tag) in bottom_info.items() if tag == '-NONE-']
-    remove_cids = [s_pid for s_pid in top_down if s_pid != root_id and not top_down[s_pid].children]
-    for cid in remove_cids + remove_bids:
-        if cid in remove_bids:
-            assert bottom_info.pop(cid) #[1] == '-NONE-'
-            to_be_bids.remove(cid)
-            being_bids.remove(cid)
-        else:
-            top_down.pop(cid)
-            checked_nids.remove(cid)
-        pid = bottom_up.pop(cid)
-        top_down[pid].children.pop(cid)
-        while not top_down[pid].children: # empty again
-            top_down.pop(pid)
-            cid = pid
-            checked_nids.remove(cid)
-            pid = bottom_up.pop(cid)
-            top_down[pid].children.pop(cid)
-    __validate(being_bids, to_be_bids, top_down, checked_nids, C_NT_START)
-
-def direct_read_penn(tree, *, cid = 0, nid = C_NT_START):
-    this_nid = nid
-    bt = {}
-    td = {}
-    final = nid == C_NT_START
-    if tree.height() > 2:
-        children = set()
-        for subtree in tree:
-            nid += 1
-            children.add(nid if subtree.height() > 2 else cid)
-            _bt, _td, cid, nid = direct_read_penn(subtree, cid = cid, nid = nid)
-            bt.update(_bt)
-            td.update(_td)
-        td[this_nid] = TopDown(tree.label(), children)
-    else:
-        bt[cid] = tree[0], tree.label()
-    if final:
-        bt = [(cid, wd, tg) for cid, (wd, tg) in bt.items()]
-        return bt, td, this_nid
-    return bt, td, cid + 1, nid
-
-TraceSrc = namedtuple('TraceSrc', 'pid, cid, lhs, rhs')
-TraceDst = namedtuple('TraceDst', 'typ, tid, pid, cid, bid')
-from nltk.tree import Tree
-
-def order_trace_dst_gen(top_down, trace_src, trace_dst):
-    trace_dependency = {}
-    for tid, tds in trace_dst.items():
-        for sid, ts in trace_src.items():
-            if tid == sid: continue
-            for td in tds:
-                if ts.cid == td.pid or descendant_path(top_down, ts.cid, td.pid):
-                    trace_dependency[tid] = sid
-
-    priority = defaultdict(int)
-    for tid, tds in trace_dst.items():
-        anti_loop = tid
-        while tid in trace_dependency:
-            tid = trace_dependency[tid]
-            priority[tid] += 1
-            if tid == anti_loop: break
-
-    # select the nearest for multi-attachment
-    for tid, tds in sorted(trace_dst.items(), key = lambda x: priority[x[0]]):
-        _, _, lhs, rhs = trace_src[tid]
-        num_tds = len(tds)
-        if num_tds > 1:
-            distances = {}
-            for ti, td in enumerate(tds):
-                d_bid = td.bid; assert tid == td.tid
-                if d_bid < lhs: dist = lhs - d_bid, 0
-                elif rhs < d_bid: dist = d_bid - rhs, 0
-                else: dist = 0, min(d_bid - lhs, rhs - d_bid)
-                distances[ti] = dist
-            ti = min(distances, key = distances.get)
-        else:
-            ti = 0
-        yield tds[ti]
-        if tid in trace_dependency:
-            sid = trace_dependency[tid]
-            n_pid, n_cid, n_lhs, n_rhs = trace_src.pop(sid)
-            if lhs < n_lhs: n_lhs = lhs
-            if n_rhs < rhs: n_rhs = rhs
-            trace_src[sid] = TraceSrc(n_pid, n_cid, n_lhs, n_rhs)
-
-E_PENN_PUNCT = ',', '.', '``', "''", ':', '-RRB-', '-LRB-'
-def sort_leftover(lhs, rhs, leftover_gen):
-    def dist(x):
-        if x < lhs:
-            return lhs - x
-        elif x > rhs:
-            return x - rhs
-        return 0
-    leftover = [(x, dist(x)) for x in leftover_gen]
-    leftover.sort(key = lambda x: x[1])
-    leftover_x = []
-    for x, y in leftover:
-        if y == 0:
-            leftover_x.append(x)
-        elif x == lhs - 1:
-            lhs = x
-            leftover_x.append(x)
-        elif x == rhs + 1:
-            rhs = x
-            leftover_x.append(x)
-        else:
-            break
-    return leftover_x
+    if check_redundancy:
+        redundancy = existing_bids - bid_refs
+        assert not redundancy, 'Redundant bid(s): ' + ', '.join(str(x) for x in redundancy)
+        redundancy = top_down.keys() - nid_refs
+        assert not redundancy, 'Redundant nid(s): ' + ', '.join(str(x) for x in redundancy)
 
 def find_labeled_on_path(top_down, root_id, target_label, child_id):
     path = descendant_path(top_down, root_id, child_id)
@@ -298,175 +49,7 @@ def find_labeled_on_path(top_down, root_id, target_label, child_id):
     for pid, cid in zip(path[1:], path):
         if top_down[cid].label == target_label:
             return pid, cid
-    raise KeyError(f'Label not found!')
-
-from data.cross.dptb import fix_for_dptb
-def _read_dpenn(tree,
-                convert_id_to_str = True,
-                adjust_punct      = False,
-                adjust_as_paper11 = True,
-                return_type_count = False):
-    bottom = {}
-    top_down = {}
-    pd_args = {}
-    trace_src = {}
-    trace_dst = defaultdict(list)
-    stack = defaultdict(set)
-    remaining_PRN_nodes = set()
-    if adjust_as_paper11:
-        fix_for_dptb(tree)
-        remove_irrelevant_trace(tree)
-    tree = Tree('VROOT', [tree])
-    for item in _preorder(tree):
-        if isinstance(item, int):
-            status = item
-            if status == _CMD_BOL:
-                nid = C_NT_START + len(top_down)
-                top_down[nid] = []
-                stack['__CURRENT__'].add(nid)
-        elif status == _CMD_TAG:
-            wd, tg = item
-            nid = len(bottom) + 1 # start from n is okay
-            bottom[nid] = (wd, tg)
-            stack[tg].add(nid)
-            
-            if wd[0] == '*' and wd[-1].isdigit() and '-' in wd[1:-1]:
-                _args = wd.split('-')
-                if _args[0] in E_DISCO or not adjust_as_paper11:
-                    tid = _args.pop()
-                    tp_ = '-'.join(_args)
-                    assert tg == '-NONE-'
-                    trace_dst[nid] = tp_, tid
-        elif status == _CMD_BOL:
-            # item is a tag or a label
-            cnid = max(stack[item])
-            stack[item].remove(cnid)
-            if not stack[item]:
-                stack.pop(item)
-            top_down[nid].append(cnid)
-        elif status == _CMD_EOL:
-            # item is the parent label
-            stack[item] |= stack.pop('__CURRENT__')
-
-            if '-' in item:
-                _args = item.split('-')
-                item = _args.pop(0)
-                if _args[-1].isdigit():
-                    trace_src[nid] = _args.pop()
-                if _args:
-                    pd_args[nid] = '-'.join(_args)
-
-            children = {}
-            if item == 'PRN': remaining_PRN_nodes.add(nid)
-            for cnid in top_down[nid]:
-                children[cnid] = pd_args.pop(cnid, '')
-
-                if cnid in trace_src:
-                    lhs, rhs = boundary(top_down, cnid)
-                    tid = trace_src.pop(cnid)
-                    if tid in trace_src:
-                        was_wh_movement = top_down[trace_src[tid].cid].label.startswith('WH')
-                        if not was_wh_movement: # wh-movement has the priority
-                            trace_src[tid] = TraceSrc(nid, cnid, lhs, rhs)
-                    else:
-                        trace_src[tid] = TraceSrc(nid, cnid, lhs, rhs)
-
-                if cnid in trace_dst:
-                    ty_id = trace_dst.pop(cnid)
-                    if len(ty_id) == 2:
-                        trace_dst[nid] = ty_id + (cnid,)
-                    elif len(ty_id) == 3:
-                        typ, tid, bid = ty_id
-                        trace_dst[tid].append(TraceDst(typ, tid, nid, cnid, bid))
-
-            top_down[nid] = TopDown(item, children)
-    assert not pd_args or nid in pd_args
-    assert len(stack) == 1
-    assert nid in stack['VROOT']
-
-    leftover_dst = {}
-    if trace_dst:
-        # all trace_dst should be projected
-        for tid in trace_dst.keys() - trace_src.keys():
-            leftover_dst[tid] = trace_dst.pop(tid) # 1 in nltk treebank
-
-        trace_dst = list(order_trace_dst_gen(top_down, trace_src, trace_dst))
-    else:
-        trace_dst = [] # change type
-
-    # cross trace along the bottom (ordered and reversed for bottom.pop(i) stability)
-    history = {}
-    type_count = defaultdict(int)
-    for typ, tid, d_pid, d_cid, d_bid in trace_dst:
-        s_pid, s_cid, lhs, rhs = trace_src.pop(tid)
-        d_pid = history.pop(d_cid, d_pid)
-        s_ftag = top_down[s_pid].children.pop(s_cid)
-        d_ftag = top_down[d_pid].children.pop(d_cid)
-        v_wd, v_tg = bottom.pop(d_bid)
-        assert v_wd.endswith(tid)
-        assert v_tg == '-NONE-'
-        if s_ftag and d_ftag:
-            ftag = s_ftag if s_ftag == d_ftag else (s_ftag + '-' + d_ftag)
-        else:
-            ftag = s_ftag or d_ftag
-        top_down[d_pid].children[s_cid] = ftag
-        # for better continuity
-        if adjust_punct:
-            leftover_x = (x for x in top_down[s_pid].children.keys() - set({d_pid}) if x < C_NT_START)
-            leftover_x = sort_leftover(lhs, rhs, leftover_x)
-            if leftover_x and all(bottom[x][2] in E_PENN_PUNCT for x in leftover_x):
-                for x in leftover_x:
-                    top_down[d_pid].children[x] = top_down[s_pid].children.pop(x)
-        history[s_cid] = d_pid # add s_cid as a d_pid child
-        if lhs <= d_bid <= rhs and (loc := find_labeled_on_path(top_down, s_cid, 'PRN', d_pid)): # PRN
-            s_cid, s_ccid = loc
-            ftag = top_down[s_cid].children.pop(s_ccid)
-            top_down[s_pid].children[s_ccid] = ftag
-            remaining_PRN_nodes.remove(s_ccid)
-            typ += '-PRN'
-        type_count[typ] += 1
-
-    validate_and_maintain(bottom, top_down, nid, trace_dst)
-    vroot = top_down.pop(nid)
-    assert vroot.label == 'VROOT'
-    root_id = get_sole_key(vroot.children)
-
-    if convert_id_to_str:
-        condensed_bottom = sorted(bottom)
-        condense = {bid: eid for eid, bid in enumerate(condensed_bottom, 1) if eid != bid}
-        bottom = [(f'n_{condense.get(bid, bid)}', w, t) for bid, (w, t) in bottom.items()]
-        new_top_down = {}
-        for nid, td in top_down.items():
-            children = {}
-            for cid, ftag in td.children.items():
-                children[f'n_{condense.get(cid, cid)}'] = ftag
-            new_top_down[f'n_{nid}'] = TopDown(td.label, children)
-        top_down = new_top_down
-        root_id = f'n_{root_id}'
-    else:
-        bottom = [(bid, w, t) for bid, (w, t) in bottom.items()]
-
-    if return_type_count:
-        return bottom, top_down, root_id, type_count, trace_src, leftover_dst
-    return bottom, top_down, root_id
-
-def boundary(top_down, nid):
-    if nid not in top_down:
-        return nid, nid
-    nids = [nid]
-    cids = []
-    coverage = []
-    while nids:
-        for nid in nids:
-            for cid in top_down[nid].children:
-                if cid in top_down:
-                    cids.append(cid)
-                else:
-                    assert cid < C_NT_START
-                    coverage.append(cid)
-        nids = cids
-        cids = []
-    return min(coverage), max(coverage)
+    raise KeyError(f'Label \'{target_label}\' not found!')
 
 def height_gen(top_down, root_id):
     max_height = -1
@@ -487,7 +70,9 @@ def has_label(top_down, root_id, label):
                 return True
     return False
     
-def add_efficient_subs(top_down, root_id, sub_prefix = '_', sub_suffix = '.'):
+def add_efficient_subs(top_down, bottom_unary, root_id = 0, sub_prefix = '_', sub_suffix = '.'):
+    if nts := top_down.keys() | bottom_unary.keys():
+        nts = min(nts) - 1
     new_top_down = {}
     height_cache = {}
     for node, height in height_gen(top_down, root_id):
@@ -500,7 +85,6 @@ def add_efficient_subs(top_down, root_id, sub_prefix = '_', sub_suffix = '.'):
                 ch = height_cache[child] = -1
             h_children[ch][child] = info
 
-        sub_start = 0
         new_children = {}
         p_label = top_down[node].label
         for h_level in range(min(h_children), max(h_children)):
@@ -514,10 +98,12 @@ def add_efficient_subs(top_down, root_id, sub_prefix = '_', sub_suffix = '.'):
                 ftags = []
                 while sub_heights:
                     ftags += h_children.pop(sub_heights.pop()).values()
-                new_node = node + f'{sub_suffix}{sub_start}'
+                if nts is None:
+                    new_node = nts = min(top_down) - 1 # node + f'{sub_suffix}{sub_start}'
+                else:
+                    nts -= 1; new_node = nts
                 h_children[h_level + 1][new_node] = sub_suffix.join('' for x in ftags) # artificial
                 new_children[new_node] = TopDown(sub_prefix + p_label, sub_children)
-                sub_start += 1
         if new_children:
             new_top_down.update(new_children)
             new_children = {}
@@ -529,7 +115,7 @@ def add_efficient_subs(top_down, root_id, sub_prefix = '_', sub_suffix = '.'):
     return new_top_down
 
 def _new_dep(dep_head):
-    return {node: TopDown(head, set([node])) for node, head in dep_head.items()}
+    return {node: TopDown(head, {node: ''}) for node, head in dep_head.items()}
 
 def _dep_n_prefix(dep_head):
     return {f'n_{node}': f'n_{head}' if head else None for node, head in dep_head.items()}
@@ -544,37 +130,48 @@ def _dep_on(dependency, d_node, h_node):
     # this .label actually means .head
     return dependency[d_node].label in dependency[h_node].children
 
-from utils.math_ops import bit_fanout
-def gap_degree(bottom, top_down, nid, return_coverage = False, bottom_is_bid = True):
-    finally_return = True
-    if isinstance(bottom, dict):
-        if nid in bottom:
-            return {nid: bottom[nid] if return_coverage else 0}, bottom[nid]
-        finally_return = False
+def prepare_bit(bottom, bottom_is_bid):
+    if bottom_is_bid:
+        return {bid: 1 << eid for eid, bid in enumerate(bottom)}
     else:
-        if not top_down:
-            return {nid: 0}
-        if bottom_is_bid:
-            bottom = {bid: 1 << eid for eid, bid in enumerate(bottom)}
-        else:
-            bottom = {bid: 1 << eid for eid, (bid, _, _) in enumerate(bottom)}
+        return {bid: 1 << eid for eid, (bid, _, _) in enumerate(bottom)}
 
-    gap_return = {}
-    bit_coverage = 0 # set()
+def bit_gen(bottom, top_down, nid):
+    bit_coverage = 0
     for cid in top_down[nid].children:
-        child_gaps, child_coverage = gap_degree(bottom, top_down, cid, return_coverage)
-        gap_return.update(child_gaps)
-        bit_coverage ^= child_coverage
+        if cid in bottom:
+            bit_coverage ^= bottom[cid] # |= does the same
+        else:
+            for something in bit_gen(bottom, top_down, cid):
+                bit_coverage |= something[1]
+                yield something
+    yield nid, bit_coverage
 
-    if return_coverage:
-        gap_return[nid] = bit_coverage
-    else:
-        gap_return[nid] = bit_fanout(bit_coverage) - 1
-    if finally_return: # or nid.endswith('_VROOT'):
-        assert bit_fanout(bit_coverage) == 1, 'discontinuous root'
-        return gap_return
+from utils.math_ops import bit_fanout
+def gap_degree(bottom, top_down, reduce_for_nid = 0, bottom_is_bid = False):
+    if not_reduce := reduce_for_nid is None:
+        reduce_for_nid = 0
+    if not top_down:
+        return {reduce_for_nid: 0} if not_reduce else 0
+    bottom = prepare_bit(bottom, bottom_is_bid)
 
-    return gap_return, bit_coverage
+    gaps = {n: bit_fanout(b) - 1 for n, b in bit_gen(bottom, top_down, reduce_for_nid)}
+    return gaps if not_reduce else max(gaps.values())
+
+def bracketing(bottom, top_down, bottom_is_bid = False, excluded_labels = None):
+    bottom = prepare_bit(bottom, bottom_is_bid)
+    bracket_cnt = Counter()
+    bracket_mul = {}
+    for nid, bit in bit_gen(bottom, top_down, 0):
+        label = top_down[nid].label
+        if not excluded_labels or label not in excluded_labels:
+            bracket_key = label, bit
+            # assert bracket_key not in bracket_mul
+            bracket_cnt[bracket_key] += 1
+            bracket_mul[bracket_key] = len(top_down[nid].children)
+
+    assert bit + ~bit == -1, 'Discontinuous root'
+    return bracket_cnt, bracket_mul
 
 def find_parent(top_down, root, cid):
     if root in top_down:
@@ -584,58 +181,20 @@ def find_parent(top_down, root, cid):
             if rid := find_parent(top_down, nid, cid):
                 return rid
 
-def filter_words(bottom, top_down, root, ex_fn, excluded_words, excluded_tags = None):
+def filter_words(bottom, top_down, excluded_words, excluded_tags = None):
     remove = []
     for eid, (bid, wd, tg) in enumerate(bottom):
         if excluded_words and wd in excluded_words or excluded_tags and tg in excluded_tags:
-            top_down[find_parent(top_down, root, bid)].children.__getattribute__(ex_fn)(bid)
+            top_down[find_parent(top_down, 0, bid)].children.pop(bid)
             remove.append(eid)
     remove.reverse()
     for eid in remove:
         assert bottom.pop(eid)[1] in excluded_words
 
-do_nothing = lambda x: x
 def new_word_label(bottom, top_down, *, word_fn = do_nothing, tag_fn = do_nothing, label_fn = do_nothing):
     new_bottom = [(bid, word_fn(wd), tag_fn(tg)) for bid, wd, tg in bottom]
     new_top_down = {nid: TopDown(label_fn(td.label), td.children) for nid, td in top_down.items()}
     return new_bottom, new_top_down
-
-def bracketing(bottom, top_down, nid, bottom_is_bid = False, excluded_labels = None):
-    final_check = False
-    if isinstance(bottom, dict):
-        if nid in bottom:
-            return bottom[nid]
-    else:
-        if bottom_is_bid:
-            bottom = {bid: 1 << eid for eid, bid in enumerate(bottom)}
-        else:
-            bottom = {bid: 1 << eid for eid, (bid, _, _) in enumerate(bottom)}
-        if not top_down:
-            return sum(bottom.values())
-        final_check = True
-
-    bit_coverage = 0
-    bracket_cnt = Counter()
-    bracket_mul = {}
-    for cid in top_down[nid].children:
-        something = bracketing(bottom, top_down, cid)
-        if isinstance(something, int): # from a terminal
-            bit_coverage ^= something
-        else: # from a non-terminal
-            bcv, cnt, mul = something
-            bit_coverage |= bcv
-            bracket_cnt.update(cnt)
-            bracket_mul.update(mul)
-
-    label = top_down[nid].label
-    if not excluded_labels or label not in excluded_labels:
-        bracket_key = label, bit_coverage
-        bracket_cnt[bracket_key] += 1
-        bracket_mul[bracket_key] = len(top_down[nid].children)
-    if final_check:
-        assert bit_coverage + ~bit_coverage == -1, 'Discontinuous root'
-        return bracket_cnt, bracket_mul
-    return bit_coverage, bracket_cnt, bracket_mul
 
 # def swappable_layers(layers_of_label, layers_of_right, layers_of_joint, layers_of_direc):
 #     for label_layer, right_layer, joint_layer direc_layer in zip(layers_of_label, layers_of_right, layers_of_joint + [None], layers_of_direc):
@@ -668,19 +227,20 @@ def _pre_proc(bottom_info, top_down, unary_join_mark = '+', dep = None):
     for node, wd, tg in bottom_info:
         word.append(wd)
 
-        collapsed_label = ''
+        collapsed_unary_labels = []
         if dep: dep_origin = node; dep_head = dep.pop(node) if node in unary else None
         while node in unary: # bottom up node
             label, node = unary.pop(node) # shift node!
-            collapsed_label += unary_join_mark + label
-        if collapsed_label:
-            bottom_unary[node] = collapsed_label[1:]
+            collapsed_unary_labels.append(label)
+        if collapsed_unary_labels:
+            collapsed_unary_labels.reverse()
+            bottom_unary[node] = unary_join_mark.join(collapsed_unary_labels)
             if dep: _dep[dep_origin] = node; dep[node] = dep_head
 
         new_bottom.append(node)
         node2tag[node] = tg
 
-    for node, (label, p_node) in sorted(unary.items(), key = lambda x: x[0]): # collapse top_down unary branches
+    for node, (label, p_node) in sorted(unary.items(), key = lambda x: x[0], reverse = True):
         td_label, children = top_down.pop(node)
         top_down[p_node] = TopDown(label + unary_join_mark + td_label, children)
     
@@ -692,8 +252,8 @@ def _pre_proc(bottom_info, top_down, unary_join_mark = '+', dep = None):
     return word, new_bottom, node2tag, bottom_unary
 
 
-def _combine(nts, parent_node, child_node, non_terminals, top_down, perserve_sub):
-    if perserve_sub or child_node < nts or non_terminals[child_node][0] not in '#_':
+def _combine(parent_node, child_node, non_terminals, top_down, perserve_sub):
+    if perserve_sub or child_node > 0 or non_terminals[child_node][0] not in '#_':
         top_down[parent_node].add(child_node)
         safe_label = None
     else:
@@ -720,21 +280,23 @@ def bottom_trees(word, bottom_tag, layers_of_label, fall_back_root_label, perser
     terminals = []
     non_terminals = {}
     top_down = defaultdict(set)
-    NTS = C_NT_START
-    for tid, wd_tg in enumerate(zip(word, bottom_tag)):
+    NTS = -1
+    perserve_sub &= len(layers_of_label) > 1 and len(layers_of_label[0]) > 1
+    for tid, wd_tg in enumerate(zip(word, bottom_tag), 1):
         terminals.append((tid,) + wd_tg)
-        if perserve_sub or layers_of_label[0][tid][0] in '#_':
+        label = layers_of_label[0][tid - 1]
+        if perserve_sub or label[0] in '#_':
             track_nodes.append(tid)
         else:
-            bottom_unary = layers_of_label[0][tid].split('+')
+            bottom_unary = label.split('+')
             last_node = tid
             while bottom_unary:
                 non_terminals[NTS] = bottom_unary.pop()
                 top_down[NTS] = set({last_node})
                 last_node = NTS
-                NTS += 1
-            track_nodes.append(NTS - 1)
-    return NTS, tid + 1, track_nodes, terminals, non_terminals, top_down, isinstance(fall_back_root_label, str), None
+                NTS -= 1
+            track_nodes.append(NTS + 1)
+    return NTS, tid, track_nodes, terminals, non_terminals, top_down, isinstance(fall_back_root_label, str), None
 
 class SpanTale:
     def __init__(self):
@@ -781,12 +343,8 @@ def draw_str_lines(bottom, top_down, reverse = True, attachment = {}, wrap_len =
     for pid, td in top_down.items():
         for cid in td.children:
             bottom_up[cid] = pid
-    # count = 0
     while pid in bottom_up:
         pid = bottom_up[pid]
-        # count += 1
-        # if count > 100:
-        #     breakpoint()
     if bottom_up:
         root_id = pid
     else:

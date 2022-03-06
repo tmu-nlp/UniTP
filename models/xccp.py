@@ -463,13 +463,14 @@ class DiscoMultiStem(MultiStem):
         fence      = torch.cat(layers_of_fence,     dim = 1) if layers_of_fence else torch.zeros(batch_size, 0, dtype = unit_emb.dtype, device = unit_emb.device)
         disco_1d   = torch.cat(layers_of_disco_1d,  dim = 1)
         if teacher_forcing:
-            for (ls, rm, mt), (lm, rs, tm) in inter_disco: # mt &= backward error
-                negative = self.predict_2d_disco(ls, rm)
-                mt = mt & (torch.rand_like(negative) < (self._sigmoid(negative) * disco_2d_intra_rate))
-                layers_of_inter_2d_negative.append(negative[mt].reshape(-1))
-                negative = self.predict_2d_disco(lm, rs)
-                tm = tm & (torch.rand_like(negative) < (self._sigmoid(negative) * disco_2d_intra_rate))
-                layers_of_inter_2d_negative.append(negative[tm].reshape(-1))
+            if hasattr(inter_disco, 'inter'):
+                for (ls, rm, mt), (lm, rs, tm) in inter_disco.get(): # mt &= backward error
+                    negative = self.predict_2d_disco(ls, rm)
+                    mt = mt & (torch.rand_like(negative) < (self._sigmoid(negative) * disco_2d_intra_rate))
+                    layers_of_inter_2d_negative.append(negative[mt].reshape(-1))
+                    negative = self.predict_2d_disco(lm, rs)
+                    tm = tm & (torch.rand_like(negative) < (self._sigmoid(negative) * disco_2d_intra_rate))
+                    layers_of_inter_2d_negative.append(negative[tm].reshape(-1))
             weight = space = None
             disco_2d = torch.cat(layers_of_disco_2d, dim = 0) if layers_of_disco_2d else None
             disco_2d_positive = torch.cat(layers_of_disco_2d_positive, dim = 0) if layers_of_disco_2d_positive else None

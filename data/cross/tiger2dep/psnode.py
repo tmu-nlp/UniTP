@@ -45,5 +45,6 @@ class PSNode:
 
     @property
     def dep_head(self):
-        head = f's{self.sid}_{self.head}' if self.head > 0 else None
-        return f's{self.sid}_{self.nid}', head
+        # head = f's{self.sid}_{self.head}' if self.head > 0 else None
+        # return f's{self.sid}_{self.nid}', head
+        return self.nid, self.head

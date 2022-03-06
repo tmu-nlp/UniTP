@@ -1,6 +1,6 @@
 from os.path import join
 from utils.pickle_io import pickle_load
-from data.io import TreeSpecs, get_fasttext, encapsulate_vocabs, load_freq
+from data.io import get_fasttext, encapsulate_vocabs, load_freq
 from data.delta import xtype_to_logits, logits_to_xtype
 from collections import defaultdict, namedtuple
 from utils.param_ops import HParams
@@ -24,6 +24,11 @@ class _BaseReader:
         self._vocab_dir = vocab_dir
         self._paddings = paddings
         self._device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+        from utils.types import memory_in_gigabyte
+        if memory_in_gigabyte:
+            gb = int(memory_in_gigabyte * 1000 * 1000 * 1000)
+            print(f'Pre-occupy {gb:,} byte memory.')
+            torch.empty(gb, dtype = torch.int8, device = self._device)
         to_model['paddings'] = paddings
         self._to_model = {}
         self._oovs = oovs

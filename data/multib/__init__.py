@@ -1,5 +1,6 @@
 from data.delta import preproc_cnf, Tree, defaultdict, add_efficient_subs
-from data.cross import _read_dpenn, draw_str_lines as _draw_str_lines
+from data.cross import draw_str_lines as _draw_str_lines
+from data.cross.dptb import read as read_dptb
 from data.mp import DM
 
 class MaryDM(DM):
@@ -308,7 +309,7 @@ def get_tree_from_signals(word, tag, layers_of_labels, layers_of_splits,
     return tree, not bottom # and not quit_on_error
 
 def draw_str_lines(tree, wrap_len = 1):
-    bottom_info, top_down, _ = _read_dpenn(tree)
+    bottom_info, top_down = read_dptb(tree)
     return _draw_str_lines(bottom_info, top_down, wrap_len = wrap_len)
 
 class MAryX:

@@ -34,18 +34,18 @@ def get_configs(recorder = None):
                               None,
                               DatasetHelper)
     
-    def get_datasets(mode, new_medium_factor = None):
+    def get_datasets(mode, new_configs = None):
         datasets = {}
         if mode == M_TRAIN:
             train_ds = reader.loaded_ds.get(mode)
-            assert new_medium_factor is None, 'should not optuna medium_factor for xbert'
+            assert new_configs is None, 'should not optuna medium_factor for xbert'
             if train_ds is None:
                 datasets[corp_name] = reader.batch(M_TRAIN, penn.batch_size, penn.bucket_len,
-                                                   new_medium_factor or penn.medium_factor._nested,
+                                                   penn.medium_factor._nested,
                                                    max_len = penn.max_len,
                                                    min_gap = penn.min_gap,
                                                    sort_by_length = penn.sort_by_length,
-                                                   inter_2d = train_config.disco_2d_inter_rate > 0)
+                                                   inter_2d = train_config.disco_2d_inter_rate > 0 and penn.max_inter_height)
             else:
                 from data.backend import post_batch
                 datasets[corp_name] = post_batch(mode, train_ds, penn.sort_by_length, penn.bucket_len, penn.batch_size)

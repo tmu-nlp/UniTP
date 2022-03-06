@@ -1,5 +1,15 @@
 from random import random, randint
-from data.cross import has_multiple, TopDown, _read_dpenn, _read_graph, draw_str_lines, _pre_proc, gap_degree, _new_dep, _dep_n_prefix, _dep_combine, _dep_on
+from data.cross import TopDown, draw_str_lines, _pre_proc, gap_degree, _new_dep, _dep_n_prefix, _dep_combine, _dep_on
+from data.cross.tiger import read as read_tiger
+from data.cross.dptb import read as read_dptb
+
+def has_multiple(gen):
+    count = 0
+    for state in gen:
+        count += state
+        if count > 1:
+            return True
+    return False
 
 def _positional_right(cid, num_children, factor):
     position = 1 - (cid + 0.5) / num_children
@@ -8,15 +18,6 @@ def _positional_right(cid, num_children, factor):
     else:
         right = position > factor # T[TfF]F
     return right
-
-def _new_sub_id(group, sub_suffix):
-    sub_id = 0
-    for name in group:
-        x = name.rfind(sub_suffix)
-        if x < 0:
-            continue
-        sub_id = max(int(name[x + 1:]), sub_id)
-    return f'{sub_suffix}{sub_id + 1}'
 
 def locations(node, bottom, top_down, consumed_top_down):
     children = consumed_top_down[node] if node in consumed_top_down else top_down[node].children
@@ -58,9 +59,10 @@ def binary_hash(bottom,
                 some_or_all,
                 lean_joint,
                 factor,
-                sub_suffix,
+                nts,
                 get_soft_right,
-                dependency):
+                dependency,
+                sub_prefix):
     bottom_up = {}
     right_hash = {}
     joint_rset = []
@@ -68,6 +70,7 @@ def binary_hash(bottom,
     consumed_top_down = {}
     swappable_groups = []
     bottom_flag = [True for _ in bottom]
+    sub_top_down = {}
     for p_node, td in top_down.items():
         p_node_complete = p_node in completed_nodes
         not_enough_child = not some_or_all(node in bottom for node in td.children)
@@ -120,14 +123,21 @@ def binary_hash(bottom,
                     if last_right and not right: # agreeable_orients
                         if lean_joint:
                             joint_rset.append(nid)
-                        group = td.children
-                        if len(group) == 2:
+                        if len(group := td.children) == 2:
                             new_node = p_node
                             completed_nodes.add(p_node)
                         else:
-                            new_node = p_node.rfind(sub_suffix)
-                            new_node = p_node if new_node < 0 else p_node[:new_node]
-                            new_node += _new_sub_id(group, sub_suffix)
+                            nts -= 1; new_node = nts
+                            label = top_down[p_node].label
+                            if label[0] != sub_prefix: # for efficient sub
+                                label = sub_prefix + label
+                            assert new_node not in group, 'Error: overwrite existing node (with wrong nts.)'
+                            group[new_node] = None
+                            sub_top_down[new_node] = TopDown(label, {x: group.pop(x) for x in (last_node, node)})
+                            completed_nodes.add(new_node)
+                            # new_node = p_node.rfind(sub_suffix)
+                            # new_node = p_node if new_node < 0 else p_node[:new_node]
+                            # new_node += _new_sub_id(group, sub_suffix)
                             # sub_id = 0
                             # while new_node + f'{sub_suffix}{sub_id}' in group:
                             #     sub_id += 1
@@ -138,7 +148,6 @@ def binary_hash(bottom,
                             elif _dep_on(dependency, node, last_node): # head <- dep
                                 _dep_combine(dependency, last_node, new_node, node)
                         bottom_up[node] = new_node
-                        group[new_node] = group.pop(last_node) + '.' + group.pop(node)
                         bottom_flag[last_nid] = False
                         consumed_top_down[new_node] = last_node, node
                     bottom_flag[nid] = False
@@ -146,7 +155,8 @@ def binary_hash(bottom,
             right_hash[node] = last_right = right
             last_nid = nid
             last_node = node
-    return right_hash, joint_rset, swappable_groups, bottom_up, soft_right
+    top_down.update(sub_top_down)
+    return right_hash, joint_rset, swappable_groups, bottom_up, soft_right, nts
 
 def binary_signals(bottom,
                    bottom_up,
@@ -157,8 +167,6 @@ def binary_signals(bottom,
                    joint_rset,
                    swap_rhs_priority,
                    factor,
-                   sub_prefix,
-                   sub_suffix,
                    pos_prefix):
     last_right = True
     last_direc = False
@@ -222,11 +230,7 @@ def binary_signals(bottom,
             is_joint = nid in joint_rset
             joint_layer.append(is_joint)
         
-        if sub_suffix in node:
-            label = top_down[node.split('.')[0]].label
-            if label[0] != sub_prefix: # for efficient sub
-                label = sub_prefix + label
-        elif node in bottom_unary:
+        if node in bottom_unary:
             label = bottom_unary[node]
         elif node in node2tag:
             label = pos_prefix + node2tag[node]
@@ -253,7 +257,8 @@ def cross_signals(bottom, node2tag, bottom_unary, top_down, factor,
         swap_rhs_priority = factor > 0.5
 
     some_or_all = has_multiple if aggressive else all
-    sub_suffix = '.'
+    if nts := top_down.keys() | bottom_unary.keys():
+        nts = min(nts) - 1
 
     layers_of_right = []
     layers_of_joint = []
@@ -262,16 +267,17 @@ def cross_signals(bottom, node2tag, bottom_unary, top_down, factor,
     layers_of_swaps = []
     completed_nodes = set()
     while len(bottom) > 1:
-        (right_hash, joint_rset, swappable_groups, bottom_up,
-         soft_right) = binary_hash(bottom,
-                                   top_down,
-                                   completed_nodes,
-                                   some_or_all,
-                                   lean_joint,
-                                   factor,
-                                   sub_suffix,
-                                   get_soft_right,
-                                   dependency)
+        (right_hash, joint_rset, swappable_groups, bottom_up, soft_right,
+         nts) = binary_hash(bottom,
+                            top_down,
+                            completed_nodes,
+                            some_or_all,
+                            lean_joint,
+                            factor,
+                            nts,
+                            get_soft_right,
+                            dependency,
+                            sub_prefix)
         right_hash.update(soft_right)
         (new_bottom, right_layer, joint_layer, label_layer,
          direc_layer) = binary_signals(bottom,
@@ -283,8 +289,6 @@ def cross_signals(bottom, node2tag, bottom_unary, top_down, factor,
                                         joint_rset,
                                         swap_rhs_priority,
                                         factor,
-                                        sub_prefix,
-                                        sub_suffix,
                                         pos_prefix)
         if new_bottom == bottom:
             raise ValueError('should be different', bottom, top_down, bottom_unary, layers_of_label, layers_of_right, layers_of_joint, layers_of_direc)
@@ -295,58 +299,63 @@ def cross_signals(bottom, node2tag, bottom_unary, top_down, factor,
         layers_of_direc.append(direc_layer)
         layers_of_swaps.append(swappable_groups)
 
-    if top_down or len(node2tag) == len(bottom) == 1:
+    if top_down or len(bottom_unary) == len(bottom) == 1:
         layers_of_right.append([factor > 0.5])
         layers_of_direc.append([False])
-        layers_of_label.append([top_down[bottom.pop()].label if top_down else node2tag[bottom.pop()]])
+        layers_of_label.append([top_down[bottom[0]].label if top_down else bottom_unary[bottom[0]]])
     return layers_of_label, layers_of_right, layers_of_joint, layers_of_direc, layers_of_swaps
 
 from utils.types import E_ORIF5, O_RGT, O_HEAD
 from copy import deepcopy
 from data.cross import add_efficient_subs
-def read_tiger_graph(graph, dep_head = None, add_subs = False):
-    bottom_info, top_down, root_id = _read_graph(graph)
-    lines = draw_str_lines(bottom_info, top_down)
-    word, bottom, node2tag, bottom_unary = _pre_proc(bottom_info, top_down, dep = dep_head)
-    bottom_tag = [node2tag[t] for t in bottom]
-    gap = gap_degree(bottom, top_down, root_id)
-    if add_subs:
-        top_down = add_efficient_subs(top_down, root_id)
-    cnf_layers = {}
-    if dep_head is not None:
-        cnf_layers[O_HEAD] = cross_signals(bottom, node2tag, bottom_unary, deepcopy(top_down), 0.5, _new_dep(dep_head))
-    for oid, cnf_factor in enumerate(E_ORIF5):
-        new_top_down = deepcopy(top_down) if cnf_factor != O_RGT else top_down
-        cnf_layers[cnf_factor] = cross_signals(bottom, node2tag, bottom_unary, new_top_down, (oid + 0.5) / 5)
-    return word, bottom_tag, cnf_layers, gap, lines#, bottom_info, ret_top_down, root_id
-
 def read_disco_penn(tree, dep_head = None, add_subs = False):
-    bottom_info, top_down, root_id = _read_dpenn(tree)
+    bottom_info, top_down = read_dptb(tree)
+    return read_disco(bottom_info, top_down, dep_head, add_subs)
+
+def read_tiger_graph(graph, dep_head = None, add_subs = False):
+    bottom_info, top_down = read_tiger(graph)
+    return read_disco(bottom_info, top_down, dep_head, add_subs)
+
+def read_disco(bottom_info, top_down, dep_head, add_subs):
     lines = draw_str_lines(bottom_info, top_down)
-    if dep_head is not None: dep_head = _dep_n_prefix(dep_head)
     word, bottom, node2tag, bottom_unary = _pre_proc(bottom_info, top_down, dep = dep_head)
     bottom_tag = [node2tag[t] for t in bottom]
-    gap = gap_degree(bottom, top_down, root_id)
+    gap = gap_degree(bottom, top_down, None, True)
     if add_subs:
-        top_down = add_efficient_subs(top_down, root_id)
+        top_down = add_efficient_subs(top_down, bottom_unary)
     cnf_layers = {}
     if dep_head is not None:
-        cnf_layers[O_HEAD] = cross_signals(bottom, node2tag, bottom_unary, deepcopy(top_down), 0.5, _new_dep(dep_head))
+        cnf_layers[O_HEAD] = (lls, lrs, ljs, lds, _) = cross_signals(bottom, node2tag, bottom_unary, deepcopy(top_down), 0.5, _new_dep(dep_head))
+        btm, td, _ = disco_tree(word, bottom_tag, lls, lrs, ljs, lds, perserve_sub = True)
+        lines.append('\nDep:')
+        lines.extend(draw_str_lines(btm, td))
     for oid, cnf_factor in enumerate(E_ORIF5):
         new_top_down = deepcopy(top_down) if cnf_factor != O_RGT else top_down
         cnf_layers[cnf_factor] = cross_signals(bottom, node2tag, bottom_unary, new_top_down, (oid + 0.5) / 5)
-    return word, bottom_tag, cnf_layers, gap, lines
+    return word, bottom_tag, cnf_layers, gap, lines#, bottom_info, ret_top_down
+
+def validate_disco(word, tag, cnf_layers, lines):
+    for cnf_factor, (layers_of_label, layers_of_right, layers_of_joint, layers_of_direc, _) in cnf_layers.items():
+        btm, td, er = disco_tree(word, tag, layers_of_label, layers_of_right, layers_of_joint, layers_of_direc)
+        cnf_lines = draw_str_lines(btm, td)
+        assert not er
+        if lines != cnf_lines:
+            print(cnf_factor)
+            print('\n'.join(lines))
+            print()
+            print('\n'.join(cnf_lines))
+            breakpoint()
 
 class MidinTreeKeeper:
     @classmethod
     def from_graph(cls, graph):
-        return cls(*_read_graph(graph))
+        return cls(*read_tiger(graph))
 
     @classmethod
     def from_tree(cls, tree):
-        return cls(*_read_dpenn(tree))
+        return cls(*read_dptb(tree))
 
-    def __init__(self, bottom_info, top_down, root_id):
+    def __init__(self, bottom_info, top_down):
         # print('\n'.join(draw_str_lines(bottom_info, top_down)))
         # from data.cross.evalb_lcfrs import DiscoEvalb
         # from data.cross import bracketing
@@ -355,7 +364,6 @@ class MidinTreeKeeper:
         word, bottom, node2tag, bottom_unary = _pre_proc(bottom_info, top_down)
         self._word = word
         self._bottom_tags = [node2tag[t] for t in bottom]
-        self._root_id = root_id
         self._top_down = top_down
         self._max_sub = max(len(td.children) for td in top_down.values()) if top_down else 0 # >= 2
         self._args = bottom, node2tag, bottom_unary
@@ -420,7 +428,6 @@ def disco_tree(word, bottom_tag,
 
     (NTS, bottom_len, track_nodes, terminals, non_terminals, top_down, track_fall_back,
      error_layer_id) = bottom_trees(word, bottom_tag, layers_of_label, fall_back_root_label, perserve_sub)
-    non_terminal_end = NTS
 
     for lid, (lr, lj, ld) in enumerate(zip(layers_of_right, layers_of_joint, layers_of_direc)):
         # if not (len(lr) == len(ld) == len(lj) + 1 == len(track_nodes)):
@@ -452,15 +459,15 @@ def disco_tree(word, bottom_tag,
                         break
                     labels = layers_of_label[lid + 1][lhs_nid]
                     labels = [labels] if perserve_sub or labels[0] in '#_' else labels.split('+')
-                    non_terminals[non_terminal_end] = labels.pop()
-                    _combine(NTS, non_terminal_end, lhs_node, non_terminals, top_down, perserve_sub) # TODO: safe_label validate
-                    _combine(NTS, non_terminal_end, rhs_node, non_terminals, top_down, perserve_sub)
+                    non_terminals[NTS] = labels.pop()
+                    _combine(NTS, lhs_node, non_terminals, top_down, perserve_sub) # TODO: safe_label validate
+                    _combine(NTS, rhs_node, non_terminals, top_down, perserve_sub)
                     while labels: # unary
-                        non_terminal_end += 1
-                        non_terminals[non_terminal_end] = labels.pop()
-                        top_down[non_terminal_end] = set({non_terminal_end - 1})
-                    track_nodes.insert(lhs_nid, non_terminal_end)
-                    non_terminal_end += 1
+                        NTS -= 1
+                        non_terminals[NTS] = labels.pop()
+                        top_down[NTS] = set({NTS + 1})
+                    track_nodes.insert(lhs_nid, NTS)
+                    NTS -= 1
                     offset += 1
             elif last_right and not right and (last_direc or direc): # cross (swap)
                 # 1: >[<≤]
@@ -483,17 +490,18 @@ def disco_tree(word, bottom_tag,
             for pid in track_nodes:
                 if pid in non_terminals and non_terminals[pid][0] in '_#':
                     non_terminals.pop(pid)
-                    top_down[non_terminal_end].update(top_down.pop(pid))
+                    top_down[NTS].update(top_down.pop(pid))
                 else:
-                    top_down[non_terminal_end].add(pid)
-            non_terminals[non_terminal_end] = fall_back_root_label
-            non_terminal_end += 1
+                    top_down[NTS].add(pid)
+            non_terminals[NTS] = fall_back_root_label
+            NTS -= 1
             break
 
     for nid, label in non_terminals.items():
-        top_down[nid] = TopDown(label, top_down.pop(nid))
+        top_down[nid] = TopDown(label, {x: None for x in top_down.pop(nid)})
+    top_down[0] = top_down.pop(NTS + 1)
 
-    return terminals, top_down, non_terminal_end - 1, error_layer_id
+    return terminals, top_down, error_layer_id
 
 from data.delta import get_logits
 def xlogit_gen(label_layer, right_layer, direc_layer, joint_layer, current_joints, next_joints):
@@ -640,8 +648,8 @@ class BxDM(DM):
             bottom_end = s_seq_len[0] + 1
             tags  = tuple(i2t[i] for i in   s_tag[1:bottom_end])
             words = tuple(i2w[i] for i in s_token[1:bottom_end])
-            bt, td, rt, _ = disco_tree(words, tags, layers_of_label, layers_of_right, layers_of_joint, layers_of_direc, 'VROOT')
-            yield export_string(bid_offset, bt, td, rt)
+            bt, td, _ = disco_tree(words, tags, layers_of_label, layers_of_right, layers_of_joint, layers_of_direc, 'VROOT')
+            yield export_string(bid_offset, bt, td)
             bid_offset += 1
 
     @staticmethod

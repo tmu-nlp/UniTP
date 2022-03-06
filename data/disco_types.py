@@ -10,8 +10,8 @@ build_params = {C_DPTB: split_dict(   '2-21',          '22',          '23'),
 ft_bin = {C_DPTB: 'en', C_TGR: 'de'}
 call_fasttext = make_call_fasttext(ft_bin)
 
-from utils.types import none_type, false_type, true_type, binarization_5_head, NIL, swapper, frac_close_0, frac_close_1
-from utils.types import train_batch_size, train_max_len, train_bucket_len, vocab_size, tune_epoch_type
+from utils.types import false_type, true_type, binarization_5_head, NIL, swapper, frac_close_0, frac_close_1, rate_5
+from utils.types import train_batch_size, train_max_len, train_bucket_len, vocab_size, tune_epoch_type, inter_height_2d
 dccp_data_config = dict(vocab_size     = vocab_size,
                         binarization   = binarization_5_head,
                         batch_size     = train_batch_size,
@@ -25,6 +25,7 @@ dccp_data_config = dict(vocab_size     = vocab_size,
 
 from data.cross.multib import F_CON, F_RANDOM, F_LEFT, F_RIGHT, F_DEP
 medium_factor = dict(balanced = frac_close_0,
+                     more_sub = rate_5,
                      others = {F_RANDOM: frac_close_1,
                                F_LEFT: frac_close_0,
                                F_RIGHT: frac_close_0,
@@ -36,9 +37,10 @@ xccp_data_config = dict(vocab_size     = vocab_size,
                         max_len        = train_max_len,
                         bucket_len     = train_bucket_len,
                         min_gap        = tune_epoch_type,
+                        sort_by_length = false_type,
                         unify_sub      = true_type,
-                        continuous_fence_only = true_type,
-                        sort_by_length = false_type)
+                        max_inter_height = inter_height_2d,
+                        continuous_fence_only = true_type)
 # tree = '/Users/zchen/KK/corpora/tiger_release_aug07.corrected.16012013.xml'
 
 from utils.shell_io import byte_style
@@ -52,7 +54,6 @@ def select_and_split_corpus(corp_name, corp_path,
     if corp_name == C_DPTB:
         from data.cross.ptb2dep import StanfordDependencies
         from nltk.corpus import BracketParseCorpusReader
-        from utils.file_io import parpath
         folder_pattern = lambda x: f'{x:02}'
         reader = BracketParseCorpusReader(corp_path, r".*/wsj_.*\.mrg")
         devel_set = strange_to(devel_set, folder_pattern)
@@ -116,7 +117,7 @@ def select_and_split_corpus(corp_name, corp_path,
         read_func = read_tiger_graph if binary else TreeKeeper.from_tiger_graph
     return corpus, in_train_set, in_devel_set, in_test_set, read_func
 
-from utils.file_io import join, remove, isfile, parpath, create_join
+from utils.file_io import join, parpath, create_join
 from sys import stderr
 def build(save_to_dir,
           corp_path,

@@ -1,9 +1,7 @@
-from sys import prefix
-from numpy import byte
 from utils.types import M_TRAIN, M_DEVEL, M_TEST
-from numpy.random import choice
+from numpy.random import choice, random
 from tqdm import tqdm
-from time import time
+from time import time, sleep
 from datetime import timedelta
 from torch import nn, no_grad
 from utils.recorder import Recorder, timestamp
@@ -107,14 +105,16 @@ class Operator:
 
         if isinstance(self._optuna_mode, tuple):
             super_recorder, fpath, trial, trial_step = self._optuna_mode
-            should_prune = False
-            try:
-                trial.report(scores['key'], trial_step)
-            except:
-                breakpoint()
-                should_prune = True
+            for i in range(5):
+                try:
+                    trial.report(scores['key'], trial_step)
+                    break
+                except:
+                    if i == 4: breakpoint()
+                    else: sleep(random() * 10)
+            
             self._optuna_mode = super_recorder, fpath, trial, trial_step + 1
-            if should_prune or trial.should_prune():
+            if trial.should_prune() and 5 < trial_step and 0.1 < random():
                 super_recorder.log(f'  (got pruned at the {trial_step}-th step)')
                 # self._recorder.register_test_scores(dict(key = self._recorder.key_score, step = trial_step))
                 self.test_model(); import optuna; raise optuna.exceptions.TrialPruned()

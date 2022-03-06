@@ -34,20 +34,30 @@ def get_configs(recorder = None):
                               None,
                               CharTextHelper if model.use.char_rnn else None)
     
-    def get_datasets(mode, new_medium_factor = None):
+    def get_datasets(mode, new_configs = None):
         datasets = {}
         if mode == M_TRAIN:
             train_ds = reader.loaded_ds.get(mode)
             if train_ds is None:
+                if train_config.disco_2d_inter_rate > 0:
+                    assert train_config.loss_weight.disco_2d_inter > 0
+                if train_config.disco_2d_intra_rate > 0:
+                    assert train_config.loss_weight.disco_2d_intra > 0
+                if isinstance(new_configs, tuple) and len(new_configs) == 2:
+                    new_medium_factor, max_inter_height = new_configs
+                else:
+                    new_medium_factor = new_configs if new_configs else penn.medium_factor._nested
+                    max_inter_height = penn.max_inter_height
                 datasets[corp_name] = reader.batch(M_TRAIN, penn.batch_size, penn.bucket_len,
-                                                   new_medium_factor or penn.medium_factor._nested,
+                                                   new_medium_factor,
                                                    max_len = penn.max_len,
                                                    min_gap = penn.min_gap,
                                                    sort_by_length = penn.sort_by_length,
-                                                   inter_2d = train_config.disco_2d_inter_rate > 0)
+                                                   inter_2d = train_config.disco_2d_inter_rate > 0 and max_inter_height)
             else:
                 from data.backend import post_batch
-                train_ds.reset_factors(new_medium_factor)
+                assert isinstance(new_configs, tuple) and len(new_configs) == 2
+                train_ds.reset_factors(*new_configs)
                 datasets[corp_name] = post_batch(mode, train_ds, penn.sort_by_length, penn.bucket_len, penn.batch_size)
         else:
             datasets[corp_name] = reader.batch(mode, penn.batch_size << 1, 0)

@@ -82,10 +82,10 @@ def incomplete_sent_line(disc_mark, sent_cnt, g_num_brackets, g_disc_num_bracket
         sent_line += f'╎          {g_tag_count:3d}     ╎'
     return sent_line
 
+from data.cross.dptb import read, Tree
 def conti_matches(p_tree, g_tree):
-    from data.cross import _read_dpenn, bracketing
-    g_bt, g_td, g_rt = _read_dpenn(g_tree, adjust_as_paper11 = False)
-    p_bt, p_td, p_rt = _read_dpenn(p_tree, adjust_as_paper11 = False)
+    g_bt, g_td, g_rt = read(g_tree, adjust_as_paper11 = False)
+    p_bt, p_td, p_rt = read(p_tree, adjust_as_paper11 = False)
     bracket_match, _, p_num_brackets, _, _, g_num_brackets, _, _ = disco_matches(bracketing(p_bt, p_td, p_rt), bracketing(g_bt, g_td, g_rt))
     return bracket_match, p_num_brackets, g_num_brackets
 
@@ -113,9 +113,6 @@ def mul_fan_ndd(brackets, multibs):
         fan_num[f] += ct
         fan_uni[f][key] = ct
     return mul_num, mul_uni, fan_num, fan_uni
-    
-# def mul_f1(p_mul, g_mul):
-#     for m in p_mul | g_mul
 
 def disco_matches(p_brackets, g_brackets):
     g_num_brackets, g_disc_num_brackets, g_disc_brackets = ndd(g_brackets)
@@ -274,36 +271,33 @@ class DiscoEvalb:
         return self._total_sents, self._missing
 
 def continuous_evalb(pred_fname, gold_fname, prm_fname):
-    from data.cross import _read_dpenn, bracketing, filter_words, new_word_label
-    from nltk.tree import Tree
     evalb_lcfrs_prm = read_param(prm_fname)
     evalb = DiscoEvalb()
     with open(pred_fname) as f_pred, open(gold_fname) as f_gold:
         for p_line, g_line in zip(f_pred, f_gold):
             try:
-                p_bt, p_td, p_rt = _read_dpenn(Tree.fromstring(p_line))
-                g_bt, g_td, g_rt = _read_dpenn(Tree.fromstring(g_line))
+                p_bt, p_td = read(Tree.fromstring(p_line))
+                g_bt, g_td = read(Tree.fromstring(g_line))
                 p_bt, p_td = new_word_label(p_bt, p_td, word_fn = evalb_lcfrs_prm.word_fn, label_fn = evalb_lcfrs_prm.label_fn)
                 g_bt, g_td = new_word_label(g_bt, g_td, word_fn = evalb_lcfrs_prm.word_fn, label_fn = evalb_lcfrs_prm.label_fn)
-                filter_words(p_bt, p_td, p_rt, 'pop', evalb_lcfrs_prm.DELETE_WORD)
-                filter_words(g_bt, g_td, g_rt, 'pop', evalb_lcfrs_prm.DELETE_WORD)
-                p_brackets, p_multibs = bracketing(p_bt, p_td, p_rt, False, evalb_lcfrs_prm.DELETE_LABEL)
-                g_brackets, g_multibs = bracketing(g_bt, g_td, g_rt, False, evalb_lcfrs_prm.DELETE_LABEL)
+                filter_words(p_bt, p_td, evalb_lcfrs_prm.DELETE_WORD)
+                filter_words(g_bt, g_td, evalb_lcfrs_prm.DELETE_WORD)
+                p_brackets, p_multibs = bracketing(p_bt, p_td, False, evalb_lcfrs_prm.DELETE_LABEL)
+                g_brackets, g_multibs = bracketing(g_bt, g_td, False, evalb_lcfrs_prm.DELETE_LABEL)
                 evalb.add(p_brackets, p_multibs, set(p_bt), g_brackets, g_multibs, set(g_bt))
             except:
                 continue
     return evalb
 
 def eval_disc(p_lines, g_lines, evalb_lcfrs_prm):
-    from data.cross import bracketing, filter_words, new_word_label
-    p_bt, p_td, p_rt = parse_export_sample(p_lines, 'VROOT')
-    g_bt, g_td, g_rt = parse_export_sample(g_lines, 'VROOT')
+    p_bt, p_td = parse_export_sample(p_lines, C_VROOT)
+    g_bt, g_td = parse_export_sample(g_lines, C_VROOT)
     p_bt, p_td = new_word_label(p_bt, p_td, word_fn = evalb_lcfrs_prm.word_fn, label_fn = evalb_lcfrs_prm.label_fn)
     g_bt, g_td = new_word_label(g_bt, g_td, word_fn = evalb_lcfrs_prm.word_fn, label_fn = evalb_lcfrs_prm.label_fn)
-    filter_words(p_bt, p_td, p_rt, 'pop', evalb_lcfrs_prm.DELETE_WORD)
-    filter_words(g_bt, g_td, g_rt, 'pop', evalb_lcfrs_prm.DELETE_WORD)
-    p_brackets, p_multibs = bracketing(p_bt, p_td, p_rt, False, evalb_lcfrs_prm.DELETE_LABEL)
-    g_brackets, g_multibs = bracketing(g_bt, g_td, g_rt, False, evalb_lcfrs_prm.DELETE_LABEL)
+    filter_words(p_bt, p_td, evalb_lcfrs_prm.DELETE_WORD)
+    filter_words(g_bt, g_td, evalb_lcfrs_prm.DELETE_WORD)
+    p_brackets, p_multibs = bracketing(p_bt, p_td, False, evalb_lcfrs_prm.DELETE_LABEL)
+    g_brackets, g_multibs = bracketing(g_bt, g_td, False, evalb_lcfrs_prm.DELETE_LABEL)
     return p_brackets, p_multibs, set(p_bt), g_brackets, g_multibs, set(g_bt)
 
 def discontinuous_evalb(pref_fname, gold_fname, prm_fname):
@@ -317,7 +311,7 @@ class ExportWriter:
     def __init__(self):
         self._lines = []
 
-    def add(self, bottom, top_down, root_id):
+    def add(self, bottom, top_down, root_id = 0):
         n = len(self._lines) + 1
         self._lines.append(export_string(n, bottom, top_down, root_id))
 
@@ -325,13 +319,7 @@ class ExportWriter:
         with open(fname, 'w') as fw:
             fw.write('\n'.join(self._lines))
 
-def is_nonterminal(node):
-    if node[0] == '#':
-        core = node[1:]
-        if core.isdigit() and (core := int(core)) > 499:
-            return core
-
-from data.cross import TopDown
+from data.cross import TopDown, C_VROOT, bracketing, filter_words, new_word_label
 def read_export_samples(fname):
     sample = None
     with open(fname) as fr:
@@ -345,7 +333,13 @@ def read_export_samples(fname):
             else:
                 sample.append(line)
 
-from data.cross import C_NT_START
+from data.cross.tiger import get_inode, C_TIGER_NT_START
+def tiger_inode(node):
+    if node[0] == '#':
+        core = node[1:]
+        if core.isdigit():
+            return get_inode(int(core))
+
 def parse_export_sample(lines, fallback = None, dptb_split = False):
     bottom = []
     top_down = defaultdict(list)
@@ -355,39 +349,35 @@ def parse_export_sample(lines, fallback = None, dptb_split = False):
             cid_or_word, label, _, ftag, pid = line.split()
         else:
             cid_or_word, _, _, label, _, _, pid = line.split('\t')
-        pid = int(pid)
-        cid = is_nonterminal(cid_or_word)
-        if cid:
+        pid = get_inode(int(pid))
+        if (cid := tiger_inode(cid_or_word)) and cid < 0:
             non_terminals[cid] = label
             top_down[pid].append(cid)
         else:
-            nid = len(bottom)
+            assert cid is None or cid != 0
+            nid = len(bottom) + 1
             bottom.append((nid, cid_or_word, label))
             top_down[pid].append(nid)
-    first = len(top_down[0])
-    if first > 1:
-        assert isinstance(fallback, str)
-        root = max(top_down) + C_NT_START
-        non_terminals[root] = fallback
-        top_down[root] = top_down.pop(0)
-        top_down[0] = [root]
-    elif first == 1 and not non_terminals:
-        assert isinstance(fallback, str)
-        top_down[C_NT_START].append(top_down[0].pop())
-        top_down[0].append(C_NT_START)
-        non_terminals[C_NT_START] = fallback
-    root = top_down.pop(0).pop()
+    if len(top_down[0]) == 1 and fallback is None: # for DPTB's
+        assert non_terminals
+        root = top_down.pop(0).pop() # == 1
+        top_down[0] = top_down.pop(root)
+        non_terminals[0] = non_terminals.pop(root)
+    elif isinstance(fallback, str): # 0 is innate for .export, add VROOT
+        non_terminals[0] = fallback
     for pid, label in non_terminals.items():
-        top_down[pid] = TopDown(label, {n: '--' for n in top_down[pid]})
-    return bottom, top_down, root
+        top_down[pid] = TopDown(label, {n: None for n in top_down[pid]})
+    return bottom, top_down
 
-def export_string(sent_id, bottom, top_down, root_id):
+def export_string(sent_id, bottom, top_down, root_id = 0):
     lines = f'#BOS {sent_id}\n'
     bottom_up = {}
     has_vroot = False
-    node_dict = defaultdict(lambda: len(node_dict) + C_NT_START)
+    assert len(bottom) < C_TIGER_NT_START, 'TODO: let discodop support large bottom'
+    assert len(top_down) < C_TIGER_NT_START, 'TODO: let discodop support large top_down'
+    node_dict = defaultdict(lambda: len(node_dict) + C_TIGER_NT_START)
     for pid, td in top_down.items():
-        if pid == root_id and td.label == 'VROOT':
+        if pid == root_id and td.label == C_VROOT:
             pid = 0
             has_vroot = True
         else:

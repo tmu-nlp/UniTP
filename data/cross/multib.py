@@ -1,4 +1,4 @@
-from data.cross import has_multiple, TopDown, _read_dpenn, _read_graph, _pre_proc
+from data.cross import TopDown, _pre_proc
 from data.cross import defaultdict, gap_degree, height_gen, add_efficient_subs
 from data.cross import _new_dep, _dep_n_prefix, _dep_on, _dep_combine
 from utils.param_ops import replace_args_kwargs
@@ -128,7 +128,7 @@ def _continuous_hash(bottom, bottom_top_down, future_top_down, gaps, boundaries,
             continuous = []
             pp_node = bottom_up[p_node]
             further_continuous = []
-            if pp_node in bottom_up: # not root_id
+            if pp_node in bottom_up:
                 for pc_node in future_top_down[pp_node].children:
                     if pc_node == p_node:
                         continue
@@ -191,7 +191,7 @@ def _continuous_hash(bottom, bottom_top_down, future_top_down, gaps, boundaries,
 def _is_disc(locations):
     return any(lhs + 1 != rhs for lhs, rhs in zip(locations, locations[1:]))
 
-def cross_signals(bottom, node2tag, bottom_unary, top_down, root_id, factor, # float:midin :most_continuous :random :dep
+def cross_signals(bottom, node2tag, bottom_unary, top_down, factor, # float:midin :most_continuous :random :dep
                   l2i = None,
                   dependency_or_mid_in = None,
                   verbose_file = None,
@@ -204,12 +204,12 @@ def cross_signals(bottom, node2tag, bottom_unary, top_down, root_id, factor, # f
         boundaries = {}
         bottom_ref = {node: i for i, node in enumerate(bottom)}
         bottom_up = {}
-        gaps = gap_degree(bottom, top_down, root_id)
+        gaps = gap_degree(bottom, top_down, None, True)
     elif f_dep and verbose_file:
         dep_issues = []
 
     top_down_group_by_height = [] # ordered by td dependency
-    for node, height in height_gen(top_down, root_id):
+    for node, height in height_gen(top_down, 0):
         td = top_down[node]
         if f_continuous:
             cb = []
@@ -294,7 +294,8 @@ def cross_signals(bottom, node2tag, bottom_unary, top_down, root_id, factor, # f
         layers_of_space.append(space_layer)
         layers_of_disco.append(disco_set)
     
-    node = bottom.pop()
+    assert len(bottom) == 1 and not top_down_group_by_height
+    node = bottom[0]
     if top_down:
         label = top_down[node].label
     elif bottom_unary:
@@ -305,7 +306,6 @@ def cross_signals(bottom, node2tag, bottom_unary, top_down, root_id, factor, # f
     if l2i is not None:
         label = l2i(label)
     layers_of_label.append([label])
-    assert not bottom and not top_down_group_by_height
     if verbose_file and f_dep and any(dep_issues):
         headline, file, lines = verbose_file
         file.write(headline + '\n' + lines + '\n')
@@ -316,7 +316,7 @@ def cross_signals(bottom, node2tag, bottom_unary, top_down, root_id, factor, # f
     return layers_of_label, layers_of_space, layers_of_disco
 
 
-from data.cross import E_SHP, E_CMB, E_LBL, _combine, draw_str_lines, gap_degree, bottom_trees
+from data.cross import E_SHP, E_CMB, E_LBL, _combine, draw_str_lines, bottom_trees
 def disco_tree(word, bottom_tag, 
                layers_of_label,
                layers_of_space,
@@ -326,7 +326,6 @@ def disco_tree(word, bottom_tag,
 
     (NTS, bottom_len, track_nodes, terminals, non_terminals, top_down, track_fall_back,
      error_layer_id) = bottom_trees(word, bottom_tag, layers_of_label, fall_back_root_label, perserve_sub)
-    non_terminal_end = NTS
 
     add_weight_base = layers_of_weight is not None
     weight_nodes = {}
@@ -337,26 +336,25 @@ def disco_tree(word, bottom_tag,
         headedness_stat = None
 
     if track_fall_back:
-        def fallback(non_terminal_end):
+        def fallback(NTS):
             for pid in track_nodes:
                 if pid in non_terminals and non_terminals[pid][0] in '_#':
                     non_terminals.pop(pid)
-                    top_down[non_terminal_end].update(top_down.pop(pid))
+                    top_down[NTS].update(top_down.pop(pid))
                 else:
-                    top_down[non_terminal_end].add(pid)
-            non_terminals[non_terminal_end] = fall_back_root_label
-            return non_terminal_end + 1
+                    top_down[NTS].add(pid)
+            non_terminals[NTS] = fall_back_root_label
+            return NTS - 1
 
     for lid, space_layer in enumerate(layers_of_space):
         if track_fall_back:
             next_layer_size = len(layers_of_label[lid + 1])
             if set(range(next_layer_size)) != set(layers_of_space[lid]):
-                # import pdb; pdb.set_trace()
                 error_layer_id = lid, E_LBL, bottom_len
                 if next_layer_size == 1:
                     space_layer = [0 for x in space_layer]
                 else:
-                    non_terminal_end = fallback(non_terminal_end)
+                    NTS = fallback(NTS)
                     break
 
         td = defaultdict(list)
@@ -380,11 +378,11 @@ def disco_tree(word, bottom_tag,
                             head_label = (nid2tag, non_terminals)[track_nid in non_terminals][track_nid]
                         if 'NP' in labels and track_nid in nid2tag:
                             np_leaves.append(nid2tag[track_nid])
-                        non_terminals[non_terminal_end] = f'{weight * 100:.0f}%'
-                        top_down[non_terminal_end].add(track_nid)
-                        track_nodes[cid] = non_terminal_end
+                        non_terminals[NTS] = f'{weight * 100:.0f}%'
+                        top_down[NTS].add(track_nid)
+                        track_nodes[cid] = NTS
                         weight_nodes[track_nid] = lid
-                        non_terminal_end += 1
+                        NTS -= 1
                     if head_label != 'DT' and 'DT' in np_leaves:
                         head_label += '*'
                     if labels in headedness_stat:
@@ -396,16 +394,16 @@ def disco_tree(word, bottom_tag,
                     headedness_stat[labels] = label_cnt + 1, head_cnts
                         
                 labels = [labels] if perserve_sub or labels[0] in '#_' else labels.split('+')
-                non_terminals[non_terminal_end] = labels.pop()
+                non_terminals[NTS] = labels.pop()
                 # >j<
                 for cid in cids:
-                    _combine(NTS, non_terminal_end, track_nodes[cid], non_terminals, top_down, perserve_sub)
+                    _combine(NTS, track_nodes[cid], non_terminals, top_down, perserve_sub)
                 while labels: # unary DIY
-                    non_terminal_end += 1
-                    non_terminals[non_terminal_end] = labels.pop()
-                    top_down[non_terminal_end] = set({non_terminal_end - 1})
-                new_track_nodes.append(non_terminal_end)
-                non_terminal_end += 1
+                    NTS -= 1
+                    non_terminals[NTS] = labels.pop()
+                    top_down[NTS] = set({NTS + 1})
+                new_track_nodes.append(NTS)
+                NTS -= 1
                 combined.extend(cids)
             else:
                 new_track_nodes.append(track_nodes[cids.pop()])
@@ -414,7 +412,7 @@ def disco_tree(word, bottom_tag,
         #     import pdb; pdb.set_trace()
         if len(track_nodes) > 1 and new_track_nodes == track_nodes and track_fall_back: # no action is taken
             error_layer_id = lid, E_CMB, bottom_len
-            non_terminal_end = fallback(non_terminal_end)
+            NTS = fallback(NTS)
             break
 
         track_nodes = new_track_nodes
@@ -422,35 +420,70 @@ def disco_tree(word, bottom_tag,
     if not error_layer_id:
         if not non_terminals:
             assert fall_back_root_label, 'should provide a fallback root label'
-            top_down[non_terminal_end].update(tid for tid, _, _ in terminals)
-            non_terminals[non_terminal_end] = fall_back_root_label
-            non_terminal_end += 1
+            top_down[NTS].update(tid for tid, _, _ in terminals)
+            non_terminals[NTS] = fall_back_root_label
+            NTS -= 1
             error_layer_id = -1, E_LBL, bottom_len
 
     # import pdb; pdb.set_trace()
     for nid, label in non_terminals.items():
-        top_down[nid] = TopDown(label, top_down.pop(nid))
+        top_down[nid] = TopDown(label, {x: None for x in top_down.pop(nid)})
+    top_down[0] = top_down.pop(NTS + 1)
 
     if add_weight_base:
-        return terminals, top_down, non_terminal_end - 1, error_layer_id, weight_nodes, headedness_stat
-    return terminals, top_down, non_terminal_end - 1, error_layer_id
+        return terminals, top_down, error_layer_id, weight_nodes, headedness_stat
+    return terminals, top_down, error_layer_id
 
+def _more_sub(nid, td, rate, new_top_down, sub_prefix, nts):
+    if len(td.children) > 2:
+        td_in, td_out = {}, {}
+        for cid, val in td.children.items():
+            if random() < rate:
+                td_in[cid] = val
+            else:
+                td_out[cid] = val
+        if len(td_in) < 2 or not td_out:
+            new_top_down[nid] = td
+        else:
+            nts -= 1
+            label = td.label
+            new_top_down[nid] = TopDown(label, td_out)
+            new_nid = nts
+            td_out[new_nid] = None
+            if label[0] != sub_prefix:
+                label = sub_prefix + label
+            new_top_down[new_nid] = td = TopDown(label, td_in)
+            if len(td_in) > 2:
+                nts = _more_sub(new_nid, td, rate, new_top_down, sub_prefix, nts)
+    else:
+        new_top_down[nid] = td
+    return nts
+
+def new_more_sub(top_down, bottom_unary, rate, sub_prefix = '_'):
+    new_top_down = {}
+    if nts := top_down.keys() | bottom_unary.keys():
+        nts = min(nts)
+    for nid, td in top_down.items():
+        nts = _more_sub(nid, td, rate, new_top_down, sub_prefix, nts)
+    return new_top_down
 
 class TreeKeeper:
     @classmethod
     def from_tiger_graph(cls, graph, *args, **kw_args):
-        return cls(*_read_graph(graph), *args, **kw_args)
+        from data.cross.tiger import read
+        return cls(*read(graph), *args, **kw_args)
 
     @classmethod
     def from_disco_penn(cls, tree, *args, **kw_args):
+        from data.cross.dptb import read
         args = replace_args_kwargs(_dep_n_prefix, 1, args, 'dep', kw_args)
-        return cls(*_read_dpenn(tree), *args, **kw_args)
+        return cls(*read(tree), *args, **kw_args)
 
-    def __init__(self, bottom_info, top_down, root_id, v2is = None, dep = None, details = False, verbose_file = None):
+    def __init__(self, bottom_info, top_down, v2is = None, dep = None, details = False, verbose_file = None):
         if details: print('\n'.join(draw_str_lines(bottom_info, top_down)))
         if verbose_file: verbose_file = verbose_file + ('\n'.join(draw_str_lines(bottom_info, top_down)),)
         word, bottom, node2tag, bottom_unary = _pre_proc(bottom_info, top_down, dep = dep)
-        self._gaps = gap_degree(bottom, top_down, root_id) # if details else None
+        self._gaps = gap_degree(bottom, top_down, None, True) # if details else None
         self._word = word
         if v2is is None:
             bottom_tag = [node2tag[t] for t in bottom]
@@ -484,7 +517,7 @@ class TreeKeeper:
                     print('Removed media nodes: ' + ', '.join(media))
 
         self._word_tag = word, bottom_tag
-        self._materials = bottom, node2tag, bottom_unary, top_down, l2i, root_id, dep, verbose_file
+        self._materials = bottom, node2tag, bottom_unary, top_down, l2i, dep, verbose_file
         self._balanced_top_down = None
         # self._dep_signals = None
 
@@ -505,11 +538,11 @@ class TreeKeeper:
     def word_tag(self):
         return self._word_tag
     
-    def stratify(self, factor = F_LEFT, balancing = False):
-        bottom, node2tag, bottom_unary, top_down, l2i, root_id, dep, vf = self._materials
-        if balancing:
+    def stratify(self, factor = F_LEFT, balancing_sub = False, more_sub = 0):
+        bottom, node2tag, bottom_unary, top_down, l2i, dep, vf = self._materials
+        if balancing_sub:
             if self._balanced_top_down is None:
-                self._balanced_top_down = add_efficient_subs(top_down, root_id)
+                self._balanced_top_down = add_efficient_subs(top_down, bottom_unary)
             top_down = self._balanced_top_down
         if factor == F_DEP:
             assert isinstance(dep, dict)
@@ -519,8 +552,10 @@ class TreeKeeper:
         bottom = bottom if len(bottom) > 1 else bottom.copy() # pop bottom
         if factor == F_DEP:
             # if self._dep_signals is None TODO 
-            return cross_signals(bottom, node2tag, bottom_unary, top_down, root_id, factor, l2i, _new_dep(dep), vf)
-        return cross_signals(bottom, node2tag, bottom_unary, top_down, root_id, factor, l2i)
+            return cross_signals(bottom, node2tag, bottom_unary, top_down, factor, l2i, _new_dep(dep), vf)
+        if 0 < more_sub < 1 and factor != F_CON:
+            top_down = new_more_sub(top_down, bottom_unary, more_sub)
+        return cross_signals(bottom, node2tag, bottom_unary, top_down, factor, l2i)
 
 def continuous_fence(space_layer, disco_set):
     count = 0
@@ -567,8 +602,8 @@ class MxDM(DM):
             ln = seg_length[0]
             wd = [i2w[i] for i in word[:ln]]
             tg = [i2t[i] for i in  tag[:ln]]
-            bt, td, rt, _ = disco_tree(wd, tg, layers_of_label, layers_of_space, 'VROOT')
-            yield export_string(bid_offset, bt, td, rt)
+            bt, td, _ = disco_tree(wd, tg, layers_of_label, layers_of_space, 'VROOT')
+            yield export_string(bid_offset, bt, td)
             bid_offset += 1
 
     @staticmethod

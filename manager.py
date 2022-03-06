@@ -404,6 +404,7 @@ def get_args():
     parser.add_argument('-x', '--train',     help = 'fv=3:30:4,max=100,!,optuna [fine validation starts from the 3rd consecutive key score wandering, ends at the 30th wandering, occuring 4 times during one epoch. !test with devel set!]', type = str, default = 'mp')
     parser.add_argument('-s', '--select',    help = 'select (a sub-layer config id)[/data][:folder] name to run', type = str)
     parser.add_argument('-i', '--instance',  help = 'test an trained model by the folder id without its suffix name', type = str)
+    parser.add_argument('-m', '--memory',    help = 'To preoccupy GPU memory in GB', type = int, default = None)
     args = parser.parse_args()
     if args.base is None or not isdir(args.base):
         parser.print_help()
@@ -415,8 +416,9 @@ if __name__ == '__main__':
     args = get_args()
     manager = Manager(args.base, args.reset)
     os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu
+    from utils import types
+    types.memory_in_gigabyte = args.memory
     if args.threads > 0:
-        from utils import types
         types.num_threads = args.threads
     if args.prepare:
         manager.check_data(build_if_not_yet = True, print_file = sys.stderr if args.select else None)

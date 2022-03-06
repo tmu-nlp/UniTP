@@ -114,6 +114,23 @@ def before_to_seq(vocabs):
             label_vocab = lambda x: f'{x * 100:.2f}%' if x > 0 else NIL
     return vocabs['token'], i2t, label_vocab
 
+def XRB2brackets(word):
+    if '\\' in word: # single \ in nltk.cp.tb
+        word = word.replace('\\', '')
+    elif word == '-LRB-':
+        word = '('
+    elif word == '-RRB-':
+        word = ')'
+    return word
+
+def remove_eq(label, additional = None):
+    pos = label.rfind('=')
+    if pos > 0:
+        label = label[:pos]
+    elif additional:
+        label = label[:label.rfind(additional)]
+    return label
+
 def get_xtype(path, LNR = (-1, 0, 1)):
     return (LNR[0] if path[-1] else LNR[2]) if path else LNR[1]
 
@@ -199,11 +216,7 @@ def preproc_cnf(mtree,
                 l = pos_in_syn + l[2:-1] # #-LRB- to #LRB
                 update = True
             if l[-1].isdecimal(): # remove -1 or =1
-                p = l.rfind('=')
-                if p > 0:
-                    l = l[:p]
-                else:
-                    l = l[:l.rfind('-')]
+                l = remove_eq(l, '-')
                 update = True
             if '-' in l:
                 l = l.replace('-', replace_junc) # NP-SUB
@@ -236,7 +249,6 @@ def count_binarized_lr_children(tree):
                 r += 1
     return l, r
 
-import sys
 def explain_warnings(warnings, label_layers, tag_layer):
     templates = ['pos %(l)s and pos_in_syn %(p)s are not consistent',
                  'leftmost %(l)s directs away from %(p)s',    'rightmost %(r)s directs away from %(p)s', # bad
@@ -711,11 +723,8 @@ class DeltaX:
     @classmethod
     def from_stan(cls, tree, lower = False):
         for i, (w, p) in enumerate(tree.pos()):
-            if w == '-LRB-':
-                w = '('
-            elif w == '-RRB-':
-                w = ')'
-            elif lower:
+            w = XRB2brackets(w)
+            if lower:
                 w = w.lower()
             p = tree.leaf_treeposition(i)
             tree[p] = w
