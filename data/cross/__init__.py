@@ -1,5 +1,4 @@
 from collections import namedtuple, defaultdict, Counter
-from curses.ascii import isdigit
 from utils.param_ops import get_sole_key
 TopDown = namedtuple('TopDown', 'label, children')
 C_VROOT = 'VROOT'
@@ -130,6 +129,18 @@ def _dep_on(dependency, d_node, h_node):
     # this .label actually means .head
     return dependency[d_node].label in dependency[h_node].children
 
+def boundary(top_down, nid):
+    if nid not in top_down:
+        return nid, nid
+    lhs = rhs = None
+    for cid in top_down[nid].children:
+        l, r = boundary(top_down, cid)
+        if lhs is None or l < lhs:
+            lhs = l
+        if rhs is None or rhs < r:
+            rhs = r
+    return lhs, rhs
+
 def prepare_bit(bottom, bottom_is_bid):
     if bottom_is_bid:
         return {bid: 1 << eid for eid, bid in enumerate(bottom)}
@@ -140,7 +151,7 @@ def bit_gen(bottom, top_down, nid):
     bit_coverage = 0
     for cid in top_down[nid].children:
         if cid in bottom:
-            bit_coverage ^= bottom[cid] # |= does the same
+            bit_coverage |= bottom[cid] # ^= does the same for trees, not graphs
         else:
             for something in bit_gen(bottom, top_down, cid):
                 bit_coverage |= something[1]
@@ -298,185 +309,33 @@ def bottom_trees(word, bottom_tag, layers_of_label, fall_back_root_label, perser
             track_nodes.append(NTS + 1)
     return NTS, tid, track_nodes, terminals, non_terminals, top_down, isinstance(fall_back_root_label, str), None
 
-class SpanTale:
-    def __init__(self):
-        self._spans = {}
+def multi_attachment(top_down):
+    children_cnt = Counter()
+    for td in top_down.values():
+        children_cnt += Counter(td.children.keys())
+    return {k:v for k,v in children_cnt.items() if v > 1}
 
-    def add(self, start, end = None):
-        self._spans[start] = end
-
-    def overlapped(self, start, end = None):
-        for s_start, s_end in self._spans.items():
-            if end is None:
-                if s_end is None:
-                    if s_start == start:
-                        return True
-                elif s_start <= start <= s_end:
-                    return True
-            elif start <= s_start <= end:
-                return True
-            elif s_end is not None and s_start <= start <= s_end:
-                return True
-        return False
-
-    def __str__(self):
-        if not self._spans:
-            return 'Nothing'
-        last_end = 0
-        blocks = ''
-        for start, end in sorted(self._spans.items(), key = lambda x: x[0]):
-            if end is None:
-                end = start
-            blocks += '_' * (start - last_end)
-            blocks += '&' * (end - start + 1)
-            last_end = end + 1
-        blocks += f':{last_end - 1}'
-        return blocks
-
-from utils.str_ops import count_wide_east_asian
-def draw_str_lines(bottom, top_down, reverse = True, attachment = {}, wrap_len = 1, line_start = ''):
-    if reverse:
-        LC, MC, RC, MP = '┌┬┐┴'
+def leaves(bottom, top_down, nid):
+    if nid in top_down:
+        for cid in top_down[nid].children:
+            yield from leaves(bottom, top_down, cid)
     else:
-        LC, MC, RC, MP = '└┴┘┬'
-    bottom_up = {}
-    for pid, td in top_down.items():
-        for cid in td.children:
-            bottom_up[cid] = pid
-    while pid in bottom_up:
-        pid = bottom_up[pid]
-    if bottom_up:
-        root_id = pid
-    else:
-        assert len(bottom) == 1
-        root_id = bottom[0][0]
-    if isinstance(attachment, str):
-        attachment = {root_id: attachment}
-    str_lines = []
-    word_line = line_start
-    tag_line = line_start
-    start_bars = set()
-    next_top_down = defaultdict(list)
-    wl = wrap_len << 1
-    for bid, word, tag in bottom:
-        num_wide_chars = count_wide_east_asian(word)
-        unit_len = max(len(word) + num_wide_chars, len(tag)) + wl
-        word_line += word.center(unit_len - num_wide_chars)
-        tag_line  +=  tag.center(unit_len)
-        mid_pos = len(tag_line) - round(unit_len // 2)
-        start_bars.add(mid_pos)
-        next_top_down[bottom_up[bid]].append((bid, mid_pos))
-    line_end = ' ' * len(line_start)
-    word_line += line_end
-    tag_line  += line_end
+        yield bottom[nid - 1]
+
+from data.cross.art import label_only, sort_by_num_children, sort_by_num_children
+from data.cross.art import symbols, draw_bottom, make_spans, draw_line
+def draw_str_lines(bottom, top_down,
+                   reverse = True,
+                   label_fn = label_only,
+                   priority = sort_by_num_children,
+                   wrap_len = 1):
+    l_symbols = symbols(reverse)
+    word_line, tag_line, bottom_up, jobs, cursors = draw_bottom(bottom, top_down, wrap_len)
     pic_width = len(tag_line)
-    str_lines.append(word_line)
-    str_lines.append(tag_line)
-    # print(word_line)
-    # print(tag_line)
-    while next_top_down:
-        cons_line = line_start
-        line_line = line_start
-        future_top_down = defaultdict(list)
-        end_bars = []
-        span_tale = SpanTale()
-        for pid, cid_pos_pairs in sorted(next_top_down.items(), key = lambda x: min(p for _, p in x[1])):
-            num_children = len(cid_pos_pairs)
-            if num_children < len(top_down[pid].children) or \
-               num_children == 1 and span_tale.overlapped(cid_pos_pairs[0][1]) or \
-               span_tale.overlapped(min(p for _, p in cid_pos_pairs), max(p for _, p in cid_pos_pairs)):
-                future_top_down[pid].extend(cid_pos_pairs) # exclude ones with intersections
-                continue
-            if num_children == 1:
-                _, mid_pos = cid_pos_pairs[0]
-                unit = '│'
-                line_line += ((mid_pos - len(line_line)) * ' ') + unit
-                if mid_pos in start_bars:
-                    start_bars.remove(mid_pos)
-                span_tale.add(mid_pos)
-            else:
-                mid_pos = 0
-                cid_pos_pairs.sort(key = lambda x: x[1]) # left to right
-                _, last_pos = cid_pos_pairs[0]
-                start_pos = last_pos
-                for cnt, (_, pos) in enumerate(cid_pos_pairs):
-                    if pos in start_bars:
-                        start_bars.remove(pos)
-                    if cnt == 0:
-                        unit = LC
-                    elif cnt == num_children - 1:
-                        unit += (pos - last_pos - 1) * '─' + RC
-                    else:
-                        unit += (pos - last_pos - 1) * '─' + MC
-                    mid_pos += pos
-                    last_pos = pos
-                span_tale.add(start_pos, last_pos)
-                mid_pos //= num_children
-                offset = 1
-                mid_mid = mid_pos
-                # import pdb; pdb.set_trace()
-                while any(-3 < mid_pos - bar < 3 for bar in start_bars): # avoid existing
-                    mid_pos = mid_mid + offset
-                    if offset > 0:
-                        offset = 0 - offset
-                    else:
-                        offset = 1 - offset
-                unit_half = mid_pos - start_pos
-                if unit[unit_half] == MC:
-                    unit = unit[:unit_half] + '┼' + unit[unit_half + 1:]
-                else:
-                    unit = unit[:unit_half] + MP + unit[unit_half + 1:]
-                line_line += ((mid_pos - len(line_line)) * ' ')[:-unit_half] + unit
-                # print('Comp:', unit)
-            label = top_down[pid].label
-            if attach := attachment.get(pid):
-                label += attach
-            cons_half = round(len(label) / 2)
-            if cons_half:
-                cons_line += ((mid_pos - len(cons_line)) * ' ')[:-cons_half] + label
-            else:
-                cons_line += ((mid_pos - len(cons_line)) * ' ') + label
-            if pid in bottom_up:
-                future_top_down[bottom_up[pid]].append((pid, mid_pos))
-                end_bars.append(mid_pos)
-        
-        len_line = len(line_line)
-        len_cons = len(cons_line)
-        # prev_line = line_line
-        # prev_cons = cons_line
-        if len_line < pic_width:
-            line_line += (pic_width - len_line) * ' '
-        if len_cons < pic_width:
-            cons_line += (pic_width - len_cons) * ' '
-        if start_bars:
-            new_line = line_start
-            new_cons = line_start
-            last_pos = 0
-            for pos in sorted(start_bars):
-                new_line += line_line[last_pos:pos] + '│'
-                # if pos >= len(cons_line):
-                #     print(prev_line)
-                #     print(prev_cons)
-                #     exit()
-                #     cons_line += '<<<<<< overflow bar'
-                #     continue
-                if cons_line[pos] == ' ':
-                    new_cons += cons_line[last_pos:pos] + '│'
-                else:
-                    new_cons += cons_line[last_pos:pos + 1]
-                last_pos = pos + 1
-            line_line = new_line + line_line[last_pos:]
-            cons_line = new_cons + cons_line[last_pos:]
-        start_bars.update(end_bars)
-
-        str_lines.append(line_line)
-        str_lines.append(cons_line)
-        # print(line_line)
-        # print(cons_line)
-        next_top_down = future_top_down
-        # if len(str_lines) > 200:
-        #     raise ValueError('Max')
-
+    str_lines = [word_line, tag_line]
+    while jobs:
+        spans, fn, jobs = make_spans(bottom_up, top_down, jobs, cursors, label_fn, priority)
+        str_lines.extend(draw_line(spans, fn, pic_width, *l_symbols))
     if reverse:
         str_lines.reverse()
     return str_lines

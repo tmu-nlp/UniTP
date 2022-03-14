@@ -380,8 +380,8 @@ def disco_tree(word, bottom_tag,
                             np_leaves.append(nid2tag[track_nid])
                         non_terminals[NTS] = f'{weight * 100:.0f}%'
                         top_down[NTS].add(track_nid)
+                        weight_nodes[NTS] = lid
                         track_nodes[cid] = NTS
-                        weight_nodes[track_nid] = lid
                         NTS -= 1
                     if head_label != 'DT' and 'DT' in np_leaves:
                         head_label += '*'
@@ -470,14 +470,14 @@ def new_more_sub(top_down, bottom_unary, rate, sub_prefix = '_'):
 class TreeKeeper:
     @classmethod
     def from_tiger_graph(cls, graph, *args, **kw_args):
-        from data.cross.tiger import read
-        return cls(*read(graph), *args, **kw_args)
+        from data.cross.tiger import read_tree
+        return cls(*read_tree(graph), *args, **kw_args)
 
     @classmethod
     def from_disco_penn(cls, tree, *args, **kw_args):
-        from data.cross.dptb import read
-        args = replace_args_kwargs(_dep_n_prefix, 1, args, 'dep', kw_args)
-        return cls(*read(tree), *args, **kw_args)
+        from data.cross.dptb import read_tree
+        # args = replace_args_kwargs(_dep_n_prefix, 1, args, 'dep', kw_args)
+        return cls(*read_tree(tree), *args, **kw_args)
 
     def __init__(self, bottom_info, top_down, v2is = None, dep = None, details = False, verbose_file = None):
         if details: print('\n'.join(draw_str_lines(bottom_info, top_down)))
@@ -549,7 +549,6 @@ class TreeKeeper:
         elif isinstance(factor, dict):
             dep = factor # check static for cache?
             factor = F_DEP
-        bottom = bottom if len(bottom) > 1 else bottom.copy() # pop bottom
         if factor == F_DEP:
             # if self._dep_signals is None TODO 
             return cross_signals(bottom, node2tag, bottom_unary, top_down, factor, l2i, _new_dep(dep), vf)

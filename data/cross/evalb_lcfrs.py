@@ -82,11 +82,11 @@ def incomplete_sent_line(disc_mark, sent_cnt, g_num_brackets, g_disc_num_bracket
         sent_line += f'╎          {g_tag_count:3d}     ╎'
     return sent_line
 
-from data.cross.dptb import read, Tree
+from data.cross.dptb import read_tree, Tree
 def conti_matches(p_tree, g_tree):
-    g_bt, g_td, g_rt = read(g_tree, adjust_as_paper11 = False)
-    p_bt, p_td, p_rt = read(p_tree, adjust_as_paper11 = False)
-    bracket_match, _, p_num_brackets, _, _, g_num_brackets, _, _ = disco_matches(bracketing(p_bt, p_td, p_rt), bracketing(g_bt, g_td, g_rt))
+    g_bt, g_td = read_tree(g_tree, adjust_fn = None)
+    p_bt, p_td = read_tree(p_tree, adjust_fn = None)
+    bracket_match, _, p_num_brackets, _, _, g_num_brackets, _, _ = disco_matches(bracketing(p_bt, p_td), bracketing(g_bt, g_td))
     return bracket_match, p_num_brackets, g_num_brackets
 
 def ndd(brackets):
@@ -276,8 +276,8 @@ def continuous_evalb(pred_fname, gold_fname, prm_fname):
     with open(pred_fname) as f_pred, open(gold_fname) as f_gold:
         for p_line, g_line in zip(f_pred, f_gold):
             try:
-                p_bt, p_td = read(Tree.fromstring(p_line))
-                g_bt, g_td = read(Tree.fromstring(g_line))
+                p_bt, p_td = read_tree(Tree.fromstring(p_line))
+                g_bt, g_td = read_tree(Tree.fromstring(g_line))
                 p_bt, p_td = new_word_label(p_bt, p_td, word_fn = evalb_lcfrs_prm.word_fn, label_fn = evalb_lcfrs_prm.label_fn)
                 g_bt, g_td = new_word_label(g_bt, g_td, word_fn = evalb_lcfrs_prm.word_fn, label_fn = evalb_lcfrs_prm.label_fn)
                 filter_words(p_bt, p_td, evalb_lcfrs_prm.DELETE_WORD)

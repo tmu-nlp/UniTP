@@ -237,7 +237,7 @@ class DiscoMultiOperator(DiscoOperator):
         work_dir = self.recorder.create_join(folder)
         serial = draw_trees or not head_trees or self.dm is None
         if serial:
-            async_ = True
+            async_ = False
             vis = DiscoMultiVis(epoch,
                                 work_dir,
                                 self.i2vs,
@@ -290,6 +290,9 @@ class DiscoMultiOperator(DiscoOperator):
                 if involve_balanced := medium_factor['balanced'] > 0:
                     medium_factor['balanced'] = bz = trial.suggest_float('balanced', 0.0, 1.0)
 
+                if involve_more_sub := medium_factor['more_sub'] > 0:
+                    medium_factor['more_sub'] = ms = trial.suggest_float('more_sub', 0.0, 1.0)
+
                 if multi_medoid := any(0 < v < 1 for v in medium_factor['others'].values()):
                     med_k, med_v = [], []
                     for k, v in medium_factor['others'].items():
@@ -308,6 +311,7 @@ class DiscoMultiOperator(DiscoOperator):
                 med_str = ''
                 rate_str = []
                 if involve_balanced: med_str += f'{height_ratio(bz)}'
+                if involve_more_sub: med_str += f'{height_ratio(ms)}'
                 if multi_medoid:     med_str += '[' + ''.join(height_ratio(v) for v in med_v) + ']'
                 if med_str:          med_str = 'med=' + med_str
                 if d_d2a > 0:       rate_str.append(f'.={d_d2a:.1e}')
@@ -375,7 +379,7 @@ class DiscoMultiVis(DiscoVis):
             head_trees_for_scores = []
             for btm, td, error in batch_trees(h_token, h_tag, h_label, h_space, h_segment, h_seg_length, i2vs):
                 assert not error
-                head_lines.append('\n'.join(draw_str_lines(btm, td, attachment = ' (Gold)')))
+                head_lines.append('\n'.join(draw_str_lines(btm, td, label_fn = lambda i,t: t[i].label if i else f'{t[i].label} (Gold)')))
                 head_trees_for_scores.append(inner_score(btm, td, self._evalb_lcfrs_kwargs, self._xh_writer))
             self._head_batches.append((head_trees_for_scores, head_lines))
         else:
@@ -444,19 +448,20 @@ class DiscoMultiVis(DiscoVis):
                 else:
                     disco_2d_lines = ''
 
-                heights = {}
-                for nid, height in wns.items(): # weight_nodes
+                def weight_with_height(nid, top_down):
+                    label = top_down[nid].label
+                    if nid in wns:
+                        label += f'#{wns[nid]}'
                     if nid == 0:
-                        heights[nid] = f'#{height} (Predicted)'
-                    else:
-                        heights[nid] = f'#{height}'
+                        label += ' (Predicted)'
+                    return label
 
                 if bracket_match == g_num_brackets:
                     if tag_match == g_tag_count:
                         lines += 'Exact Match\n\n'
                     else:
                         lines += 'Exact Bracketing Match | ' + tag_line + '\n\n'
-                    lines += '\n'.join(draw_str_lines(btm, td, attachment = heights))
+                    lines += '\n'.join(draw_str_lines(btm, td, label_fn = weight_with_height))
                     m_lines += lines + disco_2d_lines + '\n\n\n'
                     m_cnt += 1
                     m_has_n_fallback = max(m_has_n_fallback, has_n_fallback)
@@ -465,7 +470,7 @@ class DiscoMultiVis(DiscoVis):
                     lines += f'Bracketing {p_num_brackets} > {bracket_match} < {g_num_brackets} | '
                     lines += tag_line + '\n\n'
                     lines += head_lines[sid] + '\n\n'
-                    lines += '\n'.join(draw_str_lines(btm, td, attachment = heights))
+                    lines += '\n'.join(draw_str_lines(btm, td, label_fn = weight_with_height))
                     if pdbc or gdbc:
                         d_lines += lines + disco_2d_lines + '\n\n\n'
                         d_cnt += 1

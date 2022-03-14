@@ -1,7 +1,7 @@
 from random import random, randint
 from data.cross import TopDown, draw_str_lines, _pre_proc, gap_degree, _new_dep, _dep_n_prefix, _dep_combine, _dep_on
-from data.cross.tiger import read as read_tiger
-from data.cross.dptb import read as read_dptb
+from data.cross.tiger import read_tree as read_tiger
+from data.cross.dptb import read_tree as read_dptb
 
 def has_multiple(gen):
     count = 0
