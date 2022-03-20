@@ -237,7 +237,7 @@ class DiscoMultiOperator(DiscoOperator):
         work_dir = self.recorder.create_join(folder)
         serial = draw_trees or not head_trees or self.dm is None
         if serial:
-            async_ = False
+            async_ = True
             vis = DiscoMultiVis(epoch,
                                 work_dir,
                                 self.i2vs,

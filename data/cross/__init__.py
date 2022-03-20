@@ -339,3 +339,12 @@ def draw_str_lines(bottom, top_down,
     if reverse:
         str_lines.reverse()
     return str_lines
+
+def remove_repeated_unary(top_down, nid = 0):
+    if nid in top_down:
+        children = top_down[nid].children
+        for cid in children:
+            remove_repeated_unary(top_down, cid)
+        if len(children) == 1 and cid in top_down and top_down[nid].label == top_down[cid].label:
+            ftag = children.pop(cid)
+            top_down[nid] = top_down.pop(cid)

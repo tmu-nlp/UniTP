@@ -1,5 +1,6 @@
 from collections import namedtuple, defaultdict
 from utils.str_ops import count_wide_east_asian
+from utils.math_ops import bit_span, n_bit, low_bit
 Span = namedtuple('Span', 'label, elements, cur, mai')
 Element = namedtuple('Element', 'bits, cur, mai')
 draw_elem = lambda s_char, length, e_char: (s_char * length, e_char)
@@ -39,12 +40,20 @@ def draw_bottom(bottom, top_down, wrap_len):
         cursor = len(tag_line) - round(unit_len // 2)
         cursors[cursor] = is_ma = len(parents := bottom_up[bid]) > 1
         for parent in parents:
-            jobs[parent][bid] = Element(bit, cursor, mai(is_ma, bottom_up[parent]))
+            jobs[parent][bid] = Element(bit, cursor, is_ma)
     return ''.join(word_line), ''.join(tag_line), bottom_up, jobs, cursors
 
 sort_by_num_children = lambda jobs: sorted(jobs.items(), key = lambda x: len(x[1]))
 get_cur = lambda elem_or_span: elem_or_span.cur
 update_ma = lambda elem, ma: Element(*elem[:-1], ma)
+
+def sort_by_num_children_and_least_span(jobs):
+    def nc_span(elements):
+        bits = 0
+        for elem in elements.values():
+            bits |= elem.bits
+        return len(elements), n_bit(bits) - n_bit(low_bit(bits))
+    return sorted(jobs.items(), key = lambda x: nc_span(x[1]))
 
 def dodge_cursor(span_curs, cursors):
     distance = 0
@@ -70,7 +79,6 @@ def replace_char(line, D_BAR, cursors, targets):
         new_line.append(line[last_cur:])
     return ''.join(new_line)
 
-from utils.math_ops import bit_span
 label_only = lambda n, td: td[n].label
 def make_spans(bottom_up, top_down, jobs, cursors, label_fn, sort_jobs):
     future_jobs = defaultdict(dict)
@@ -96,11 +104,13 @@ def make_spans(bottom_up, top_down, jobs, cursors, label_fn, sort_jobs):
         label = label_fn(pid, top_down)
         elements_for_span = []
         for nid, elem in elements.items():
-            elements_for_span.append(elem)
-            cursor += (cur := elem.cur)
             other_parents = bottom_up[nid]
             other_parents.remove(pid)
             is_ma = len(other_parents) > 1
+            if elem.mai and is_ma:
+                elem = update_ma(elem, 2)
+            elements_for_span.append(elem)
+            cursor += (cur := elem.cur)
             if other_parents:
                 cursors[cur] = is_ma
             else:

@@ -73,7 +73,9 @@ class CorpusReader:
             return listdir(self._path)
         return listdir(self._path.name)
 
-    def parsed_sents(self, fileids, keep_str = False):
+    def parsed_sents(self, fileids = None, keep_str = False):
+        if fileids is None:
+            fileids = self.fileids()
         fpath = self._path if isinstance(self._path, str) else self._path.name
         if isinstance(fileids, (list, tuple, set)):
             for fn in fileids:
