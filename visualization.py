@@ -1642,7 +1642,7 @@ if desktop:
                     length = fields.seg_length[0]
                     words = fields.token[1:length + 1]
                     tags = fields.tag[1:length + 1]
-                    bottom = tuple((bid, vocabs.token[wid], vocabs.tag[tid]) for bid, (wid, tid) in enumerate(zip(words, tags)))
+                    bottom = tuple((bid, vocabs.token[wid], vocabs.tag[tid]) for bid, (wid, tid) in enumerate(zip(words, tags), 1))
                     return draw_str_lines(bottom, fields.tree, label_fn = lambda i,t: t[i].label if i else (t[i].label + stamp))
                 lines = get_lines(self._head, ' (gold)')
                 if show_all_trees:

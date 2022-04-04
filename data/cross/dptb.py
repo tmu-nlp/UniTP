@@ -1,9 +1,11 @@
-need_none = {
-    "`` Nasty innuendoes , '' says *-2 John Siegal , Mr. Dinkins 's issues director , `` designed * *-1 to prosecute a case of political corruption that *T*-74 simply does n't exist . ''": ((1, 0, 0), 1, ()),
-    "`` A very striking illusion , '' Mr. Hyman says *-1 now , his voice dripping with skepticism , `` but an illusion nevertheless . ''": ((4, 0, 1), 1, ()),
+change_trace = {
+    "`` Nasty innuendoes , '' says *-2 John Siegal , Mr. Dinkins 's issues director , `` designed * *-1 to prosecute a case of political corruption that *T*-74 simply does n't exist . ''": ((1, 0, 0, 1, 0, 0), '*T*'),
+    "`` A very striking illusion , '' Mr. Hyman says *-1 now , his voice dripping with skepticism , `` but an illusion nevertheless . ''": ((4, 0, 1, 1, 0, 0), '*T*'),
 }
 
-remove_none = {"They 're going *-1 to decide what their employees can *RNR*-2 or can not *RNR*-2 read *T*-3 . ''": (1,1,1,1,1,1,1,1,2,2)}
+remove_none = {"They 're going *-1 to decide what their employees can *RNR*-2 or can not *RNR*-2 read *T*-3 . ''": (1,1,1,1,1,1,1,1,2,2),
+    "Mrs. Yeargin says 0 she pleaded guilty because she realized 0 it *EXP*-2 would no longer be possible *-1 to win reinstatement , and because she was afraid of further charges .": (1, 1, 1, 1, 2, 0, 1, 1, 1, 1, 1, 2, 2, 0),
+    "IT *EXP*-2 PAYS *-1 to follow a management career path -- even at law firms .": (1, 1, 0)}
 
 need_prn = {
     "But , says 0 *T*-1 chief investigator Tom Smith , this `` does not translate into support for conservatism in general or into conservative positions on feminist and civil rights issues . ''": ((1,), 3),
@@ -19,6 +21,8 @@ shift_trace = {
     "`` We 're trying *-1 to take the imagination and talent of our engineers and come up with new processes for industry , '' says *T*-2 Vincent Salvatori , QuesTech 's chief executive .": ((), (1,)),
     "`` Our ordnance business has been hurt *-1 very badly by the slowdown , '' says *T*-2 Arch Scurlock , TransTechnology 's chairman .": ((), (1,)),
     "When a court decides that a particular actor 's conduct was culpable and so extends the definition of insider trading * to reach this conduct *T*-3 , it does not see the potentially enormous number of other cases that *T*-2 will be covered *-1 by the expanded rule .": ((0,), (0, 0)),
+    "Philip Morris , trying *-1 to revive the Benson & Hedges franchise , put the account up for review in 1986 .": ((0), (0, 0)),
+    "Partners in the survey who *T*-1 devote most of their time to *-2 practicing law earned an average of about $ 217,000 *U* .": ((0), (0, 0))
 }
 
 add_trace = {
@@ -28,7 +32,8 @@ add_trace = {
     "J.P. Bolduc , vice chairman of W.R. Grace & Co. , which *T*-10 holds a 83.4 % interest in this energy-services company , was elected *-10 a director .": ((0, 2, 1, 1, 2, 0), '1')
 }
 
-remove_trace = {"As Mr. Colton of the NAHB acknowledges *T*-1 : `` Government is not going *-2 to solve the problem ... .": ()}
+remove_trace = {"As Mr. Colton of the NAHB acknowledges *T*-1 : `` Government is not going *-2 to solve the problem ... .": (),
+    "Rival Boston Herald columnist Howie Carr , who *T*-1 usually rails at Statehouse `` hacks '' and nepotism , argued that the new drawings were designed *-2 *-3 to hide Mr. Madden 's `` rapidly growing forehead '' and the facial defects of `` chinless '' Dan Shaughnessy , a Globe sports columnist .": (1, 1, 1, 1, 1),}
 
 delete_node = {
     "But as Drexel analyst Linda Dunn *T*-1 notes , its properties will be developed *-2 over 15 to 20 years .":((1,0,1,1), (1,0,1,1))
@@ -46,16 +51,15 @@ def wrap_with_label_fn(tree, path, num, label):
         children.append(tree[path].pop(last))
     tree[path].insert(last, Tree(label, children))
 
-def shift_fn(tree, s_path, d_path):
+def shift_trace_fn(tree, s_path, d_path):
     s_label = tree[s_path].label()
     s_label, tid = s_label.rsplit('-', 1)
     tree[s_path].set_label(s_label)
     tree[d_path].set_label(tree[d_path].label() + '-' + tid)
 
-_CMD_TAG = 0
-_CMD_BOL = 1
-_CMD_EOL = 2
 E_DISCO = '*T*', '*ICH*', '*EXP*', '*RNR*'
+E_NON_DETACH = '*',
+E_GRAPH = E_DISCO + E_NON_DETACH#  '*PPA*'
 
 def typed_trace(types, word):
     if '-' in word:
@@ -83,14 +87,13 @@ def remove_irrelevant_trace(tree, traces):
 from data.delta import remove_eq, XRB2brackets
 def fix_for_ptb(tree):
     sent = ' '.join(tree.leaves()).strip()
-    if sent in need_none:
-        d_path, loc, s_path = need_none[sent]
-        segs = tree[s_path].label().split('-')
-        label = segs.pop(0); tid = segs.pop()
-        tree[d_path].insert(loc, Tree.fromstring(f'({label} (-NONE- *T*-{tid}))'))
+    if sent in change_trace:
+        path, typ = change_trace[sent]
+        _, tid = tree[path].split('-')
+        tree[path] = typ + '-' + tid
     elif sent in shift_trace:
         s_path, d_path = shift_trace[sent]
-        shift_fn(tree, s_path, d_path)
+        shift_trace_fn(tree, s_path, d_path)
     elif sent in need_prn:
         if sent.startswith('Mr.'):
             wrap_with_label_fn(tree, (2,), 2, 'SINV')
@@ -108,18 +111,17 @@ def fix_for_ptb(tree):
     elif sent in add_s_and_shift_trace:
         path, num, s_path, d_path = add_s_and_shift_trace[sent]
         wrap_with_label_fn(tree, path, num, 'S')
-        shift_fn(tree, s_path, d_path)
+        shift_trace_fn(tree, s_path, d_path)
     elif sent in delete_node:
         for path in delete_node[sent]:
             tree[path].extend(tree[path].pop())
     elif sent in remove_none:
         del tree[remove_none[sent]]
-    return dict(w_fn = XRB2brackets, nt_fn = remove_eq)
 
 def fix_for_dptb(tree):
-    wtnt = fix_for_ptb(tree)
+    fix_for_ptb(tree)
     remove_irrelevant_trace(tree, E_DISCO)
-    return wtnt
+    return dict(w_fn = XRB2brackets, nt_fn = remove_eq)
 
 def direct_read(tree, *, cid = 1, nid = 0):
     this_nid = nid
@@ -141,7 +143,10 @@ def direct_read(tree, *, cid = 1, nid = 0):
         return bt, td
     return bt, td, cid + 1, nid
 
-from data.cross import TopDown, C_VROOT, do_nothing, descendant_path, find_labeled_on_path, boundary
+_CMD_TAG = 0
+_CMD_BOL = 1
+_CMD_EOL = 2
+from data.cross import TopDown, C_VROOT, do_nothing, find_labeled_on_path, boundary
 def _preorder(tree, w_fn = do_nothing, t_fn = do_nothing, nt_fn = do_nothing):
     if tree.height() < 3:
         assert len(tree) == 1
@@ -159,40 +164,39 @@ def _preorder(tree, w_fn = do_nothing, t_fn = do_nothing, nt_fn = do_nothing):
 from collections import namedtuple, defaultdict
 TraceRef = namedtuple('TraceRef', 'pid, cid, lhs, rhs')
 TraceID = namedtuple('TraceID', 'typ, tid, pid, cid, bid')
+from utils.graph import directed_graph
 
-def tree_trace_gen(top_down, trace_refs, trace_ids):
-    active_trace_ids = []
-    trace_dependency = {} # cascade trace chain
+def trace_priority(trace_refs, trace_ids):
+    active_tid_priority = {}
+    directed_edges = set() # cascade trace chain
     for tid, tds in trace_ids.items(): # index identity
         if tid in trace_refs:
-            active_trace_ids.append(tid)
-            for rid, tr in trace_refs.items(): # reference
-                if tid == rid: continue
-                for td in tds:
-                    if tr.cid == td.pid or descendant_path(top_down, tr.cid, td.pid):
-                        trace_dependency[tid] = rid # [id] = ref
+            active_tid_priority[tid] = 0
+            for td in tds:
+                for rid, tr in trace_refs.items(): # reference
+                    if tid != rid and rid in trace_ids and tr.lhs <= td.bid <= tr.rhs:
+                        directed_edges.add((tid, rid)) # [id] = ref
 
-    priority = defaultdict(int)
-    for tid in active_trace_ids:
-        anti_loop = tid
-        while tid in trace_dependency:
-            tid = trace_dependency[tid]
-            priority[tid] += 1
-            if tid == anti_loop: break
-    active_trace_ids.sort(key = lambda x: priority[x])
+    _, loops = directed_graph(active_tid_priority, directed_edges)
 
+    return active_tid_priority, loops
+
+def tree_trace_gen(trace_refs, trace_ids):
+    priority, _ = trace_priority(trace_refs, trace_ids)
+    # For tree, detach both tref and tid and save c2p_history[tref].
+    # The depandant will find its relocated parent in c2p_history.
     # select the nearest for multi-attachment
-    for tid in active_trace_ids:
+    for tid in sorted(priority, key = priority.get, reverse = True):
         tr = trace_refs.pop(tid)
         tds = trace_ids.pop(tid)
         if len(tds) > 1:
             distances = {}
             lhs, rhs = tr.lhs, tr.rhs
             for ti, td in enumerate(tds):
-                d_bid = td.bid; assert tid == td.tid
-                if d_bid < lhs: dist = lhs - d_bid, 0
-                elif rhs < d_bid: dist = d_bid - rhs, 0
-                else: dist = 0, min(d_bid - lhs, rhs - d_bid)
+                i_bid = td.bid; assert tid == td.tid
+                if i_bid < lhs: dist = lhs - i_bid, 0
+                elif rhs < i_bid: dist = i_bid - rhs, 0
+                else: dist = 0, min(i_bid - lhs, rhs - i_bid)
                 distances[ti] = dist
             ti = min(distances, key = distances.get)
             trace_ids[tid] = [t for i,t in enumerate(tds) if ti != i]
@@ -210,7 +214,14 @@ def init_trace_id(valid_trace_types, wd, tg, trace_ids, nid):
     if tg == '-NONE-' and (typ_tid := typed_trace(valid_trace_types, wd)):
         trace_ids[nid] = typ_tid
 
-def split_label_ftag_trace(item, trace_refs, ftags, nid):
+def split_label_ftag_trace(item, ftags, nid, trace_refs, trace_eqs):
+    if '=' in item:
+        item, eq = item.split('=')
+        if (i := eq.find('-')) >= 0:
+            item += eq[i:]
+            eq = eq[:i]
+        assert eq.isdigit()
+        trace_eqs[eq].append(nid)
     if '-' in item:
         segments = item.split('-')
         item = segments.pop(0)
@@ -225,6 +236,7 @@ def read_materials(tree, trace_types, *catch_nodes, **wtnt_fns):
     top_down = {}
     ftags = {}
     trace_refs = {} # reference
+    trace_eqs = defaultdict(list)
     trace_ids = defaultdict(list) # trace identity
     catch_nodes = {k: set() for k in catch_nodes}
     short_memory = defaultdict(set)
@@ -252,7 +264,7 @@ def read_materials(tree, trace_types, *catch_nodes, **wtnt_fns):
         elif status == _CMD_EOL:
             # item is the parent label
             short_memory[item] |= short_memory.pop(None)
-            item = split_label_ftag_trace(item, trace_refs, ftags, nid)
+            item = split_label_ftag_trace(item, ftags, nid, trace_refs, trace_eqs)
             if item in catch_nodes:
                 catch_nodes[item].add(nid)
 
@@ -262,11 +274,11 @@ def read_materials(tree, trace_types, *catch_nodes, **wtnt_fns):
 
                 if cnid in trace_refs: # register formal reference
                     tid = trace_refs.pop(cnid)
+                    trace_refs[tid] = TraceRef(nid, cnid, *boundary(top_down, cnid))
                     # if tid not in trace_refs or not top_down[trace_refs[tid].cid].label.startswith('WH'): # wh-movement has the priority
                         # if tid in trace_refs:
                         #     breakpoint()
                         #     print(tid)
-                    trace_refs[tid] = TraceRef(nid, cnid, *boundary(top_down, cnid))
 
                 if cnid in trace_ids: # register formal identity
                     if len(ty_id := trace_ids.pop(cnid)) == 2: # for raw, change cnid to nid
@@ -280,15 +292,16 @@ def read_materials(tree, trace_types, *catch_nodes, **wtnt_fns):
     assert len(short_memory) == 1
     assert nid in short_memory[C_VROOT]
     get_inode = lambda x: x if x < nt_start else (nt_shifter - x)
-    return bottom, top_down, nid, nt_start, get_inode, trace_refs, trace_ids, catch_nodes
+    return bottom, top_down, nid, nt_start, get_inode, trace_refs, trace_ids, trace_eqs, catch_nodes
     
+from utils.param_ops import get_sole_key, change_key
 def maintain(bottom_info, top_down, root_id, nt_start, get_inode):
-    cids = set()
     nids = {root_id}
     bottom_up = {}
     remove_nids = set()
     seen_nids = set()
     while nids:
+        cids = set()
         for nid in nids:
             if nid < nt_start: # no redundant bids
                 if bottom_info[nid][1] == '-NONE-':
@@ -301,7 +314,6 @@ def maintain(bottom_info, top_down, root_id, nt_start, get_inode):
                     remove_nids.add(nid)
                 seen_nids.add(nid)
         nids = cids
-        cids = set()
     for cid in remove_nids:
         if cid < nt_start:
             bottom_info.pop(cid)
@@ -332,7 +344,6 @@ def maintain(bottom_info, top_down, root_id, nt_start, get_inode):
         new_top_down[nid] = TopDown(td.label, children)
     return bottom, new_top_down
 
-from utils.param_ops import get_sole_key
 def read_tree(tree, *,
               adjust_fn = fix_for_dptb,
               return_type_count = False):
@@ -340,30 +351,30 @@ def read_tree(tree, *,
     if callable(adjust_fn):
         wtnt_fns.update(adjust_fn(tree))
 
-    (bottom, top_down, root_id, nt_start, get_inode, trace_refs, trace_ids,
+    (bottom, top_down, root_id, nt_start, get_inode, trace_refs, trace_ids, _,
      catch_nodes) = read_materials(tree, E_DISCO, 'PRN', **wtnt_fns)
     remaining_PRN_nodes = catch_nodes.pop('PRN')
 
     # cross trace along the bottom (ordered and reversed for bottom.pop(i) stability)
-    attach_history = {}
+    c2p_history = {}
     type_count = defaultdict(int)
-    for typ, tid, d_pid, d_cid, d_bid, s_pid, s_cid, lhs, rhs in tree_trace_gen(top_down, trace_refs, trace_ids):
-        d_pid = attach_history.pop(d_cid, d_pid) # to relocate attachment ... (3 chains)
-        s_ftag = top_down[s_pid].children.pop(s_cid)
-        d_ftag = top_down[d_pid].children.pop(d_cid)
-        v_wd, v_tg = bottom.pop(d_bid)
+    for typ, tid, i_pid, i_cid, i_bid, r_pid, r_cid, lhs, rhs in tree_trace_gen(trace_refs, trace_ids):
+        i_pid = c2p_history.pop(i_cid, i_pid) # to relocate attachment ... (3 chains)
+        s_ftag = top_down[r_pid].children.pop(r_cid)
+        d_ftag = top_down[i_pid].children.pop(i_cid)
+        v_wd, v_tg = bottom.pop(i_bid)
         assert v_wd.endswith(tid)
         assert v_tg == '-NONE-'
         if s_ftag and d_ftag:
             ftag = s_ftag if s_ftag == d_ftag else (s_ftag + ':' + d_ftag)
         else:
             ftag = s_ftag or d_ftag
-        top_down[d_pid].children[s_cid] = ftag
-        attach_history[s_cid] = d_pid # add s_cid as a d_pid child
-        if lhs <= d_bid <= rhs and (loc := find_labeled_on_path(top_down, s_cid, 'PRN', d_pid)): # PRN
-            s_cid, s_ccid = loc
-            ftag = top_down[s_cid].children.pop(s_ccid)
-            top_down[s_pid].children[s_ccid] = ftag
+        top_down[i_pid].children[r_cid] = ftag
+        c2p_history[r_cid] = i_pid # add r_cid as a i_pid child
+        if lhs <= i_bid <= rhs and (loc := find_labeled_on_path(top_down, r_cid, 'PRN', i_pid)): # PRN
+            r_cid, s_ccid = loc
+            ftag = top_down[r_cid].children.pop(s_ccid)
+            top_down[r_pid].children[s_ccid] = ftag
             remaining_PRN_nodes.remove(s_ccid)
             typ += '-PRN'
         type_count[typ] += 1
@@ -374,21 +385,29 @@ def read_tree(tree, *,
         return bottom, top_down, type_count, trace_refs, trace_ids
     return bottom, top_down
 
-E_NON_DETACH = '*',
-E_GRAPH = E_DISCO + E_NON_DETACH#  '*PPA*'
+def raise_eq(label):
+    assert '=' not in label
+    return label
+
 def fix_for_gptb(tree):
-    wtnt = fix_for_ptb(tree)
+    fix_for_ptb(tree)
     remove_irrelevant_trace(tree, E_GRAPH)
-    return wtnt
+    return dict(w_fn = XRB2brackets, nt_fn = do_nothing)
 
-def graph_trace_gen(top_down, trace_refs, trace_ids):
-    active_trace_ids = {}
-    for tid, tds in trace_ids.items():
-        if tid in trace_refs:
-            active_trace_ids[tid] = any(td.typ in E_NON_DETACH for td in tds)
-
+def graph_trace_gen(trace_refs, trace_ids):
+    priority, loops = trace_priority(trace_refs, trace_ids)
+    assert not loops
+    # stage = 0
+    # print(groups)
+    # for is_loop, chain in sorted(groups, key = lambda x: len(x.chain)):
+    #     assert not is_loop
+    #     for tid in chain:
+    #         priority[tid] += stage
+    #     stage += len(chain)
+    # print(priority)
     # select the nearest for multi-attachment
-    for tid in sorted(active_trace_ids, key = active_trace_ids.get):
+    for tid in sorted(priority, key = priority.get, reverse = True):
+        # print(tid)
         yield trace_refs.pop(tid), trace_ids.pop(tid)
 
 def read_graph(tree, *,
@@ -398,52 +417,93 @@ def read_graph(tree, *,
     if callable(adjust_fn):
         wtnt_fns.update(adjust_fn(tree))
 
-    (bottom, top_down, root_id, nt_start, get_inode, trace_refs, trace_ids,
+    (bottom, top_down, root_id, nt_start, get_inode, trace_refs, trace_ids, trace_eqs,
      catch_nodes) = read_materials(tree, E_GRAPH, 'PRN', **wtnt_fns)
     remaining_PRN_nodes = catch_nodes.pop('PRN')
 
-    # from pprint import pprint
+    if len(set(len(x) for x in trace_eqs.values())) > 1 or trace_eqs.keys() != trace_eqs.keys() & trace_refs.keys():
+        from pprint import pprint
+        pprint(trace_eqs)
+        pprint(trace_refs)
+        pprint(trace_ids)
+        assert False
     # pprint(top_down)
     
-    attach_history = {}
+    c2p_history = {}
+    c2ps_history = {}
     type_count = defaultdict(int)
-    non_detach = {}
-    for (s_pid, s_cid, lhs, rhs), tids in graph_trace_gen(top_down, trace_refs, trace_ids):
-        do_not_detach = False
-        s_chd = top_down[s_pid].children
-        # print('Ref:', s_pid, s_cid)
-        for typ, tid, d_pid, d_cid, d_bid in tids:
-            # print('    ', d_pid)
-            d_pid = attach_history.pop(d_cid, d_pid) # to relocate attachment ... (3 chains)
-            # print(f'{typ}-{tid}:', d_pid, d_cid, d_bid)
-            d_ftag = top_down[d_pid].children.pop(d_cid)
-            v_wd, v_tg = bottom.pop(d_bid)
-            if typ in E_NON_DETACH:
-                do_not_detach = True
-                s_ftag = None # should not propagate for new attachment
-            else:
-                s_ftag = s_chd[s_cid]
+    check_combine = defaultdict(list)
+    for (r_pid, r_cid, lhs, rhs), tids in graph_trace_gen(trace_refs, trace_ids):
+        parents = {}
+        ref_children = top_down[r_pid].children
+        # print('Ref:', r_pid, r_cid)
+        for typ, tid, i_pid, i_cid, i_bid in tids:
+            if i_cid in c2p_history:
+                # print('    ', i_pid)
+                i_pid = c2p_history.pop(i_cid)
+            # print(f'{typ}-{tid}:', i_pid, i_cid, i_bid)
+            d_ftag = top_down[i_pid].children.pop(i_cid)
+            v_wd, v_tg = bottom.pop(i_bid)
             assert v_wd.endswith(tid)
             assert v_tg == '-NONE-'
+            if typ in E_NON_DETACH:
+                parents[i_cid] = i_pid
+                s_ftag = None # should not propagate for new attachment
+            else:
+                s_ftag = ref_children[r_cid]
             if s_ftag and d_ftag:
                 ftag = s_ftag if s_ftag == d_ftag else (s_ftag + ':' + d_ftag)
             else:
                 ftag = s_ftag or d_ftag
-            top_down[d_pid].children[non_detach.get(s_cid, s_cid)] = ftag
-            attach_history[s_cid] = d_pid # add s_cid as a d_pid child
-            non_detach[d_cid] = s_cid
-            if lhs <= d_bid <= rhs and (loc := find_labeled_on_path(top_down, s_cid, 'PRN', d_pid)): # PRN
-                s_cid, s_ccid = loc
-                ftag = top_down[s_cid].children.pop(s_ccid)
-                top_down[s_pid].children[s_ccid] = ftag
-                remaining_PRN_nodes.remove(s_ccid)
+            if i_cid in c2ps_history:
+                top_down[i_pid].children[i_cid] = d_ftag
+                for m_pid in c2ps_history[i_cid]:
+                    change_key(top_down[m_pid].children, i_cid, r_cid)
+                    # print('change key child of', m_pid, 'from', i_cid, 'to', r_cid)
+            else:
+                top_down[i_pid].children[r_cid] = ftag
+                if ii_pid := c2p_history.pop(r_cid, None):
+                    check_combine[r_cid].append(ii_pid)
+                c2p_history[r_cid] = i_pid # add r_cid as a i_pid child
+            # print('MA:', mattached_c2ps)
+            if lhs <= i_bid <= rhs and (loc := find_labeled_on_path(top_down, r_cid, 'PRN', i_pid)): # PRN
+                p_pid, p_cid = loc
+                # print('RPN', p_cid, 'from', p_pid, 'to', r_pid)
+                ftag = top_down[p_pid].children.pop(p_cid)
+                top_down[r_pid].children[p_cid] = ftag
+                remaining_PRN_nodes.remove(p_cid)
                 typ += '-PRN'
             type_count[typ] += 1
-        if not do_not_detach:
-            s_chd.pop(s_cid)
+        if parents:
+            flatten = [r_pid]
+            # print(c2ps_history)
+            # breakpoint()
+            for i_cid, i_pid in parents.items():
+                if i_cid in c2ps_history:
+                    flatten.extend(c2ps_history.pop(i_cid))
+                else:
+                    flatten.append(i_pid)
+            # print('To flatten', flatten)
+            c2ps_history[r_cid] = flatten
+        else:
+            ref_children.pop(r_cid)
+        
+    if len(multi_prn := top_down[root_id].children) > 1:
+        coordinated_prn = {}
+        for nid in multi_prn.copy():
+            assert top_down[nid].label == 'PRN'
+            coordinated_prn[nid] = multi_prn.pop(nid)
+        coord_nid = root_id + 1
+        multi_prn[coord_nid] = None
+        top_down[coord_nid] = TopDown('PRN', coordinated_prn)
+        for r_cid, i_pids in check_combine.items():
+            ii_pid = c2p_history.pop(r_cid)
+            for i_pid in i_pids:
+                assert top_down.pop(i_pid) == top_down[ii_pid]
+                for td in top_down.values():
+                    if i_pid in td.children:
+                        change_key(td.children, i_pid, ii_pid)
 
-    # pprint(top_down)
-    # pprint(bottom)
     bottom, top_down = maintain(bottom, top_down, root_id, nt_start, get_inode)
 
     if return_type_count:
@@ -475,11 +535,11 @@ def read_graph(tree, *,
 #     return leftover_x
 #     # for better continuity
 #     if adjust_punct:
-#         leftover_x = (x for x in top_down[s_pid].children.keys() - set({d_pid}) if x < nt_start)
+#         leftover_x = (x for x in top_down[r_pid].children.keys() - set({i_pid}) if x < nt_start)
 #         leftover_x = sort_leftover(lhs, rhs, leftover_x)
 #         if leftover_x and all(bottom[x][2] in E_PENN_PUNCT for x in leftover_x):
 #             for x in leftover_x:
-#                 top_down[d_pid].children[x] = top_down[s_pid].children.pop(x)
+#                 top_down[i_pid].children[x] = top_down[r_pid].children.pop(x)
 # nids = [nid]
 # cids = []
 # coverage = []

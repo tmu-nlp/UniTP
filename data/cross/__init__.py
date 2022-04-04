@@ -4,8 +4,7 @@ TopDown = namedtuple('TopDown', 'label, children')
 C_VROOT = 'VROOT'
 do_nothing = lambda x: x
 
-
-def descendant_path(top_down, pid, cid, path = []):
+def descendant_path(top_down, pid, cid, path = []): # TODO: support MA
     assert cid in top_down, f'invalid pid'
     if pid in top_down:
         for c in top_down[pid].children:
@@ -42,12 +41,11 @@ def validate(bottom_info, top_down,
         assert not redundancy, 'Redundant nid(s): ' + ', '.join(str(x) for x in redundancy)
 
 def find_labeled_on_path(top_down, root_id, target_label, child_id):
-    path = descendant_path(top_down, root_id, child_id)
-    if path is None: return
-    path.insert(0, root_id); path.reverse()
-    for pid, cid in zip(path[1:], path):
-        if top_down[cid].label == target_label:
-            return pid, cid
+    if (path := descendant_path(top_down, root_id, child_id)) is not None:
+        path.insert(0, root_id); path.reverse()
+        for pid, cid in zip(path[1:], path):
+            if top_down[cid].label == target_label:
+                return pid, cid
     raise KeyError(f'Label \'{target_label}\' not found!')
 
 def height_gen(top_down, root_id):
@@ -184,13 +182,27 @@ def bracketing(bottom, top_down, bottom_is_bid = False, excluded_labels = None):
     assert bit + ~bit == -1, 'Discontinuous root'
     return bracket_cnt, bracket_mul
 
-def find_parent(top_down, root, cid):
+def find_parent(top_down, root, cid): # TODO: support MA
     if root in top_down:
         if cid in top_down[root].children:
             return root
         for nid in top_down[root].children:
             if rid := find_parent(top_down, nid, cid):
                 return rid
+
+def bottom_up_with_root(top_down, nids = {0}, include_bottom = True):
+    bottom_up = defaultdict(set)
+    while nids:
+        cids = set()
+        for nid in nids:
+            if nid in top_down:
+                children = top_down[nid].children
+                cids.update(children)
+                for cid in children:
+                    if include_bottom or cid in top_down:
+                        bottom_up[cid].add(nid)
+        nids = cids
+    return bottom_up
 
 def filter_words(bottom, top_down, excluded_words, excluded_tags = None):
     remove = []
@@ -323,19 +335,22 @@ def leaves(bottom, top_down, nid):
         yield bottom[nid - 1]
 
 from data.cross.art import label_only, sort_by_num_children, sort_by_num_children
-from data.cross.art import symbols, draw_bottom, make_spans, draw_line
+from data.cross.art import style_1, style_2, draw_bottom, make_spans, draw_line
 def draw_str_lines(bottom, top_down,
                    reverse = True,
                    label_fn = label_only,
+                   style_fn = style_2,
                    priority = sort_by_num_children,
+                   ftag_fn  = None,
                    wrap_len = 1):
-    l_symbols = symbols(reverse)
+    symbols, stroke_fn = style_fn(reverse)
     word_line, tag_line, bottom_up, jobs, cursors = draw_bottom(bottom, top_down, wrap_len)
     pic_width = len(tag_line)
     str_lines = [word_line, tag_line]
     while jobs:
-        spans, fn, jobs = make_spans(bottom_up, top_down, jobs, cursors, label_fn, priority)
-        str_lines.extend(draw_line(spans, fn, pic_width, *l_symbols))
+        old_bars = cursors.copy() if callable(ftag_fn) else None
+        spans, bars, jobs = make_spans(bottom_up, top_down, jobs, cursors, label_fn, priority, stroke_fn)
+        str_lines.extend(draw_line(spans, pic_width, symbols, bars, old_bars, ftag_fn))
     if reverse:
         str_lines.reverse()
     return str_lines
