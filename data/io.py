@@ -81,9 +81,9 @@ def get_fasttext(fname):
 def sort_count(cnt):
     return sorted(cnt.items(), key = lambda x:x[1], reverse = True)
 
-def sorting_order(seq):
+def sorting_order(seq, key = lambda x: (len(x), x)):
     order = {}
-    for src in sorted(range(len(seq)), key = lambda i: (len(seq[i]), seq[i])):
+    for src in sorted(range(len(seq)), key = lambda i: key(seq[i])):
         order[src] = len(order)
     return order
 

@@ -88,15 +88,21 @@ def draw_bottom(bottom, top_down, wrap_len):
             jobs[parent][bid] = Element(bit, cursor, is_ma)
     return ''.join(word_line), ''.join(tag_line), bottom_up, jobs, cursors
 
-sort_by_num_children = lambda jobs: sorted(jobs.items(), key = lambda x: len(x[1]))
 
-def sort_by_num_children_and_least_span(jobs):
-    def nc_span(elements):
-        bits = 0
-        for elem in elements.values():
-            bits |= elem.bits
-        return len(elements), n_bit(bits) - n_bit(low_bit(bits))
-    return sorted(jobs.items(), key = lambda x: nc_span(x[1]))
+def __dir_arity(elements, from_left, reverse):
+    bits = 0
+    for elem in elements.values():
+        bits |= elem.bits
+    lhs = n_bit(low_bit(bits))
+    rhs = n_bit(bits)
+    key = lhs if from_left else -rhs
+    return (len(elements), rhs - lhs, key) if reverse else (key, rhs - lhs, len(elements))
+
+sort_by_arity = lambda jobs: sorted(jobs.items(), key = lambda x: len(x[1]))
+sort_by_lhs_arity = lambda jobs: sorted(jobs.items(), key = lambda x: __dir_arity(x[1], True, False))
+sort_by_rhs_arity = lambda jobs: sorted(jobs.items(), key = lambda x: __dir_arity(x[1], False, False))
+sort_by_arity_lhs = lambda jobs: sorted(jobs.items(), key = lambda x: __dir_arity(x[1], True, True))
+sort_by_arity_rhs = lambda jobs: sorted(jobs.items(), key = lambda x: __dir_arity(x[1], False, True))
 
 def dodge_cursor(span_curs, cursors):
     distance = 0
@@ -123,29 +129,42 @@ def replace_char(line, bars, cursors, targets = ' ─'):
     return ''.join(new_line)
 
 label_only = lambda n, td: td[n].label
-ftag_wrapper = lambda t: '[' + t + ']'
-get_cur = lambda elem_or_span: elem_or_span.cur
-def make_spans(bottom_up, top_down, jobs, cursors, label_fn, sort_jobs, stroke_fn):
+brace_ftag = lambda t: '{' + t + '}'
+sbrkt_ftag = lambda t: '[' + t + ']'
+__get_cur = lambda elem_or_span: elem_or_span.cur
+from utils.param_ops import get_sole_key
+def make_spans(bottom_up, top_down, jobs, cursors, label_fn, sort_jobs, stroke_fn, has_ma):
     spans = []
+    span_ranges = set() if has_ma else 0
     new_cursors = {}
-    layer_span_bits = 0
     future_jobs = defaultdict(dict)
     for pid, elements in sort_jobs(jobs):
-        if (n := len(elements)) < len(top_down[pid].children):
+        if (n := len(elements)) < len(top_down[pid].children) or \
+            n == 1 < len(bottom_up[get_sole_key(elements)]):
             future_jobs[pid].update(elements)
             continue
 
         bits = span_bits = 0
+        lhs = rhs = None
         for elem in elements.values():
             bits |= elem.bits
+            if lhs is None or elem.cur < lhs: lhs = elem.cur
+            if rhs is None or elem.cur > rhs: rhs = elem.cur
+        
         span_bits |= bit_span(bits)
-        # allow multi_attach sharing boundary? combine neibours in to a big span
-        if span_bits & layer_span_bits:
+        if has_ma:
+            overlapping = any((rhs-l)*(lhs-r)<=0 for l,r in span_ranges)
+        else:
+            overlapping = span_bits & span_ranges
+        if overlapping:
             future_jobs[pid].update(elements)
             continue
+        if has_ma:
+            span_ranges.add((lhs, rhs))
+        else:
+            span_ranges |= span_bits
 
         cursor = 0
-        layer_span_bits |= span_bits
         strokes_for_span = []
         for nid, elem in elements.items():
             cursor += elem.cur
@@ -153,7 +172,7 @@ def make_spans(bottom_up, top_down, jobs, cursors, label_fn, sort_jobs, stroke_f
 
         label = label_fn(pid, top_down)
         if n > 1:
-            strokes_for_span.sort(key = get_cur)
+            strokes_for_span.sort(key = __get_cur)
             cursor //= n
             span_curs = []
             for stroke in strokes_for_span:
@@ -174,7 +193,7 @@ def make_spans(bottom_up, top_down, jobs, cursors, label_fn, sort_jobs, stroke_f
 
     add_bar = cursors.copy()
     cursors.update(new_cursors)
-    spans.sort(key = get_cur) # sort if len(es) == 1
+    spans.sort(key = __get_cur) # sort if len(es) == 1
     return spans, add_bar, future_jobs
 
 def draw_label(cursor, cur, label):

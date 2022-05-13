@@ -53,8 +53,17 @@ class HParams:
     def __str__(self):
         return dict_print(self._nested, 2)
 
-def change_key(dict_data, old_key, new_key):
-    dict_data[new_key] = dict_data.pop(old_key)
+def change_key(dict_data, from_key, *to_keys):
+    value = dict_data.pop(from_key)
+    for to_key in to_keys:
+        dict_data[to_key] = value
+    return value
+
+def shift_key(key, from_dict, *to_dicts):
+    value = from_dict.pop(key)
+    for to_dict in to_dicts:
+        to_dict[key] = value
+    return value
 
 def zip_nt_params(nt_params):
     _nt_params = {}

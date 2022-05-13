@@ -4,15 +4,6 @@ TopDown = namedtuple('TopDown', 'label, children')
 C_VROOT = 'VROOT'
 do_nothing = lambda x: x
 
-def descendant_path(top_down, pid, cid, path = []): # TODO: support MA
-    assert cid in top_down, f'invalid pid'
-    if pid in top_down:
-        for c in top_down[pid].children:
-            c_path = path + [c]
-            if c == cid: return c_path
-            c_path = descendant_path(top_down, c, cid, c_path)
-            if c_path: return c_path
-
 def validate(bottom_info, top_down,
              single_attachment = True,
              check_redundancy  = True):
@@ -40,13 +31,55 @@ def validate(bottom_info, top_down,
         redundancy = top_down.keys() - nid_refs
         assert not redundancy, 'Redundant nid(s): ' + ', '.join(str(x) for x in redundancy)
 
-def find_labeled_on_path(top_down, root_id, target_label, child_id):
-    if (path := descendant_path(top_down, root_id, child_id)) is not None:
-        path.insert(0, root_id); path.reverse()
-        for pid, cid in zip(path[1:], path):
-            if top_down[cid].label == target_label:
-                return pid, cid
-    raise KeyError(f'Label \'{target_label}\' not found!')
+def all_paths(top_down, nid = 0):
+    end_prefix = {nid: {(nid,)}}
+    descendants = dict(dump_path(end_prefix, top_down, nid, nid))
+    return descendants, end_prefix
+
+def dump_path(end_prefix, top_down, nid, anti_loop):
+    if nid in top_down:
+        descendants = set()
+        for cid in top_down[nid].children:
+            if cid == anti_loop:
+                continue
+            cp = set(p + (cid,) for p in end_prefix[nid])
+            if cid in end_prefix:
+                end_prefix[cid].update(cp)
+            else:
+                end_prefix[cid] = cp
+            for k, d in dump_path(end_prefix, top_down, cid, anti_loop):
+                yield k, d
+                descendants.update(d)
+            descendants.add(cid)
+        yield nid, descendants
+
+class PathFinder:
+    def __init__(self, top_down, root_id = 0):
+        self._top_down = top_down
+        self._from, self._paths = all_paths(top_down, root_id)
+
+    def gen_from(self, pid):
+        for end in self._from[pid]:
+            for path in self._paths[end]:
+                if pid in path:
+                    yield path[path.index(pid):]
+
+    def gen_from_to(self, pid, cid):
+        for path in self._paths[cid]:
+            if pid in path:
+                yield path[path.index(pid):]
+
+    def find_labeled_on_path(self, label, child_id, low = True):
+        for path in self._paths[child_id]:
+            if low: path = path[::-1] # necessary to match 1 DPTB sample with two PRN
+            for pid, nid in zip(path[1:], path):
+                if self._top_down[nid].label == label:
+                    return pid, nid
+        raise KeyError(f'Label \'{label}\' not found!')
+
+    def __getitem__(self, cid):
+        return self._paths[cid]
+
 
 def height_gen(top_down, root_id):
     max_height = -1
@@ -182,33 +215,13 @@ def bracketing(bottom, top_down, bottom_is_bid = False, excluded_labels = None):
     assert bit + ~bit == -1, 'Discontinuous root'
     return bracket_cnt, bracket_mul
 
-def find_parent(top_down, root, cid): # TODO: support MA
-    if root in top_down:
-        if cid in top_down[root].children:
-            return root
-        for nid in top_down[root].children:
-            if rid := find_parent(top_down, nid, cid):
-                return rid
-
-def bottom_up_with_root(top_down, nids = {0}, include_bottom = True):
-    bottom_up = defaultdict(set)
-    while nids:
-        cids = set()
-        for nid in nids:
-            if nid in top_down:
-                children = top_down[nid].children
-                cids.update(children)
-                for cid in children:
-                    if include_bottom or cid in top_down:
-                        bottom_up[cid].add(nid)
-        nids = cids
-    return bottom_up
-
 def filter_words(bottom, top_down, excluded_words, excluded_tags = None):
     remove = []
+    path_finder = PathFinder(top_down, 0)
     for eid, (bid, wd, tg) in enumerate(bottom):
         if excluded_words and wd in excluded_words or excluded_tags and tg in excluded_tags:
-            top_down[find_parent(top_down, 0, bid)].children.pop(bid)
+            for path in path_finder[bid]:
+                top_down[path[-2]].children.pop(bid)
             remove.append(eid)
     remove.reverse()
     for eid in remove:
@@ -334,22 +347,25 @@ def leaves(bottom, top_down, nid):
     else:
         yield bottom[nid - 1]
 
-from data.cross.art import label_only, sort_by_num_children, sort_by_num_children
-from data.cross.art import style_1, style_2, draw_bottom, make_spans, draw_line
-def draw_str_lines(bottom, top_down,
-                   reverse = True,
-                   label_fn = label_only,
+from data.cross.art import label_only, sort_by_arity, sort_by_lhs_arity, sort_by_rhs_arity
+from data.cross.art import style_1, style_2, draw_bottom, make_spans, draw_line, sbrkt_ftag
+def draw_str_lines(bottom, top_down, *,
                    style_fn = style_2,
-                   priority = sort_by_num_children,
-                   ftag_fn  = None,
+                   reverse = True,
+                   sort_fn = None,
+                   ftag_fn = None,
+                   label_fn = label_only,
                    wrap_len = 1):
     symbols, stroke_fn = style_fn(reverse)
     word_line, tag_line, bottom_up, jobs, cursors = draw_bottom(bottom, top_down, wrap_len)
+    has_ma = any(len(p) > 1 for p in bottom_up.values())
+    if sort_fn is None:
+        sort_fn = sort_by_lhs_arity if has_ma else sort_by_arity
     pic_width = len(tag_line)
     str_lines = [word_line, tag_line]
     while jobs:
         old_bars = cursors.copy() if callable(ftag_fn) else None
-        spans, bars, jobs = make_spans(bottom_up, top_down, jobs, cursors, label_fn, priority, stroke_fn)
+        spans, bars, jobs = make_spans(bottom_up, top_down, jobs, cursors, label_fn, sort_fn, stroke_fn, has_ma)
         str_lines.extend(draw_line(spans, pic_width, symbols, bars, old_bars, ftag_fn))
     if reverse:
         str_lines.reverse()
