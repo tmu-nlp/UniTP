@@ -3,14 +3,13 @@ C_DPTB = 'dptb'
 C_ABSTRACT = 'disco'
 E_DISCO = C_TGR, C_DPTB
 
-from data.delta import add_efficient_subs
 from data.io import make_call_fasttext, check_fasttext, check_vocab, split_dict
 build_params = {C_DPTB: split_dict(   '2-21',          '22',          '23'),
                 C_TGR:  split_dict('1-40474', '40475-45474', '45475-50474')}
 ft_bin = {C_DPTB: 'en', C_TGR: 'de'}
 call_fasttext = make_call_fasttext(ft_bin)
 
-from utils.types import false_type, true_type, binarization_5_head, NIL, swapper, frac_close_0, frac_close_1
+from utils.types import false_type, true_type, binarization_5_head, NIL, ply_shuffle, frac_close_0, frac_close_1
 from utils.types import train_batch_size, train_max_len, train_bucket_len, vocab_size, tune_epoch_type, inter_height_2d
 dccp_data_config = dict(vocab_size     = vocab_size,
                         binarization   = binarization_5_head,
@@ -18,8 +17,7 @@ dccp_data_config = dict(vocab_size     = vocab_size,
                         max_len        = train_max_len,
                         bucket_len     = train_bucket_len,
                         min_gap        = tune_epoch_type,
-                        shuffle_swap   = swapper,
-                        add_efficient_subs = true_type,
+                        ply_shuffle    = ply_shuffle,
                         unify_sub      = true_type,
                         sort_by_length = false_type)
 
@@ -41,7 +39,7 @@ xccp_data_config = dict(vocab_size     = vocab_size,
                         unify_sub      = true_type,
                         max_inter_height = inter_height_2d,
                         continuous_fence_only = true_type)
-# tree = '/Users/zchen/KK/corpora/tiger_release_aug07.corrected.16012013.xml'
+                        
 
 from utils.shell_io import byte_style
 from time import sleep, time

@@ -35,7 +35,6 @@ class PennOperator(Operator):
         if start_epoch > 0:
             fpath = self.recorder.create_join('penn_devel')
             PennOperator.clean_and_report(fpath, start_epoch)
-        self.recorder.init_tensorboard()
         optim = hp.optimizer
         optim.zero_grad()
         return optim

@@ -26,7 +26,6 @@ class TokenizerOperator(Operator):
         self._schedule_lr = hp = WarmOptimHelper.adam(self._model, self._train_config.learning_rate)
         optim = hp.optimizer
         optim.zero_grad()
-        self.recorder.init_tensorboard()
         return optim
 
     def _schedule(self, epoch, wander_ratio):

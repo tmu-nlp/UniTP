@@ -33,7 +33,7 @@ with open(join(csv_dir, '.'.join(optuna_hyper)), 'w') as fwh,\
      open(join(csv_dir, '.'.join(optuna_dtdif)), 'w') as fwd:
     common_head = 'tag', 'label', 'joint'
     if is_dccp:
-        # has_shuffle = data['shuffle_swap'] is not None
+        # has_shuffle = data['ply_shuffle'] is not None
         losses = common_head + ('_right', 'shuffled')
         model_head = 'orient', 'shuffle'
         binarization = 'head', 'left', 'midin25', 'midin50', 'midin75', 'right'
@@ -45,7 +45,7 @@ with open(join(csv_dir, '.'.join(optuna_hyper)), 'w') as fwh,\
         losses = common_head[:-1] + ('fence', 'disco_1d', 'disco_2d', 'disco_2d_intra', 'disco_2d_inter')
         model_head = ('disc', 'biaff', 'disco_2d_intra', 'disco_2d_inter')
         medoids = 'head', 'continuous', 'left', 'random', 'right'
-        factor_head = tuple('r.' + x for x in ('sub', 'intra', 'inter') + medoids) + ('max_inter_height',)
+        factor_head = tuple('r.' + x for x in ('sub', 'more_sub', 'intra', 'inter') + medoids) + ('max_inter_height',)
     head_loss = tuple('l.' + x for x in common_head + model_head)
     fwh.write(','.join(head_loss + factor_head) + ',lr,tf,df\n')
     fwd.write('dev.tf,test.tf,test.df,n.step\n')
@@ -70,6 +70,7 @@ with open(join(csv_dir, '.'.join(optuna_hyper)), 'w') as fwh,\
         else:
             trial_factors= trial_data['medium_factor']
             values.append(trial_factors['balanced'])
+            values.append(trial_factors['more_sub'])
             values.append(trial_sv['train']['disco_2d_intra_rate'])
             values.append(trial_sv['train']['disco_2d_inter_rate'])
             values.extend(trial_factors['others'][x] for x in (medoids))

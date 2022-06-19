@@ -1,15 +1,8 @@
-from data.cross import TopDown, _pre_proc
+from data.cross import TopDown, BaseTreeKeeper
 from data.cross import defaultdict, gap_degree, height_gen, add_efficient_subs
-from data.cross import _new_dep, _dep_n_prefix, _dep_on, _dep_combine
-from utils.param_ops import replace_args_kwargs
+from data.cross import _new_dep, _dep_on, _dep_combine
 from random import random
-
-F_RANDOM = 'random'
-F_LEFT = 'left'
-F_RIGHT = 'right'
-F_DEP = 'head'
-F_CON = 'continuous'
-E_FACTOR = F_RANDOM, F_LEFT, F_RIGHT, F_DEP, F_CON
+from utils.types import F_RANDOM, F_LEFT, F_RIGHT, F_DEP, F_CON
 
 def _closest(order, length):
     if isinstance(order, float):
@@ -467,77 +460,7 @@ def new_more_sub(top_down, bottom_unary, rate, sub_prefix = '_'):
         nts = _more_sub(nid, td, rate, new_top_down, sub_prefix, nts)
     return new_top_down
 
-class TreeKeeper:
-    @classmethod
-    def from_tiger_graph(cls, graph, *args, **kw_args):
-        from data.cross.tiger import read_tree
-        return cls(*read_tree(graph), *args, **kw_args)
-
-    @classmethod
-    def from_disco_penn(cls, tree, *args, **kw_args):
-        from data.cross.dptb import read_tree
-        # args = replace_args_kwargs(_dep_n_prefix, 1, args, 'dep', kw_args)
-        return cls(*read_tree(tree), *args, **kw_args)
-
-    def __init__(self, bottom_info, top_down, v2is = None, dep = None, details = False, verbose_file = None):
-        if details: print('\n'.join(draw_str_lines(bottom_info, top_down)))
-        if verbose_file: verbose_file = verbose_file + ('\n'.join(draw_str_lines(bottom_info, top_down)),)
-        word, bottom, node2tag, bottom_unary = _pre_proc(bottom_info, top_down, dep = dep)
-        self._gaps = gap_degree(bottom, top_down, None, True) # if details else None
-        self._word = word
-        if v2is is None:
-            bottom_tag = [node2tag[t] for t in bottom]
-            l2i = None
-        else:
-            w2i, t2i, l2i = v2is
-            bottom_tag = [t2i(node2tag[t]) for t in bottom]
-            # self._dbg = [(word[tid], node2tag[bottom[tid]]) for tid, t in enumerate(bottom_tag) if t is None]
-            word = [w2i(w) for w in word]
-        if dep is not None:
-            if details:
-                print('  '.join(n.split('_')[1]+'->'+(h.split('_')[1] if h else '*') for n, h in dep.items()))
-            extra = []
-            for node, bt_head in dep.items():
-                if bt_head not in node2tag and bt_head:
-                    extra.append(node)
-            media = set()
-            for node in extra:
-                bt_head = dep.pop(node)
-                while bt_head and bt_head not in node2tag:
-                    media.add(bt_head)
-                    bt_head = dep[bt_head]
-                dep[node] = bt_head
-                if details and not bt_head:
-                    print('!:', node,' misses attachment.')
-            for bt_head in media:
-                dep.pop(bt_head)
-            if details:
-                print('  '.join(n.split('_')[1]+'->'+(h.split('_')[1] if h else '*') for n, h in dep.items()))
-                if media:
-                    print('Removed media nodes: ' + ', '.join(media))
-
-        self._word_tag = word, bottom_tag
-        self._materials = bottom, node2tag, bottom_unary, top_down, l2i, dep, verbose_file
-        self._balanced_top_down = None
-        # self._dep_signals = None
-
-    @property
-    def has_signals(self):
-        return any(self._materials[2:4])
-
-    @property
-    def gaps(self):
-        return max(self._gaps.values())
-
-    @property
-    def word(self):
-        # text
-        return self._word
-
-    @property
-    def word_tag(self):
-        return self._word_tag
-    
+class TreeKeeper(BaseTreeKeeper):
     def stratify(self, factor = F_LEFT, balancing_sub = False, more_sub = 0):
         bottom, node2tag, bottom_unary, top_down, l2i, dep, vf = self._materials
         if balancing_sub:

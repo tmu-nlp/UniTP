@@ -45,19 +45,19 @@ load_dm <- function(model_name, corp_name) {
 
 load_dm_ext <- function(model_name, corp_name) {
     #, 'm.head', 'm.continuous', 'm.left', 'm.right'
-    data <- melt(data = load_optuna(model_name, corp_name),
-                 id.vars = c('tf', 'df'),
-                 #  measure.vars = c('lr'))
-                 measure.vars = c('l.tag', 'l.label', 'l.joint', 'l.disc', 'l.biaff', 'l.disco_2d_intra', 'l.disco_2d_inter',
-                                  'r.intra', 'r.inter', 'r.sub', 'lr'))
+    data <- load_optuna(model_name, corp_name)
+    data$max_inter_height <- data$max_inter_height / max(data$max_inter_height)
+    data <- melt(data = data, id.vars = c('tf', 'df'),
+                 measure.vars = c('l.tag', 'l.label', 'l.joint', 'l.disc', 'l.biaff', 'l.disco_2d_intra', 'l.disco_2d_inter', 'max_inter_height',
+                                  'r.intra', 'r.inter', 'r.sub', 'r.more_sub', 'lr'))
     ns <- subset(data, variable != 'lr' & variable != 'r.intra' & variable != 'r.inter')
     ls <- subset(data, variable == 'lr' | variable == 'r.intra' | variable == 'r.inter')
     ns$variable <- factor(ns$variable,
-                          levels = c('l.tag', 'l.label', 'l.joint', 'l.disc', 'l.biaff', 'l.disco_2d_intra', 'l.disco_2d_inter', 'r.sub'),
-                          labels = c('Tag', 'Label', 'Joint', 'Disc.\nDM Loss Weights', ' Biaff.', 'Intra', 'Inter', '   P.sub'))
-    ls$variable <- factor(ls$variable, levels = c('r.intra', 'r.inter', 'lr'), labels = c('P.intra         \n|        Sampling Rates                         ',
-                                                                                          'P.inter',
-                                                                                          '|\n                 Learning Rate'))
+                          levels = c('l.tag', 'l.label', 'l.joint', 'l.disc', 'l.biaff', 'l.disco_2d_intra', 'l.disco_2d_inter', 'max_inter_height', 'r.sub', 'r.more_sub'),
+                          labels = c('Tag', 'Label', 'Joint', 'Disc.\n                    DM Loss Weights (Intra  Inter)', ' Biaff.', 'L\'ba', 'L\'\'ba', 'Xi\n| [0,9]', '   P.sub', 'P.msb'))
+    ls$variable <- factor(ls$variable, levels = c('r.intra', 'r.inter', 'lr'), labels = c('P\'ba         \n|    Sampling Rates                         ',
+                                                                                          'P\'\'ba',
+                                                                                          '|\n                  | Learning Rate'))
     list(ns = ns, ls = ls)
 }
 
@@ -97,7 +97,7 @@ replace_corp_name <- function(x) {
     x
 }
 
-proc <- function(model_name, corp_name) {
+hyperparameter_plot <- function(model_name, corp_name) {
     if (model_name == 'db') {
         data <- load_db(model_name, corp_name)
         ws <- c(5, 1)
@@ -122,31 +122,114 @@ proc <- function(model_name, corp_name) {
     ggsave(paste0(folder, fname), height = 1.7, width = 5.5)
 }
 
-# proc('db', 'tiger')
-# proc('db', 'dptb')
-proc('dm', 'tiger')
-# proc('dm', 'dptb')
+hyperparameter_plot('db', 'tiger')
+hyperparameter_plot('db', 'dptb')
+hyperparameter_plot('dm', 'tiger')
+hyperparameter_plot('dm', 'dptb')
 
-diff_dev_test <- function(data) {
-    p <- ggplot(data, aes(dev.tf, test.tf))
-    p <- p + labs(x = 'Development F1')
+load_scores <- function(model_name, corp_name) {
+    fname <- paste('diff', 'optuna', model_name, sep = '.')
+    data <- load_corp(fname, corp_name)
+    data$model <- rep(model_name, nrow(data))
+    data
+}
+
+score_corp <- function(corp_name) {
+    variables <- c('dev.tf', 'test.df', 'n.step')
+    data <- rbind(load_scores('db', corp_name), load_scores('dm', corp_name))
+    data <- melt(data, # 'dev.tf', 'test.tf', 'test.df', 'n.step'
+                 id.vars = c('test.tf', 'model'),
+                 measure.vars = variables)
+    # corp, x_axis grouped in c(dev.tf, n.step, test.df), y_axis(test.tf)
+    data$model <- factor(data$model, levels = c('db', 'dm'), labels = c('DB', 'DM'))
+    data$variable <- factor(data$variable, levels = variables, labels = c('Development F1', 'Test Disc. F1', 'BO Epoch'))
+    print(head(data))
+    p <- ggplot(data, aes(value, test.tf))
+    p <- p + facet_grid(model~variable, scale = 'free', switch= 'x')
+    p <- p + geom_count(aes(color = ..n..), alpha = I(0.618))
+    p <- p + theme(axis.title = element_blank())
     p
 }
 
-diff_step <- function(data) {
-    p <- ggplot(data, aes(n.step, test.tf))
-    p <- p + labs(x = 'Optuna Epoch')
-    p
+score_plot <- function() {
+    p_dptb <- score_corp('dptb')
+    p_tiger <- score_corp('tiger')
+    y_axis <- '            Tiger             Test F1                  DPTB'
+    annotate_figure(ggarrange(p_dptb, p_tiger, ncol = 1, legend = 'none'), left = y_axis)
+    ggsave(paste0(folder, 'optuna.score.pdf'), height = 4.5, width = 5)
 }
 
-diff_td_f1 <- function(data) {
-    p <- ggplot(data, aes(test.df, test.tf))
-    p <- p + labs(x = 'Test-set D.F1')
-    p
+score_plot()
+
+get.bin <- function(threshold) {
+    if (threshold == 0.5) {
+        1
+    } else if (threshold == -1 | threshold == 1 ) {
+        7
+    } else if (threshold < 0.5){
+        0
+    } else {
+        floor(threshold * 10) - 3 # max = 6
+    }
 }
+
+load_2d <- function(corp_name) {
+    data <- load_corp('stat.2d.dm', corp_name)
+    data$bin <- sapply(data$threshold, get.bin)
+    # print(nrow(data))
+    # print(nrow(subset(data, threshold == 0.5)))
+    # print(nrow(subset(data, threshold == -1 | threshold == 1)))
+    # print(nrow(subset(data, size == comp)))
+    # att <- subset(data, bin == 0 | bin > 1)$attempt
+    # print(mean(att))
+    # print(sd(att))
+    data
+}
+
+disco_2d_error_plot <- function() {
+    data <- rbind(load_2d('dptb'), load_2d('tiger'))
+    data$corp <- factor(data$corp, levels = c('dptb', 'tiger'), labels = c('DPTB - PLM DM', 'Tiger - PLM DM'))
+
+    p <- ggplot(data, aes(bin, attempt))# %/% size / size))
+    p <- p + geom_count(aes(color = ..n..), alpha = I(0.618))
+    p <- p + scale_x_continuous(
+        breaks = seq(0, 7),
+        labels = c('<.5', '0.5', '<.6', '<.7', '<.8', '<.9', '<1', 'Err'))
+    # p <- p + scale_y_sqrt()
+    # p <- p + geom_rug(alpha = 0.05)
+    p <- p + labs(x = 'Threshold Bin', y = '# Tries')
+    # ggMarginal(p, type = "density")
+    # p <- p + geom_xsidedensity(aes(y = after_stat(density)))
+    # p <- p + geom_ysidedensity(aes(x = after_stat(density)))
+    # p <- p + theme_ggside_void()
+    p <- p + theme(legend.position = "none")
+    p <- p + facet_wrap(.~corp, scale = 'free')
+    p
+
+    ggsave(paste0(folder, 'biaff.tries.pdf'), height = 1.7, width = 4.5)
+}
+
+disco_2d_error_plot()
+
+# diff_dev_test <- function(data) {
+#     p <- ggplot(data, aes(dev.tf, test.tf))
+#     p <- p + labs(x = 'Development F1')
+#     p
+# }
+
+# diff_step <- function(data) {
+#     p <- ggplot(data, aes(n.step, test.tf))
+#     p <- p + labs(x = 'Optuna Epoch')
+#     p
+# }
+
+# diff_td_f1 <- function(data) {
+#     p <- ggplot(data, aes(test.df, test.tf))
+#     p <- p + labs(x = 'Test-set D.F1')
+#     p
+# }
 
 plot_diff <- function(model_name, corp_name, ann_plot) {
-    data <- load_corp(paste('diff', 'optuna', model_name, sep = '.'), corp_name)
 
     # numbers <- data$test.tf
     # numbers <- aggregate(numbers, list(num = numbers), length)
@@ -202,7 +285,7 @@ plot_diff <- function(model_name, corp_name, ann_plot) {
 
 # plot_diff('db', 'tiger', F)
 # plot_diff('db', 'dptb', F)
-plot_diff('dm', 'tiger', F)
+# plot_diff('dm', 'tiger', F)
 # plot_diff('dm', 'dptb', F)
 # en <- read.csv(paste0('optuna.', task, '.en.csv'))
 # en$lang <- rep('DPTB - English', length(en$rank))

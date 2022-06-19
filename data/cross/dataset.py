@@ -19,8 +19,8 @@ class StaticCrossDataset(LengthOrderedDataset):
                  factors  = None,
                  min_len  = 0,
                  max_len  = None,
-                 swapper  = False,
                  min_gap  = 0,
+                 ply_shuffle = None,
                  extra_text_helper = None,
                  train_indexing_cnn = False):
 
@@ -117,7 +117,7 @@ class StaticCrossDataset(LengthOrderedDataset):
         super().__init__(heads, lengths, factors, min_len, max_len, extra_text_helper)
 
         self._swap = {}
-        if swapper:
+        if ply_shuffle:
             for factor in factors:
                 swap = []
                 with open(dir_join(f'{prefix}.swap.{factor}')) as fr:
@@ -126,7 +126,7 @@ class StaticCrossDataset(LengthOrderedDataset):
                 self._swap[factor] = swap
                 assert len(lengths) == len(swap)
         self._swap_cache = None
-        self._except_head = swapper == S_EXH
+        self._except_head = ply_shuffle == S_EXH
 
         self._columns = columns
         self._device = device
@@ -259,7 +259,7 @@ class DynamicCrossDataset(LengthOrderedDataset):
         static_signals = []
         for tk in tree_keepers:
             assert tk.has_signals
-            wd = tk.word
+            tt = tk.text
             wi, ti = tk.word_tag
             if None in wi:
                 print('Wrong vocab?')
@@ -270,10 +270,10 @@ class DynamicCrossDataset(LengthOrderedDataset):
             elif min_gap and tk.gaps < min_gap:
                 lengths.append(-1)
             else:
-                lengths.append(len(wd))
+                lengths.append(len(tt))
             if factors is None:
                 static_signals.append((wi, ti) + tk.stratify(F_RANDOM))
-            text.append(wd)
+            text.append(tt)
 
         heads = 'token', 'tag', 'label', 'space', 'disco'
         if factors is None:

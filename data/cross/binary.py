@@ -1,5 +1,5 @@
 from random import random, randint
-from data.cross import TopDown, draw_str_lines, _pre_proc, gap_degree, _new_dep, _dep_n_prefix, _dep_combine, _dep_on
+from data.cross import TopDown, draw_str_lines, _pre_proc, gap_degree, _new_dep, BaseTreeKeeper, _dep_combine, _dep_on
 from data.cross.tiger import read_tree as read_tiger
 from data.cross.dptb import read_tree as read_dptb
 
@@ -27,7 +27,7 @@ def locations(node, bottom, top_down, consumed_top_down):
         else:
             yield from locations(cid, bottom, top_down, consumed_top_down)
 
-def _extend_soft_right(soft_right, td_children, bottom, top_down, consumed_top_down):
+def _add_right(right_hash, td_children, bottom, top_down, consumed_top_down):
     existing_nodes = []
     shadow_locations = []
     for node in td_children:
@@ -50,7 +50,7 @@ def _extend_soft_right(soft_right, td_children, bottom, top_down, consumed_top_d
                 closest = candidates[0][1]
         else:
             closest = candidates[0][1]
-        soft_right[node] = closest > 0
+        right_hash[node] = closest > 0
 
 from utils.math_ops import lr_gen
 def binary_hash(bottom,
@@ -60,13 +60,12 @@ def binary_hash(bottom,
                 lean_joint,
                 factor,
                 nts,
-                get_soft_right,
+                remove_undirec,
                 dependency,
                 sub_prefix):
     bottom_up = {}
     right_hash = {}
     joint_rset = []
-    soft_right = {}
     consumed_top_down = {}
     swappable_groups = []
     bottom_flag = [True for _ in bottom]
@@ -77,8 +76,8 @@ def binary_hash(bottom,
         # if p_node == 'n_506':
         #     import pdb; pdb.set_trace()
         if p_node_complete or not_enough_child:
-            if get_soft_right and not p_node_complete and not_enough_child:
-                _extend_soft_right(soft_right, td.children, bottom, top_down, consumed_top_down)
+            if remove_undirec and not p_node_complete and not_enough_child:
+                _add_right(right_hash, td.children, bottom, top_down, consumed_top_down)
             continue
         
         location = []
@@ -156,7 +155,7 @@ def binary_hash(bottom,
             last_nid = nid
             last_node = node
     top_down.update(sub_top_down)
-    return right_hash, joint_rset, swappable_groups, bottom_up, soft_right, nts
+    return right_hash, joint_rset, swappable_groups, bottom_up, nts
 
 def binary_signals(bottom,
                    bottom_up,
@@ -167,7 +166,8 @@ def binary_signals(bottom,
                    joint_rset,
                    swap_rhs_priority,
                    factor,
-                   pos_prefix):
+                   pos_prefix,
+                   l2i):
     last_right = True
     last_direc = False
     swap_distance = len(bottom)
@@ -236,7 +236,7 @@ def binary_signals(bottom,
             label = pos_prefix + node2tag[node]
         else:
             label = top_down[node].label
-        label_layer.append(label)
+        label_layer.append(l2i(label) if l2i else label)
 
     assert len(right_layer) == len(label_layer) == len(direc_layer), 'unmatched layers'
     assert len(right_layer) - 1 == len(joint_layer), 'unmatched joint layers'
@@ -247,10 +247,11 @@ def cross_signals(bottom, node2tag, bottom_unary, top_down, factor,
                   dependency = None,
                   aggressive = True,
                   swap_rhs_priority = None,
-                  get_soft_right = True,
+                  remove_undirec = True,
                   lean_joint = False,
                   sub_prefix = '_',
-                  pos_prefix = '#'):
+                  pos_prefix = '#',
+                  l2i = None):
     factor = 1 - factor # range and type
     if swap_rhs_priority is None: # 
         # assert isinstance(factor, bool)
@@ -267,7 +268,7 @@ def cross_signals(bottom, node2tag, bottom_unary, top_down, factor,
     layers_of_swaps = []
     completed_nodes = set()
     while len(bottom) > 1:
-        (right_hash, joint_rset, swappable_groups, bottom_up, soft_right,
+        (right_hash, joint_rset, swappable_groups, bottom_up,
          nts) = binary_hash(bottom,
                             top_down,
                             completed_nodes,
@@ -275,21 +276,21 @@ def cross_signals(bottom, node2tag, bottom_unary, top_down, factor,
                             lean_joint,
                             factor,
                             nts,
-                            get_soft_right,
+                            remove_undirec,
                             dependency,
                             sub_prefix)
-        right_hash.update(soft_right)
         (new_bottom, right_layer, joint_layer, label_layer,
          direc_layer) = binary_signals(bottom,
-                                        bottom_up,
-                                        top_down,
-                                        node2tag,
-                                        bottom_unary,
-                                        right_hash,
-                                        joint_rset,
-                                        swap_rhs_priority,
-                                        factor,
-                                        pos_prefix)
+                                       bottom_up,
+                                       top_down,
+                                       node2tag,
+                                       bottom_unary,
+                                       right_hash,
+                                       joint_rset,
+                                       swap_rhs_priority,
+                                       factor,
+                                       pos_prefix,
+                                       l2i)
         if new_bottom == bottom:
             raise ValueError('should be different', bottom, top_down, bottom_unary, layers_of_label, layers_of_right, layers_of_joint, layers_of_direc)
         bottom = new_bottom
@@ -302,10 +303,11 @@ def cross_signals(bottom, node2tag, bottom_unary, top_down, factor,
     if top_down or len(bottom_unary) == len(bottom) == 1:
         layers_of_right.append([factor > 0.5])
         layers_of_direc.append([False])
-        layers_of_label.append([top_down[bottom[0]].label if top_down else bottom_unary[bottom[0]]])
+        root = top_down[bottom[0]].label if top_down else bottom_unary[bottom[0]]
+        layers_of_label.append([l2i(root) if l2i else root])
     return layers_of_label, layers_of_right, layers_of_joint, layers_of_direc, layers_of_swaps
 
-from utils.types import E_ORIF5, O_RGT, O_HEAD
+from utils.types import E_ORIF5, O_RGT, O_HEAD, F_DEP, F_RANDOM
 from copy import deepcopy
 from data.cross import add_efficient_subs
 def read_disco_penn(tree, dep_head = None, add_subs = False):
@@ -346,38 +348,18 @@ def validate_disco(word, tag, cnf_layers, lines):
             print('\n'.join(cnf_lines))
             breakpoint()
 
-class MidinTreeKeeper:
-    @classmethod
-    def from_graph(cls, graph):
-        return cls(*read_tiger(graph))
-
-    @classmethod
-    def from_tree(cls, tree):
-        return cls(*read_dptb(tree))
-
-    def __init__(self, bottom_info, top_down):
-        # print('\n'.join(draw_str_lines(bottom_info, top_down)))
-        # from data.cross.evalb_lcfrs import DiscoEvalb
-        # from data.cross import bracketing
-        # g_brackets = bracketing(bottom_info, top_down, root_id)
-        # self._evalb = DiscoEvalb(), set(bottom_info), g_brackets
-        word, bottom, node2tag, bottom_unary = _pre_proc(bottom_info, top_down)
-        self._word = word
-        self._bottom_tags = [node2tag[t] for t in bottom]
-        self._top_down = top_down
-        self._max_sub = max(len(td.children) for td in top_down.values()) if top_down else 0 # >= 2
-        self._args = bottom, node2tag, bottom_unary
-        self._dep = None
-
-    def set_dependency(self, dep):
-        self._dep = dep
-
-    def binarize(self, factor):
-        return self._word, self._bottom_tags, cross_signals(*self._args, deepcopy(self._top_down), factor)
-
-    def sample(self):
-        factor = randint(1, self._max_sub - 1) / self._max_sub
-        return self._word, self._bottom_tags, cross_signals(*self._args, deepcopy(self._top_down), factor)
+class TreeKeeper(BaseTreeKeeper):
+    def stratify(self, factor = F_RANDOM, balancing_sub = False):
+        bottom, node2tag, bottom_unary, top_down, l2i, dep, vf = self._materials
+        if factor != F_DEP:
+            dep = None
+            if factor == F_RANDOM:
+                factor = random()
+        if balancing_sub:
+            if self._balanced_top_down is None:
+                self._balanced_top_down = add_efficient_subs(top_down, bottom_unary)
+            top_down = self._balanced_top_down
+        return cross_signals(bottom, node2tag, bottom_unary, deepcopy(top_down), factor, dep, l2i = l2i)
 
     def __str__(self):
         lines = ''

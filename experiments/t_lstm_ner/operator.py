@@ -41,7 +41,6 @@ class NerOperator(Operator):
 
     def _build_optimizer(self, start_epoch):
         self._schedule_lr = hp = WarmOptimHelper.adam(self._model, self._train_config.learning_rate)
-        self.recorder.init_tensorboard()
         optim = hp.optimizer
         optim.zero_grad()
         return optim

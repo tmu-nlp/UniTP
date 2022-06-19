@@ -5,6 +5,7 @@ from utils.file_io import copy_with_prefix_and_rename, link, basename
 from utils.yaml_io import load_yaml, save_yaml
 from utils.param_ops import zip_nt_params, dict_print, fold_same_children, change_key
 from utils.shell_io import byte_style
+from collections import namedtuple
 from sys import stderr
 from itertools import count
 from math import isnan
@@ -25,6 +26,20 @@ def _sv_file_lock(instance_dir):
     sv_lock = join(instance_dir, _sv_lock)
     return sv_file, sv_lock
 
+dev_test_fns = ((lambda x: x.dev_score), (lambda x: x.test_score))
+Trial = namedtuple('Trial', 'tid, model, dev_score, test_score, spec_string, specs')
+def gen_trial_model_dev_test_string(fpath):
+    trial_rt = load_yaml(*_rt_file_lock(fpath), wait = False)
+    for folder in listdir(fpath):
+        if not isdir(idir := join(fpath, folder)) or '.' not in folder:
+            continue
+        tid, trial_string = folder.split('.', 1)
+        if not tid.isdecimal() or tid not in trial_rt or 'key' not in trial_rt[tid]:
+            continue
+        dev_specs = load_yaml(*_sv_file_lock(idir))
+        dev_model, dev_score = max(dev_specs['results'].items(), key = lambda x: x[1])
+        yield Trial(tid, dev_model, dev_score, trial_rt[tid]['key'], trial_string, dev_specs)
+
 class Recorder:
     '''A Recorder provides environment for an Operator, created in a Manager, operated by the Operator.'''
     
@@ -36,16 +51,16 @@ class Recorder:
             rt, unlock = load_yaml(rt_file, rt_lock, wait_then_block = True, wait_or_exit = not child_mode)
             if len(rt):
                 name_len = max(len(i) for i in rt.keys())
-                inames = tuple(int(i) for i in rt.keys())
+                existing = set(int(i) for i in rt.keys())
                 for instance in count():
-                    if instance in inames:
+                    if instance in existing:
                         continue
                     break
             else:
+                name_len = 2
                 instance = 0
-                name_len = 1
-            instance = str(instance)
-            if len(instance) < name_len:
+            
+            if len(instance := str(instance)) < name_len:
                 instance = '0' * (name_len - len(instance)) + instance
             rt[instance] = {}
             unlock()
@@ -89,9 +104,9 @@ class Recorder:
         assert self._initial_rt, 'Current version does not allow direct optuna'
         specs = load_yaml(*self._sv_file_lock, wait = False)
         # specs.pop('optuna', None)
-        results        = specs.pop('results')
-        best_model     = max(results, key = lambda x: results[x]);
-        best_score     = results.pop(best_model)
+        dev_results    = specs.pop('results')
+        best_model     = max(dev_results, key = lambda x: dev_results[x]);
+        best_score     = dev_results.pop(best_model)
         specs['results'] = {best_model: best_score}
         trial_name     = specs_update_fn(specs, trial)
         child_recorder = Recorder(fpath, self._module, specs, trial_name, 3, self._evalb, True)
@@ -103,65 +118,31 @@ class Recorder:
         self.log(f'⌙→ Trial [{child_dir}] on best model {best_model}')
         return child_recorder
 
-    def summary_trials(self): # should only be a super_recorder
+    def summary_trials(self, fname = 'rank.txt', fpath = 'trials'): # should only be a super_recorder
         assert callable(self._sv_unlock), 'Not main recorder?'
-        _, instance_dir = self._instance_dir
+        fpath = join(self._instance_dir[1], fpath)
+        
+        trials = sorted(gen_trial_model_dev_test_string(fpath),
+                        key = dev_test_fns[0], reverse = True)
+        rank_n = max(len(t.tid) for t in trials) + 1
+        def write(fw, trials):
+            for eid, t in enumerate(trials):
+                fw.write(f'{eid:{rank_n}d}.[{t.test_score:.2f} {t.dev_score:.2f}]  ')
+                fw.write(f'#{t.tid}'.rjust(rank_n) + '.' + t.model + '  ')
+                fw.write(t.spec_string + '\n')
 
-        fpath = join(instance_dir, 'trials')
-        rt_file, rt_lock = _rt_file_lock(fpath)
-        # some other can be empty: if v and 'key' in v
-        children_rt = load_yaml(rt_file, rt_lock, wait = False)
-        test_kv = ((k, v['key']) for k, v in children_rt.items() if v and 'key' in v)
-        test_kv = sorted(test_kv, key = lambda x: x[1], reverse = True)[:self._keep_top_k]
+        with open(join(fpath, fname), 'w') as fw:
+            fw.write('Rank [test *dev]  #Trail.best_model  Hyper-parameters\n')
+            write(fw, trials)
+            fw.write('\n\n')
+            fw.write('Rank [*test dev]  #Trail.best_model  Hyper-parameters\n')
+            trials.sort(key = dev_test_fns[1], reverse = True)
+            write(fw, trials)
+        return self._initial_rt
 
-        tid2fname = {}
-        for fname in listdir(fpath):
-            if not isdir(idir := join(fpath, fname)) or '.' not in fname:
-                continue
-            trial_id, trial_string = fname.split('.', 1)
-            if not trial_id.isdecimal():
-                continue
-            tid2fname[trial_id] = trial_string, fname, idir
-
-        with open(join(fpath, 'rank.txt'), 'w') as fw:
-            for trial_id, key_score in test_kv:
-                trial_string, fname, idir = tid2fname[trial_id]
-                sv_file, sv_lock = _sv_file_lock(idir)
-                trial_results = load_yaml(sv_file, sv_lock)['results']
-                best_validated_model, score = max(trial_results.items(), key = lambda x: x[1])
-                fw.write(f'[{key_score}] {trial_string}-O{trial_id}.{best_validated_model}-dev@{score}\n')
-
-        # for fname in listdir(join(instance_dir, 'models')):
-        #     if fname[0] == 'O' and isfile(fpath := join(instance_dir, 'models', fname)):
-        #         remove(fpath)
-        # main_specs = load_yaml(*self._sv_file_lock, wait = False)
-        # main_specs['optuna'] = optuna_top_k
-        # save_yaml(main_specs, *self._sv_file_lock, wait_lock = False)
-        return self._initial_rt #children_rt[test_kv[0][0]]
-        # for fname in listdir(join(instance_dir, 'trials')):
-        #     if '.' in fname:
-        #         thatsit = fname.split('.')[0] == best_child
-        #     else:
-        #         thatsit = fname == best_child
-        #     if thatsit:
-        #         child_specs = load_yaml(*_sv_file_lock(join(instance_dir, 'trials', fname)))
-        #         child_results = child_specs['results']
-        #         best_model = max(child_results, key = lambda x: child_results[x])
-        #         best_fpath = join(instance_dir, 'trials', fname, 'models', best_model)
-                
-        #         specs = load_yaml(*self._sv_file_lock, wait = False)
-        #         results = specs['results']
-        #         results[best_model] = child_results[best_model]
-        #         copy_with_prefix_and_rename(best_model, self._model_dir, best_model)
-                
-        #         weakest_model = min(results, key = lambda x: results[x])
-        #         remove(join(self._model_dir, weakest_model))
-        #         results.pop(weakest_model)
-
-        #         self.log(' Replace the worst model', weakest_model, 'with the best model from trial', best_child, best_model)
-        #         save_yaml(specs, *self._sv_file_lock, wait_lock = False)
-        #         return True
-        # return False
+    def best_trial(self, fpath = 'trials', by_test_score = False):
+        if isdir(fpath := join(self._instance_dir[1], fpath)):
+            return max(gen_trial_model_dev_test_string(fpath), key = dev_test_fns[by_test_score])
 
     def detach(self):
         if callable(self._sv_unlock):
@@ -199,7 +180,9 @@ class Recorder:
             Recorder.msg(byte_style('(tensorboard is not installed; not tracking training statistics)', '3'))
             SummaryWriter = None
         if SummaryWriter is not None:
-            self._writer = SummaryWriter(self.create_join('train'))
+            fpath = self.create_join('train')
+            self._writer = SummaryWriter(fpath)
+            Recorder.msg(byte_style('Tracking training statistics:', '2'), fpath)
 
     def tensorboard(self, step, template, **kwargs):
         if self._writer is None:

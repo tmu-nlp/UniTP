@@ -19,16 +19,22 @@ def get_configs(recorder = None):
     corp_name = get_sole_key(data_config)
 
     model = HParams(model_config)
-    reader = DiscoReader(disco.data_path, disco.vocab_size, disco.unify_sub, CharTextHelper if model.use.char_rnn else None)
+    reader = DiscoReader(disco.data_path,
+                         disco.vocab_size,
+                         disco.unify_sub,
+                         CharTextHelper if model.use.char_rnn else None)
     
     def get_datasets(mode, new_train_cnf = None):
         datasets = {}
         if mode == M_TRAIN:
-            datasets[corp_name] = reader.batch(M_TRAIN, disco.batch_size, disco.bucket_len, new_train_cnf or train_cnf,
-                                                shuffle_swap = disco.shuffle_swap,
-                                                max_len = disco.max_len,
-                                                min_gap = disco.min_gap,
-                                                sort_by_length = disco.sort_by_length)
+            datasets[corp_name] = reader.batch(M_TRAIN,
+                                               disco.batch_size,
+                                               disco.bucket_len,
+                                               new_train_cnf or train_cnf,
+                                               max_len = disco.max_len,
+                                               min_gap = disco.min_gap,
+                                               ply_shuffle = disco.ply_shuffle,
+                                               sort_by_length = disco.sort_by_length)
         else:
             datasets[corp_name] = reader.batch(mode, disco.batch_size << 1, 0, non_train_cnf)
         return datasets

@@ -22,7 +22,7 @@ add_node = {
 adjust_exp = {
     "`` It *EXP*-2 's one thing * to say 0 you can sterilize , and another * to then successfully pollinate the plant , '' he said *T*-1 .": (lambda x: wrap_with_label_fn(x, (1, 0), 1, 'S'), lambda x: shift_node_fn(x, (1, 1, 0), (1, 0, 1)), lambda x: del_node_fn(x, (1, 1)), lambda x: rename_node_fn(x, (1, 3), 'S')),
     "It *EXP*-1 will take several weeks * to repair the bridge , and several months * to repair some of the 101 connections .": (lambda x: wrap_with_label_fn(x, (0,), 2, 'S'), lambda x: wrap_with_label_fn(x, (0, 1, 1, 1), 3, 'S'), lambda x: shift_node_fn(x, (0, 1, 1, 1), (1, )), lambda x: del_node_fn(x, (1,)), lambda x: rename_node_fn(x, (3,), 'S')),
-    "It *EXP*-1 took me a half-hour * to move 10 feet from my parking spot in an outer lot to an aisle , and an additional hour * to reach an inner roadway a half-block away .": (lambda x: del_node_fn(x, (1,)), lambda x: wrap_with_label_fn(x, (0,), 2, 'S'), lambda x: rename_node_fn(x, (3,), 'S'))
+    "It *EXP*-1 took me a half-hour * to move 10 feet from my parking spot in an outer lot to an aisle , and an additional hour * to reach an inner roadway a half-block away .": (lambda x: del_node_fn(x, (1,)), lambda x: wrap_with_label_fn(x, (0,), 2, 'S'), lambda x: rename_node_fn(x, (3,), 'S')),
 }
 
 shift_trace = {
@@ -50,7 +50,7 @@ remove_trace = {
 
 delete_node = {
     "But as Drexel analyst Linda Dunn *T*-1 notes , its properties will be developed *-2 over 15 to 20 years .":((1,0,1,1,0), (1,0,1,1,1)),
-    "The spy network would serve two clients *NOT* : the Panamanian government , by * monitoring political opponents in the region , and the U.S. , by * tracking the growing Communist influence in the unions organized * at United Fruit Co. 's banana plantations in Bocas del Toros and Puerto Armuelles .": ()
+    "The spy network would serve two clients *NOT* : the Panamanian government , by * monitoring political opponents in the region , and the U.S. , by * tracking the growing Communist influence in the unions organized * at United Fruit Co. 's banana plantations in Bocas del Toros and Puerto Armuelles .": ((1, 1, 2),)
 }
 
 add_s_and_shift_trace = {"This calamity is `` far from over , '' he says 0 *T*-1 .": ((0,), 2, (), (0,))}
@@ -96,8 +96,8 @@ def rename_node_fn(tree, path, label):
     tree[path].set_label(label)
 
 E_DISCO = '*T*', '*ICH*', '*EXP*', '*RNR*'
-E_NON_DETACH = '*',
-E_GRAPH = E_DISCO + E_NON_DETACH#  '*PPA*'
+A_MOVEMENT = '*',
+E_GRAPH = E_DISCO + A_MOVEMENT#  '*PPA*'
 
 def typed_trace(types, word):
     if '-' in word:
@@ -123,7 +123,7 @@ def remove_irrelevant_trace(tree, traces):
         del tree[syn_path]
 
 from data.delta import remove_eq, XRB2brackets
-def fix_for_ptb(tree, short_circuits = set()):
+def fix_for_ptb(tree, short_circuits):
     sent = ' '.join(tree.leaves()).strip()
     if sent in short_circuits: return
     if sent in change_trace:
@@ -336,7 +336,7 @@ def read_materials(tree, trace_types, *catch_nodes, **wtnt_fns):
     return bottom, top_down, nid, nt_start, get_inode, trace_refs, trace_ids, trace_eqs, catch_nodes
     
 from utils.param_ops import get_sole_key, change_key, shift_key
-def maintain(bottom_info, top_down, root_id, nt_start, get_inode):
+def maintain(bottom_info, top_down, root_id, nt_start, get_inode, type_count = None):
     nids = {root_id}
     bottom_up = {}
     remove_nids = set()
@@ -383,6 +383,12 @@ def maintain(bottom_info, top_down, root_id, nt_start, get_inode):
             children[get_inode(condense.get(cid, cid))] = ftag
         nid = 0 if nid == root_id else get_inode(nid)
         new_top_down[nid] = TopDown(td.label, children)
+    if type_count is not None:
+        new_type_count = {}
+        for cid, pt in type_count.items():
+            cid = get_inode(condense.get(cid, cid))
+            new_type_count[cid] = {(0 if p == root_id else get_inode(p)): t for p, t in pt.items()}
+        return bottom, new_top_down, new_type_count
     return bottom, new_top_down
 
 def read_tree(tree, *,
@@ -431,7 +437,7 @@ def raise_eq(label):
     return label
 
 def fix_for_gptb(tree):
-    fix_for_ptb(tree)
+    fix_for_ptb(tree, set())
     remove_irrelevant_trace(tree, E_GRAPH)
     return dict(w_fn = XRB2brackets, nt_fn = do_nothing)
 
@@ -452,6 +458,7 @@ def graph_trace_gen(trace_refs, trace_ids):
         yield trace_refs.pop(tid), trace_ids.pop(tid)
 
 def read_graph(tree, *,
+               trace_types = E_GRAPH,
                adjust_fn = fix_for_gptb,
                return_type_count = False):
     wtnt_fns = {}
@@ -459,12 +466,12 @@ def read_graph(tree, *,
         wtnt_fns.update(adjust_fn(tree))
 
     (bottom, top_down, root_id, nt_start, get_inode, trace_refs, trace_ids, trace_eqs,
-     catch_nodes) = read_materials(tree, E_GRAPH, 'PRN', **wtnt_fns)
+     catch_nodes) = read_materials(tree, trace_types, 'PRN', **wtnt_fns)
     remaining_PRN_nodes = catch_nodes.pop('PRN')
 
     c2p_history = {}
     c2ps_history = {}
-    type_count = defaultdict(int)
+    type_count = defaultdict(dict)
     check_combine = defaultdict(list)
     eq_template_refs = {}
     eq_template_maps = {}
@@ -482,11 +489,12 @@ def read_graph(tree, *,
             v_wd, v_tg = bottom.pop(i_bid)
             assert v_wd.endswith(tid)
             assert v_tg == '-NONE-'
-            if typ in E_NON_DETACH:
-                parents[i_cid] = i_pid
+            if typ in A_MOVEMENT:
+                parents[i_cid] = i_pid, typ
                 s_ftag = None # should not propagate for new attachment
             else:
                 s_ftag = ref_children[r_cid]
+                type_count[r_cid][i_pid] = typ
             if s_ftag and d_ftag:
                 ftag = s_ftag if s_ftag == d_ftag else (s_ftag + ':' + d_ftag)
             else:
@@ -509,19 +517,21 @@ def read_graph(tree, *,
                 ftag = top_down[p_pid].children.pop(p_cid)
                 top_down[r_pid].children[p_cid] = ftag
                 remaining_PRN_nodes.remove(p_cid)
-                typ += '-PRN'
-            type_count[typ] += 1
+                type_count[r_cid][i_pid] += '-PRN'
         if parents:
-            flatten = [r_pid]
+            flatten = {r_pid: typ}
             # print(c2ps_history)
-            # breakpoint()
-            for i_cid, i_pid in parents.items():
+            for i_cid, (i_pid, typ) in parents.items():
                 if i_cid in c2ps_history:
-                    flatten.extend(c2ps_history.pop(i_cid))
+                    flatten.update(c2ps_history.pop(i_cid))
                 else:
-                    flatten.append(i_pid)
+                    flatten[i_pid] = typ
             # print('To flatten', flatten)
             c2ps_history[r_cid] = flatten
+            if len(bids := top_down[r_cid].children) > 1 or \
+                (bt := bottom.get(get_sole_key(bids))) and bt[1] != '-NONE-':
+                for i_pid, typ in flatten.items():
+                    type_count[r_cid][i_pid] = (typ + '0') if i_pid == r_pid else typ
         else:
             ref_children.pop(r_cid)
         if tid in eq_tids:
@@ -558,8 +568,11 @@ def read_graph(tree, *,
                 nid = eq_template_maps[nid]
             for path in path_finder[nid]:
                 paths[(False, path)] = tid
-                
-        eq, template_parent = common_coordination(top_down, paths)
+
+        try:
+            eq, template_parent = common_coordination(top_down, paths)
+        except ValueError:
+            eq, template_parent = special_coordination(top_down, paths)
         template_cids = set()
         template_paths = []
         imitator_paths = {}
@@ -570,23 +583,28 @@ def read_graph(tree, *,
             if pid == template_parent:
                 template_cids.add(path[1])
                 template_paths.append((path[1:], tid, all(tid != ptm[1] for ptm in template_paths)))
-            else:
-                if pid not in imitator_paths:
-                    imitator_paths[pid] = defaultdict(list)
-                imitator_paths[pid][tid].append(path[1:])
+            elif pid not in imitator_paths:
+                imitator_paths[pid] = {tid: path[1:]}
+            elif tid not in imitator_paths[pid]:
+                imitator_paths[pid][tid] = path[1:]
         eq = imitator_paths # rename for my own readability
-        template_cids = {c:f for c,f in top_down[template_parent].children.items()
-            if c not in template_cids and is_necessary(bottom, top_down, template_parent, c)}
+        template_ma = {}
+        for c,f in top_down[template_parent].children.items():
+            if c not in template_cids and is_necessary(bottom, top_down, template_parent, c, f):
+                type_count[c][template_parent] = 'C0'
+                template_ma[c] = f
         for imitator_parent, imitator_paths in eq.items():
-            top_down[imitator_parent].children.update(template_cids)
-            imitate(top_down,
+            for t_cid, t_ftag in template_ma.items():
+                type_count[t_cid][imitator_parent] = 'C'
+                top_down[imitator_parent].children[t_cid] = t_ftag
+            imitate(top_down, type_count,
                 template_parent, (ptm for ptm in template_paths if ptm[1] in imitator_paths),
                 imitator_parent, imitator_paths, {})
 
-    bottom, top_down = maintain(bottom, top_down, root_id, nt_start, get_inode)
-
+    bottom, top_down, type_count = maintain(bottom, top_down, root_id, nt_start, get_inode, type_count)
+    
     if return_type_count:
-        return bottom, top_down, type_count, trace_refs, trace_ids, trace_eqs
+        return bottom, top_down, type_count, trace_refs, trace_ids
     return bottom, top_down
 
 def label_checker(label):
@@ -595,7 +613,7 @@ def label_checker(label):
     return lambda x: x == label
 
 __pc = {'ADVP': ('RB',), 'PP': ('IN', 'TO') }
-def is_necessary(bottom, top_down, pid, cid):
+def is_necessary(bottom, top_down, pid, cid, ftag):
     assert cid in top_down[pid].children
     pl = top_down[pid].label
     if cid in top_down:
@@ -605,7 +623,7 @@ def is_necessary(bottom, top_down, pid, cid):
     if pl.startswith('S'):
         return cl.startswith('V')
     elif pl.startswith('V'):
-        return cl.startswith('V')
+        return cl.startswith('V') or cl.startswith('N') and ftag in (None, 'PRD')
     elif pl.startswith('N'):
         return cl.startswith('N')
     elif pl in __pc:
@@ -694,7 +712,38 @@ def common_coordination(top_down, paths):
         test_depth -= 1
     raise ValueError(f'Coordination not found with {len(top_down)} td and {len(paths)} eq.paths')
 
-def imitate(top_down, t_pid, t_paths, i_pid, i_paths, t2i_construction, depth = 0): # troublesome default {}
+def special_coordination(top_down, paths):
+    coord_paths = {}
+    imitator = {}
+    template = {}
+    for (eq, path), tid in paths.items():
+        if eq:
+            imitator[path] = tid
+        else:
+            template[path] = tid
+    assert len(imitator.values()) == len(set(imitator.values()))
+    t_path = []
+    for elems in zip(*template):
+        if len(sole := set(elems)) == 1:
+            t_path.extend(sole)
+        else: break
+    t_depth = len(t_path) - 1
+    for path, tid in template.items():
+        coord_paths[path[t_depth:]] = tid
+    template = t_path[t_depth]
+    label = top_down[template].label
+    i_path = []
+    for elems in zip(*imitator):
+        if len(sole := set(elems)) == 1:
+            i_path.extend(sole)
+        else: break
+    i_depth = len(i_path) - 1
+    for path, tid in imitator.items():
+        coord_paths[path[i_depth:]] = tid
+        assert top_down[path[i_depth]].label == label
+    return coord_paths, template
+
+def imitate(top_down, type_count, t_pid, t_paths, i_pid, i_paths, t2i_construction): # troublesome default {}
     new_pids = {}
     new_t_paths = []
     new_i_paths = defaultdict(list)
@@ -704,7 +753,7 @@ def imitate(top_down, t_pid, t_paths, i_pid, i_paths, t2i_construction, depth = 
     i_tids = set()
     new_i_cid = max(top_down) + 1
     for t_path, tid, t_main in t_paths:
-        i_path = i_paths[tid][0] # TODO jit
+        i_path = i_paths[tid] # TODO jit
         i_tids.add(tid)
         t_len = len(t_path)
         i_len = len(i_path)
@@ -714,7 +763,10 @@ def imitate(top_down, t_pid, t_paths, i_pid, i_paths, t2i_construction, depth = 
             t_nid, = t_path
             # assert top_down[t_nid].label == top_down[i_nid].label, 'Transfer between different label'
             assert t_main ^ (t_nid in t2i_construction)
-            if i_nid not in i_children: # MA
+            if i_nid in i_children: # MA
+                if i_nid in type_count: # otherwise, a creation
+                    type_count[i_nid][i_pid] += 'C'
+            else:
                 i_children[i_nid] = t_children[t_nid]
             t2i_construction[t_nid] = i_nid
         else:
@@ -725,11 +777,11 @@ def imitate(top_down, t_pid, t_paths, i_pid, i_paths, t2i_construction, depth = 
             if t_len == i_len:
                 assert top_down[t_cid].label == top_down[i_cid].label, 'Transfer between different label'
                 # assert False, 'Reduce together (TODO)'
-                new_i_paths[tid].append(i_path[1:])
+                new_i_paths[tid] = i_path[1:]
                 new_pids[t_cid] = i_cid
             else:
-                if i_path not in new_i_paths[tid]:
-                    new_i_paths[tid].append(i_path)
+                if tid not in new_i_paths:
+                    new_i_paths[tid] = i_path
                 if t_cid in new_shifts:
                     _, t2i_shifts = new_shifts[t_cid]
                 else:
@@ -742,37 +794,42 @@ def imitate(top_down, t_pid, t_paths, i_pid, i_paths, t2i_construction, depth = 
                         new_i_cid += 1
                     new_shifts[t_cid] = dst_i_cid, t2i_shifts
                 t2i_shifts[t_path[1]].add(i_cid if t_main else None)
-    # print(depth, t2i_construction)
+                
     for tid in i_tids - i_paths.keys():
         for i_path in i_paths[tid]:
             i_cid, = i_path
             assert i_cid in i_children
 
-    # breakpoint()
     for t_cid, (dst_i_cid, t2i_shift) in new_shifts.items():
-        if allow_copy := (dst_i_cid not in top_down):
+        if creation := (dst_i_cid not in top_down):
             top_down[dst_i_cid] = TopDown(top_down[t_cid].label, new_children := {})
             i_children[dst_i_cid] = t_children[t_cid] # take root by imitate/copy
+            type_count[dst_i_cid][i_pid] = 'CC'
         else:
             new_children = top_down[dst_i_cid].children
-        for nid, ftag in top_down[t_cid].children.items():
-            if nid in t2i_construction:
-                # imitator does not have such information
-                new_children[t2i_construction[nid]] = ftag
-            elif nid in t2i_shift:
+        for t_ccid, ftag in top_down[t_cid].children.items():
+            if t_ccid in t2i_construction:
+                if (i_ccid := t2i_construction[t_ccid]) not in new_children:
+                    new_children[i_ccid] = ftag
+                if dst_i_cid in type_count[i_ccid]:
+                    type_count[i_ccid][dst_i_cid] += 'C'
+                else:
+                    type_count[i_ccid][dst_i_cid] = 'C'
+            elif t_ccid in t2i_shift:
                 # t_main is not None and up root i_cid from i_pid
                 # original ftag first, then template's ftag
-                for i_cid in t2i_shift[nid]:
+                for i_cid in t2i_shift[t_ccid]:
                     if i_cid is None:
                         continue
                     shift_key(i_cid, i_children, new_children)
-            elif allow_copy:
-                new_children[nid] = ftag # copy template
-        if allow_copy:
+            elif creation:
+                if t_ccid not in type_count:
+                    type_count[t_ccid][t_cid] = 'C0'
+                type_count[t_ccid][dst_i_cid] = 'C'
+                new_children[t_ccid] = ftag # copy template
+        if creation:
             t2i_construction[t_cid] = dst_i_cid
-    # if depth: return
-    # breakpoint()
-    # what if not-t_main without some t_main
+            
     for new_t_pid, new_i_pid in new_pids.items():
         sub_t_paths = []
         sub_i_paths = {}
@@ -780,114 +837,4 @@ def imitate(top_down, t_pid, t_paths, i_pid, i_paths, t2i_construction, depth = 
             if new_t_pid == t_path[0]:
                 sub_t_paths.append((t_path[1:], tid, t_main))
                 sub_i_paths[tid] = new_i_paths[tid]
-        imitate(top_down, new_t_pid, sub_t_paths, new_i_pid, sub_i_paths, t2i_construction, depth + 1)
-
-# from data.io import sorting_order, sort_by_order
-# def imitate_(path_finder, top_down, t_pid, t_refs, i_pid, i_refs):
-#     t_ma = {}
-#     t_ids = []
-#     t_paths = []
-#     for t_ref, tid in t_refs.items():
-#         for path in path_finder[t_ref]:
-#             path = path[path.index(t_pid):]
-#             t_paths.append(path)
-#             t_ids.append(tid)
-#             t_ma[tid] = tid in t_ma
-#     order = sorting_order(t_paths, lambda x: -len(x))
-#     t_ids, t_paths = (sort_by_order(order, x) for x in (t_ids, t_paths))
-#     depth = len(t_paths[0]) - 1
-#     while depth > 1:
-#         breakpoint()
-#         tns = defaultdict(set)
-#         for (tp, tn), t2i in dispatch(t_ids, t_paths, depth, i_refs, t_ma):
-#             tns[tn].update(copy_td(top_down, tn, top_down[tp].children[tn], i_pid, t2i, t_refs, i_refs))
-#         for tn, t_nids in tns.items():
-#             change_key(t_refs, get_sole_key(t_nids), tn)
-#         depth -= 1
-
-# def dispatch(t_ids, t_paths, depth, i_refs, t_ma):
-#     constituents = defaultdict(dict)
-#     remove_ma = []
-#     for eid, path in enumerate(t_paths):
-#         tid = t_ids[eid]
-#         if depth < len(path):
-#             pid, nid, cid = path[depth - 2:depth + 1]
-#             ma = t_ma.get(tid, False)
-#             constituents[(pid, nid)][cid] = i_refs[tid], ma
-#             if ma: remove_ma.append(eid)
-#             continue
-#         break
-#     for eid in reversed(remove_ma):
-#         t_paths.pop(eid)
-#         t_ids.pop(eid)
-#     yield from constituents.items()
-
-# def copy_td(top_down, template, ftag, imitator, t2i, t_refs, i_refs):
-#     t_td = top_down[template]
-#     i_cd = top_down[imitator].children
-#     new_children = {}
-#     new_nid = max(top_down) + 1
-#     for t_nid, t_ftag in t_td.children.items():
-#         if t_nid in t2i:
-#             i_nid, t_ma = t2i[t_nid] # tma不太好，需要提前放入资源池中？
-#             if not t_ma:
-#                 yield t_nid
-#                 i_refs[t_refs[t_nid]] = new_nid
-#             new_children[i_nid] = i_cd[i_nid] if t_ma else i_cd.pop(i_nid)
-#         else:
-#             new_children[t_nid] = t_ftag
-#     top_down[new_nid] = TopDown(t_td.label, new_children)
-#     i_cd[new_nid] = ftag
-
-    # elif t_label == 'VP':
-    #     bids = set()
-    #     for path in path_finder.gen_from(t_pid):
-    #         if (bid := path[-1]) in bottom and (tag := bottom[bid][1]).startswith('V'):
-    #             bids.add(bid)
-    #     i_nid = min(bids)
-    #     top_down[i_pid].children[i_nid] = top_down[t_pid].children[i_nid]
-
-# E_PENN_PUNCT = ',', '.', '``', "''", ':', '-RRB-', '-LRB-'
-# def sort_leftover(lhs, rhs, leftover_gen):
-#     def dist(x):
-#         if x < lhs:
-#             return lhs - x
-#         elif x > rhs:
-#             return x - rhs
-#         return 0
-#     leftover = [(x, dist(x)) for x in leftover_gen]
-#     leftover.sort(key = lambda x: x[1])
-#     leftover_x = []
-#     for x, y in leftover:
-#         if y == 0:
-#             leftover_x.append(x)
-#         elif x == lhs - 1:
-#             lhs = x
-#             leftover_x.append(x)
-#         elif x == rhs + 1:
-#             rhs = x
-#             leftover_x.append(x)
-#         else:
-#             break
-#     return leftover_x
-#     # for better continuity
-#     if adjust_punct:
-#         leftover_x = (x for x in top_down[r_pid].children.keys() - set({i_pid}) if x < nt_start)
-#         leftover_x = sort_leftover(lhs, rhs, leftover_x)
-#         if leftover_x and all(bottom[x][2] in E_PENN_PUNCT for x in leftover_x):
-#             for x in leftover_x:
-#                 top_down[i_pid].children[x] = top_down[r_pid].children.pop(x)
-# nids = [nid]
-# cids = []
-# coverage = []
-# while nids:
-#     for nid in nids:
-#         for cid in top_down[nid].children:
-#             if cid in top_down:
-#                 cids.append(cid)
-#             else:
-#                 assert cid < nt_start
-#                 coverage.append(cid)
-#     nids = cids
-#     cids = []
-# return min(coverage), max(coverage)
+        imitate(top_down, type_count, new_t_pid, sub_t_paths, new_i_pid, sub_i_paths, t2i_construction)

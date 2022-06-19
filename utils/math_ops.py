@@ -41,7 +41,7 @@ def bit_fanout(bits):
 # (prev - bits) removes higher parts
 # '1111 100 - 1 == 1111 001', 1111 000
 # ((prev - bits) << 1) & prev, (100 - 011 << 1) & 100X 100 examines X
-n_bit = lambda bits: floor(log(bits, 2)) + 1
+n_bit = lambda bits, base = 2: floor(log(bits, base)) + 1
 
 def low_bit(bits):
     low = bits - 1; low &= bits

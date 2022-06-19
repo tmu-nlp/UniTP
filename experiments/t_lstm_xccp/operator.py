@@ -146,37 +146,38 @@ class DiscoMultiOperator(DiscoOperator):
                 total_loss = self._train_config.loss_weight.disco_2d_inter * inter_2d_negloss + total_loss
             total_loss.backward()
             
-            if hasattr(self._model, 'tensorboard'):
-                self._model.tensorboard(self.recorder, self.global_step)
-            self.recorder.tensorboard(self.global_step, 'Accuracy/%s',
-                                      Tag   = 1 - fraction(tag_mis,     tag_weight),
-                                      Label = 1 - fraction(label_mis, label_weight),
-                                      Fence = fraction(fences == gold_fences),
-                                      Disco_1D = fraction(disco_1d == batch['dis_disco']),
-                                      Disco_2D = fraction(disco_2d == batch['dis_component']) if has_disco_2d else None,
-                                      Disco_2D_Intra_P = fraction(disco_2d_positive_accuracy) if has_disco_2d_positive else None,
-                                      Disco_2D_Intra_N = fraction(disco_2d_negative_accuracy) if has_disco_2d_negative else None,
-                                      Disco_2D_Inter_N = fraction(inter_2d_negative_accuracy) if has_inter_2d_negative else None)
-            self.recorder.tensorboard(self.global_step, 'Loss/%s',
-                                      Tag   = tag_loss,
-                                      Label = label_loss,
-                                      Fence = fence_loss,
-                                      Disco_1D = disco_1d_loss,
-                                      Disco_2D = disco_2d_loss if has_disco_2d else None,
-                                      Disco_2D_Intra_P = disco_2d_posloss if has_disco_2d_positive else None,
-                                      Disco_2D_Intra_N = disco_2d_negloss if has_disco_2d_negative else None,
-                                      Disco_2D_Inter_N = inter_2d_negloss if has_inter_2d_negative else None,
-                                      Total = total_loss)
-            batch_kwargs = dict(Length = batch_len, SamplePerSec = batch_len / batch_time)
-            if 'segment' in batch:
-                batch_kwargs['Height'] = batch['segment'].shape[0]
-            if has_disco_2d_positive:
-                batch_kwargs['Disco_2D_Intra_P'] = disco_2d_positive_accuracy.shape[0]
-            if has_disco_2d_negative:
-                batch_kwargs['Disco_2D_Intra_N'] = disco_2d_negative_accuracy.shape[0]
-            if has_inter_2d_negative:
-                batch_kwargs['Disco_2D_Inter_N'] = inter_2d_negative_accuracy.shape[0]
-            self.recorder.tensorboard(self.global_step, 'Batch/%s', **batch_kwargs)
+            if self.recorder._writer is not None:
+                self.recorder.tensorboard(self.global_step, 'Accuracy/%s',
+                    Tag   = 1 - fraction(tag_mis,     tag_weight),
+                    Label = 1 - fraction(label_mis, label_weight),
+                    Fence = fraction(fences == gold_fences),
+                    Disco_1D = fraction(disco_1d == batch['dis_disco']),
+                    Disco_2D = fraction(disco_2d == batch['dis_component']) if has_disco_2d else None,
+                    Disco_2D_Intra_P = fraction(disco_2d_positive_accuracy) if has_disco_2d_positive else None,
+                    Disco_2D_Intra_N = fraction(disco_2d_negative_accuracy) if has_disco_2d_negative else None,
+                    Disco_2D_Inter_N = fraction(inter_2d_negative_accuracy) if has_inter_2d_negative else None)
+                self.recorder.tensorboard(self.global_step, 'Loss/%s',
+                    Tag   = tag_loss,
+                    Label = label_loss,
+                    Fence = fence_loss,
+                    Disco_1D = disco_1d_loss,
+                    Disco_2D = disco_2d_loss if has_disco_2d else None,
+                    Disco_2D_Intra_P = disco_2d_posloss if has_disco_2d_positive else None,
+                    Disco_2D_Intra_N = disco_2d_negloss if has_disco_2d_negative else None,
+                    Disco_2D_Inter_N = inter_2d_negloss if has_inter_2d_negative else None,
+                    Total = total_loss)
+                batch_kwargs = dict(Length = batch_len, SamplePerSec = batch_len / batch_time)
+                if 'segment' in batch:
+                    batch_kwargs['Height'] = batch['segment'].shape[0]
+                if has_disco_2d_positive:
+                    batch_kwargs['Disco_2D_Intra_P'] = disco_2d_positive_accuracy.shape[0]
+                if has_disco_2d_negative:
+                    batch_kwargs['Disco_2D_Intra_N'] = disco_2d_negative_accuracy.shape[0]
+                if has_inter_2d_negative:
+                    batch_kwargs['Disco_2D_Inter_N'] = inter_2d_negative_accuracy.shape[0]
+                self.recorder.tensorboard(self.global_step, 'Batch/%s', **batch_kwargs)
+                if hasattr(self._model, 'tensorboard'):
+                    self._model.tensorboard(self.recorder, self.global_step)
         else:
             vis, _, _, pending_heads, _ = self._vis_mode
 

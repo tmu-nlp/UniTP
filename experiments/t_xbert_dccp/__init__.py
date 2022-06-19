@@ -35,10 +35,13 @@ def get_configs(recorder = None):
             train_ds = reader.loaded_ds.get(mode)
             assert new_train_cnf is None, 'should not optuna train_cnf for xbert'
             if train_ds is None:
-                datasets[corp_name] = reader.batch(M_TRAIN, disco.batch_size, disco.bucket_len, train_cnf,
-                                                   shuffle_swap = disco.shuffle_swap,
+                datasets[corp_name] = reader.batch(M_TRAIN,
+                                                   disco.batch_size,
+                                                   disco.bucket_len,
+                                                   train_cnf,
                                                    max_len = disco.max_len,
                                                    min_gap = disco.min_gap,
+                                                   ply_shuffle = disco.ply_shuffle,
                                                    sort_by_length = disco.sort_by_length)
             else:
                 from data.backend import post_batch

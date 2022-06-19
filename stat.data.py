@@ -214,8 +214,8 @@ def live_dm_layer_stat(*keeper_factor):
     square_layers = sum(1 for gs in layers_of_disco if gs)
     square = sum(sum(len(g) for g in gs.values())**2 for gs in layers_of_disco)
     max_square = sum(len(x)**2 for x in layers_of_label)
-    sent_line = f'{len(keeper.word)},{lid+1},{keeper.gaps},{linear},{square_layers},{square},{max_square},{factor}\n'
-    orif_line = f'{len(keeper.word)},{len(layers_of_label)},{F_MULTI},{linear}\n'
+    sent_line = f'{len(keeper.text)},{lid+1},{keeper.gaps},{linear},{square_layers},{square},{max_square},{factor}\n'
+    orif_line = f'{len(keeper.text)},{len(layers_of_label)},{F_MULTI},{linear}\n'
     return sent_line, layer_lines, orif_line, ratio_count
 
 def disco_multib(corp_name, data_specs, factors):

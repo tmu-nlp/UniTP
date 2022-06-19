@@ -154,7 +154,7 @@ M_INFER = 'infer'
 E_MODE = (M_TRAIN, M_DEVEL, M_TEST, M_INFER)
 E_ORIF4 = 'left', 'right', 'midin', 'midout'
 O_LFT, O_RGT, O_MIN, O_MOT = E_ORIF4
-O_HEAD = 'head'
+O_HEAD = F_DEP = 'head'
 O_M25, O_M50, O_M75 = (O_MIN + str(x) for x in (25, 50, 75))
 E_ORIF5 = O_LFT, O_M25, O_M50, O_M75, O_RGT
 E_ORIF5_HEAD = O_LFT, O_M25, O_M50, O_M75, O_RGT, O_HEAD
@@ -162,6 +162,10 @@ E_ORIF11 = (O_MIN + str(x * 10) for x in range(1, 10))
 E_ORIF11 = (O_LFT,) + tuple(o for o in E_ORIF11 if o != O_M50) + (O_RGT,)
 E_ORIF11_HEAD = E_ORIF11 + (O_HEAD,)
 E_CNF = O_LFT, O_RGT
+F_LEFT, F_RIGHT = E_ORIF4[:2]
+F_RANDOM = 'random'
+F_CON = 'continuous'
+E_FACTOR = F_RANDOM, F_LEFT, F_RIGHT, F_DEP, F_CON
 
 import os
 num_threads = (os.cpu_count() - 2) if os.cpu_count() > 2 else 1
@@ -178,4 +182,4 @@ frac_close_2 = BaseType(0.2, frac_close)
 frac_close_1 = BaseType(1.0, frac_close)
 binarization_5_head = {o: frac_close_0 if o == O_HEAD else frac_close_2 for o in E_ORIF5_HEAD}
 S_ALL, S_EXH = 'all', 'except_head'
-swapper = BaseType(0, default_set = (None, S_ALL, S_EXH), as_index = True)
+ply_shuffle = BaseType(0, default_set = (None, S_ALL, S_EXH), as_index = True)

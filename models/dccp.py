@@ -373,7 +373,6 @@ class DiscoStem(nn.Module):
         joint       = torch.cat(layers_of_joint,       dim = 1)
         existence   = torch.cat(layers_of_existence,   dim = 1)
 
-        shuffled_right_direc = shuffled_joint = None
         if teacher_forcing:
             if swap is not None:
                 shuffled_right_direc = torch.cat(layers_of_shuffled_right_direc, dim = 1)
@@ -381,6 +380,7 @@ class DiscoStem(nn.Module):
             assert joint.shape[1] == supervised_joint.shape[1], f'{joint.shape[1]} vs. {supervised_joint.shape[1]}'
             assert right_direc.shape[1] == supervised_right.shape[1], f'{right_direc.shape[1]} vs. {supervised_right.shape[1]}'
         else:
+            shuffled_right_direc = shuffled_joint = None
             # segment    = torch.stack(segment,    dim = 0)
             seg_length = torch.stack(seg_length, dim = 1)
 
@@ -405,36 +405,29 @@ class DiscoStem(nn.Module):
             return right, joint, direc, right_score, joint_score, direc_score
         return right, joint, direc
 
-    def get_stem_loss(self, gold, right_direc_logits, joint_logits, undirect_orient):
+    def get_stem_loss(self, gold, right_direc_logits, joint_logits, undirec_strength):
         gold_right = gold['right']
         gold_direc = gold['direc']
         gold_joint = gold['joint']
         if self._orient_bits == 3:
-            if right_direc_logits is None: # shuffled
-                return None, None
-            gold_bit = convert23_gold(gold_right, gold_direc)
-            return cross_entropy(right_direc_logits, gold_bit), self._loss_fns(joint_logits, gold_joint, None)
+            orient_loss = cross_entropy(right_direc_logits, convert23_gold(gold_right, gold_direc))
+            return orient_loss, self._loss_fns(joint_logits, gold_joint, None)
 
-        if right_direc_logits is None:
-            return None, None, None
-        right_loss, direc_loss, joint_loss = self._loss_fns
-        with_direc = direc_loss is not None
-        right_logits = right_direc_logits[:, :, 0]
-        direc_logits = right_direc_logits[:, :, 1] if with_direc else None
-        if with_direc:
-            if undirect_orient == 0:
-                direc_weight = gold_direc
-            elif undirect_orient < 1:
-                direc_weight = gold_direc * (1 - undirect_orient) + undirect_orient
-                direc_weight *= gold['existence']
-            else:
-                direc_weight = gold['existence']
-            right_loss = right_loss(right_logits, gold_right, direc_weight)
-            direc_loss = direc_loss(direc_logits, gold_direc, None)
+        if undirec_strength == 0:
+            direc_weight = gold_direc
+        elif undirec_strength == 1:
+            direc_weight = gold['existence']
         else:
-            right_loss = right_loss(right_logits, gold_right, gold_direc)
+            direc_weight = gold_direc * (1 - undirec_strength) + undirec_strength
+            direc_weight *= gold['existence']
+        right_loss, direc_loss, joint_loss = self._loss_fns
+        if direc_loss is not None:
+            direc_loss = direc_loss(right_direc_logits[:, :, 1], gold_direc, None)
+        right_loss = right_loss(right_direc_logits[:, :, 0], gold_right, direc_weight)
+        joint_loss = joint_loss(joint_logits, gold_joint, None)
 
-        return right_loss, joint_loss(joint_logits, gold_joint, None), direc_loss
+        return right_loss, joint_loss, direc_loss
+
 
 multi_class = dict(hidden_dim = hidden_dim,
                    activation = activation_type,
@@ -519,12 +512,11 @@ class BaseRnnTree(DiscoStem):
     def get_decision_with_value(self, logits):
         return get_decision_with_value(self._score_fn, logits)
 
-    def get_losses(self, batch, weight_mask, tag_logits, top3_label_logits, label_logits, right_direc_logits, joint_logits, shuffled_right_direc, shuffled_joint, undirect_orient):
+    def get_losses(self, batch, weight_mask, tag_logits, top3_label_logits, label_logits):
         height_mask = batch['segments'][None] * (batch['seq_len'] > 0)
         height_mask = height_mask.sum(dim = 1)
         tag_loss   = get_loss(self._tag_layer,   self._logit_max, tag_logits,   batch, 'tag')
         label_loss = get_loss(self._label_layer, self._logit_max, label_logits, batch, False, height_mask, weight_mask, 'label')
         if top3_label_logits is not None:
             tag_loss += get_loss(self._label_layer, self._logit_max, top3_label_logits, batch, 'top3_label')
-        basic = tag_loss, label_loss
-        return basic + self.get_stem_loss(batch, right_direc_logits, joint_logits, undirect_orient) + self.get_stem_loss(batch, shuffled_right_direc, shuffled_joint, undirect_orient)
+        return tag_loss, label_loss

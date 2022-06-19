@@ -8,7 +8,7 @@ import experiments
 from os import mkdir, listdir
 from os.path import isdir, isfile, join, abspath
 from utils.yaml_io import save_yaml, load_yaml
-from utils.file_io import create_join, DelayedKeyboardInterrupt
+from utils.file_io import create_join, DelayedKeyboardInterrupt, link
 from utils.types import fill_placeholder
 from utils.param_ops import zip_nt_params, iter_zipped_nt_params, change_key
 from utils.str_ops import strange_to
@@ -308,9 +308,9 @@ class Manager:
         from utils.mgr import check_select, check_instances_operation, check_train
         from utils.recorder import Recorder
         from utils.train_ops import train
-        task, corp_name, name = check_select(args.select)
+        task, corp_name, spec_name = check_select(args.select)
         op_code, exp_ids = check_instances_operation(args.instance)
-        assert op_code in (None, False, 'r', 'd'), f'Unknown operation {op_code}, neither [r]esume nor [d]elete'
+        assert op_code in (None, False, 'r', 'd', 'f'), f'Unknown operation {op_code}, options are [r]esume [d]elete [f]ork'
 
         assert task in self._exp_modules, f'No such task module {task} in [' + ', '.join(self._exp_modules.keys()) + ']'
         assert task in ready_tasks, f'No such ready task_spec {task} in [' + ', '.join(ready_paths.keys()) + ']'
@@ -330,7 +330,7 @@ class Manager:
             return Recorder(task_dir,
                             module,
                             config_dict_or_instance,
-                            name,
+                            spec_name,
                             evalb = evalb)
 
         train_or_resume_training = op_code == 'r' or None in exp_ids
@@ -365,6 +365,20 @@ class Manager:
         for exp_id in exp_ids:
             recorder = diff_recorder(task_spec) if exp_id is None else diff_recorder(exp_id)
             print(recorder.create_join())
+
+            if op_code == 'f':# and input(f'Fork to {recorder} ? [Y or any key]').lower() != 'Y':
+                trail_folder = spec_name or 'trials'
+                trial = recorder.best_trial(trail_folder)
+                pid, path = recorder._instance_dir
+                spec_name = f'{{{pid}.{trial.tid}}}'
+                fr = Recorder(join(self._work_dir, task), module, trial.specs, spec_name, evalb = recorder.evalb)
+                fr.detach()
+                path = join(path, trail_folder, f'{trial.tid}.{trial.spec_string}', 'models')
+                for model in listdir(path):
+                    link(join(path, model), join(fr._model_dir, model))
+                recorder.detach()
+                continue
+
             if op_code == 'd' and input('Remove recorder ? [Y or any key]').lower() != 'Y':
                 recorder.detach()
                 recorder.delete_all()
@@ -372,6 +386,10 @@ class Manager:
 
             if train_or_resume_training:
                 operator = None
+                if args.tensorboard:
+                    recorder.init_tensorboard()
+                else:
+                    recorder.msg('(Not tracking training statistics.)')
                 try:
                     operator = module.get_configs(recorder)
                     recorder.register_test_scores(train(train_params, operator))
@@ -397,14 +415,15 @@ def get_args():
         add_help    = True,
     )
     parser.add_argument('base', metavar = 'DIR', help = 'working directory', type = str)
-    parser.add_argument('-R', '--reset',     help = 'initial manager.yaml', action = 'store_true', default = False)
-    parser.add_argument('-p', '--prepare',   help = 'prepare all dataset for training', action = 'store_true', default = False)
-    parser.add_argument('-T', '--threads',   help = 'a number of threads for pre-processing the data', type = int, default = -1)
-    parser.add_argument('-g', '--gpu',       help = 'pass to environment', type = str, default = '0')
-    parser.add_argument('-x', '--train',     help = 'fv=3:30:4,max=100,!,optuna [fine validation starts from the 3rd consecutive key score wandering, ends at the 30th wandering, occuring 4 times during one epoch. !test with devel set!]', type = str, default = 'mp')
-    parser.add_argument('-s', '--select',    help = 'select (a sub-layer config id)[/data][:folder] name to run', type = str)
-    parser.add_argument('-i', '--instance',  help = 'test an trained model by the folder id without its suffix name', type = str)
-    parser.add_argument('-m', '--memory',    help = 'To preoccupy GPU memory in GB', type = int, default = None)
+    parser.add_argument('-R', '--reset',       help = 'initial manager.yaml', action = 'store_true', default = False)
+    parser.add_argument('-p', '--prepare',     help = 'prepare all dataset for training', action = 'store_true', default = False)
+    parser.add_argument('-t', '--tensorboard', help = 'use tensorboard to track training stat', action = 'store_true', default = False)
+    parser.add_argument('-T', '--threads',     help = 'a number of threads for pre-processing the data', type = int, default = -1)
+    parser.add_argument('-g', '--gpu',         help = 'pass to environment', type = str, default = '0')
+    parser.add_argument('-x', '--train',       help = 'fv=3:30:4,max=100,!,optuna [fine validation starts from the 3rd consecutive key score wandering, ends at the 30th wandering, occuring 4 times during one epoch. !test with devel set!]', type = str, default = 'mp')
+    parser.add_argument('-s', '--select',      help = 'select (a sub-layer config id)[/data][:folder] name to run', type = str)
+    parser.add_argument('-i', '--instance',    help = 'test an trained model by the folder id without its suffix name', type = str)
+    parser.add_argument('-m', '--memory',      help = 'To preoccupy GPU memory in GB', type = int, default = None)
     args = parser.parse_args()
     if args.base is None or not isdir(args.base):
         parser.print_help()

@@ -338,7 +338,7 @@ def multi_attachment(top_down):
     children_cnt = Counter()
     for td in top_down.values():
         children_cnt += Counter(td.children.keys())
-    return {k:v for k,v in children_cnt.items() if v > 1}
+    return children_cnt
 
 def leaves(bottom, top_down, nid):
     if nid in top_down:
@@ -379,3 +379,74 @@ def remove_repeated_unary(top_down, nid = 0):
         if len(children) == 1 and cid in top_down and top_down[nid].label == top_down[cid].label:
             ftag = children.pop(cid)
             top_down[nid] = top_down.pop(cid)
+
+
+class BaseTreeKeeper:
+    @classmethod
+    def from_tiger_graph(cls, graph, *args, **kw_args):
+        from data.cross.tiger import read_tree
+        return cls(*read_tree(graph), *args, **kw_args)
+
+    @classmethod
+    def from_disco_penn(cls, tree, *args, **kw_args):
+        from data.cross.dptb import read_tree
+        # args = replace_args_kwargs(_dep_n_prefix, 1, args, 'dep', kw_args)
+        return cls(*read_tree(tree), *args, **kw_args)
+
+    def __init__(self, bottom_info, top_down, v2is = None, dep = None, details = False, verbose_file = None):
+        if details: print('\n'.join(draw_str_lines(bottom_info, top_down)))
+        if verbose_file: verbose_file = verbose_file + ('\n'.join(draw_str_lines(bottom_info, top_down)),)
+        word, bottom, node2tag, bottom_unary = _pre_proc(bottom_info, top_down, dep = dep)
+        self._gaps = gap_degree(bottom, top_down, None, True) # if details else None
+        self._word = word
+        if v2is is None:
+            bottom_tag = [node2tag[t] for t in bottom]
+            l2i = None
+        else:
+            w2i, t2i, l2i = v2is
+            bottom_tag = [t2i(node2tag[t]) for t in bottom]
+            # self._dbg = [(word[tid], node2tag[bottom[tid]]) for tid, t in enumerate(bottom_tag) if t is None]
+            word = [w2i(w) for w in word]
+        if dep is not None:
+            if details:
+                print('  '.join(n.split('_')[1]+'->'+(h.split('_')[1] if h else '*') for n, h in dep.items()))
+            extra = []
+            for node, bt_head in dep.items():
+                if bt_head not in node2tag and bt_head:
+                    extra.append(node)
+            media = set()
+            for node in extra:
+                bt_head = dep.pop(node)
+                while bt_head and bt_head not in node2tag:
+                    media.add(bt_head)
+                    bt_head = dep[bt_head]
+                dep[node] = bt_head
+                if details and not bt_head:
+                    print('!:', node,' misses attachment.')
+            for bt_head in media:
+                dep.pop(bt_head)
+            if details:
+                print('  '.join(n.split('_')[1]+'->'+(h.split('_')[1] if h else '*') for n, h in dep.items()))
+                if media:
+                    print('Removed media nodes: ' + ', '.join(media))
+
+        self._word_tag = word, bottom_tag
+        self._materials = bottom, node2tag, bottom_unary, top_down, l2i, dep, verbose_file
+        self._balanced_top_down = None
+
+    @property
+    def has_signals(self):
+        return any(self._materials[2:4])
+
+    @property
+    def gaps(self):
+        return max(self._gaps.values())
+
+    @property
+    def text(self):
+        return self._word
+
+    @property
+    def word_tag(self):
+        return self._word_tag
+    

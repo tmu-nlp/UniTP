@@ -12,12 +12,14 @@ from utils.file_io import join
 
 train_type = dict(loss_weight = dict(tag    = BaseType(0.3, validator = frac_open_0),
                                      label  = BaseType(0.1, validator = frac_open_0),
-                                     _right = BaseType(0.6, validator = frac_open_0),
-                                     _direc = BaseType(0.6, validator = frac_open_0),
                                      joint  = BaseType(0.6, validator = frac_open_0),
                                      orient = BaseType(0.6, validator = frac_open_0),
-                                     shuffled = BaseType(0.6, validator = frac_open_0),
-                                     _undirect_orient = BaseType(0.9, validator = frac_close)),
+                                     _direc = BaseType(0.6, validator = frac_open_0),
+                                     _udirec_strength = BaseType(0.9, validator = frac_close),
+                                     shuffled_joint   = BaseType(0.6, validator = frac_open_0),
+                                     shuffled_orient  = BaseType(0.6, validator = frac_open_0),
+                                     shuffled__direc  = BaseType(0.6, validator = frac_open_0),
+                                     sudirec_strength = BaseType(0.9, validator = frac_close)),
                   learning_rate = BaseType(0.001, validator = frac_open_0),
                   tune_pre_trained = dict(from_nth_epoch = tune_epoch_type,
                                           lr_factor = frac_06))
@@ -44,9 +46,7 @@ class DiscoOperator(Operator):
         self._evalb_lcfrs_kwargs = read_param(evalb_lcfrs_prm)
 
     def _build_optimizer(self, start_epoch):
-        # self._loss_weights_of_tag_label_orient = 0.3, 0.1, 0.6 betas = (0.9, 0.98), weight_decay = 0.01, eps = 1e-9
         self._schedule_lr = hp = WarmOptimHelper.adam(self._model, self._train_config.learning_rate)
-        self.recorder.init_tensorboard()
         optim = hp.optimizer
         optim.zero_grad()
         return optim
@@ -71,7 +71,10 @@ class DiscoOperator(Operator):
         # layers_of_existence, layers_of_base, layers_of_hidden, layers_of_right_direc, layers_of_joint, tags, labels, segment, seg_length
         batch_time = time()
         (batch_size, batch_len, static, top3_label_logits,
-         existences, embeddings, hiddens, right_direc_logits, joint_logits, shuffled_right_direc, shuffled_joint, tag_logits, label_logits, segment,
+         existences, embeddings, hiddens,
+         right_direc_logits, joint_logits,
+         shuffled_right_direc, shuffled_joint,
+         tag_logits, label_logits, segment,
          seq_len) = self._model(batch['token'], self._tune_pre_trained, **batch)
         batch_time = time() - batch_time
 
@@ -83,64 +86,62 @@ class DiscoOperator(Operator):
             tag_match   = (tags   == batch['tag']) & tag_weight
             label_match = (labels == batch['label']) & gold_exists
             right_match = (rights == gold_rights) & gold_direcs
-            
-            self.recorder.tensorboard(self.global_step, 'Accuracy/%s',
-                                      Tag = fraction(tag_match,    tag_weight),
-                                      Label = fraction(label_match, gold_exists),
-                                      Right = fraction(right_match, gold_direcs),
-                                      Direc = fraction(direcs == gold_direcs) if direcs is not None else None,
-                                      Joint = fraction(joints == gold_joints))
-
-            # if self._train_config.label_freq_as_loss_weight:
-            #     label_mask = self._train_config.label_log_freq_inv[batch['label']]
-            # else:
-            #     label_mask = None
+            if tensorboard := self.recorder._writer is not None:
+                self.recorder.tensorboard(self.global_step, 'Accuracy/%s',
+                    Tag = fraction(tag_match,    tag_weight),
+                    Label = fraction(label_match, gold_exists),
+                    Right = fraction(right_match, gold_direcs),
+                    Direc = fraction(direcs == gold_direcs) if direcs is not None else None,
+                    Joint = fraction(joints == gold_joints))
 
             batch['existence'] = gold_exists
-            shuffled = self._train_config.loss_weight.shuffled
             tb_loss_kwargs = {}
-            losses = self._model.get_losses(batch, None, tag_logits, top3_label_logits, label_logits, right_direc_logits, joint_logits, shuffled_right_direc, shuffled_joint, self._train_config.loss_weight._undirect_orient)
+            tag_loss, label_loss = self._model.get_losses(batch, None, tag_logits, top3_label_logits, label_logits)
+            total_loss = self._train_config.loss_weight.tag * tag_loss
+            total_loss = self._train_config.loss_weight.label * label_loss + total_loss
+            card_losses = self._model.get_stem_loss(batch, right_direc_logits, joint_logits, self._train_config.loss_weight._udirec_strength)
+            if shuffled_right_direc is None:
+                assert shuffled_joint is None
+                shuffled_losses = None
+            else:
+                shuffled_losses = self._model.get_stem_loss(batch, shuffled_right_direc, shuffled_joint, self._train_config.loss_weight.sudirec_strength)
             if self._model.orient_bits == 3:
-                tag_loss, label_loss, orient_loss, joint_loss, shuffled_orient_loss, shuffled_joint_loss = losses
-                total_loss = self._train_config.loss_weight.tag * tag_loss
-                total_loss = self._train_config.loss_weight.label * label_loss + total_loss
-                total_loss = self._train_config.loss_weight.joint * joint_loss + total_loss
-                total_loss = self._train_config.loss_weight.orient * orient_loss + total_loss
-                if shuffled_joint_loss is not None:
-                    total_loss = self._train_config.loss_weight.joint * shuffled_joint_loss * shuffled + total_loss
-                    total_loss = self._train_config.loss_weight.orient * shuffled_orient_loss * shuffled + total_loss
+                orient_loss, joint_loss = card_losses
+                if shuffled_losses is not None:
+                    shuffled_orient_loss, shuffled_joint_loss = shuffled_losses
                     tb_loss_kwargs['ShuffledOrient'] = shuffled_orient_loss
                     tb_loss_kwargs['ShuffledJoint']  = shuffled_joint_loss
                 tb_loss_kwargs['Orient'] = orient_loss
             else:
-                tag_loss, label_loss, right_loss, joint_loss, direc_loss, shuffled_right_loss, shuffled_joint_loss, shuffled_direc_loss = losses
-                total_loss = self._train_config.loss_weight.tag * tag_loss
-                total_loss = self._train_config.loss_weight.label * label_loss + total_loss
-                total_loss = self._train_config.loss_weight.joint * joint_loss + total_loss
-                total_loss = self._train_config.loss_weight._right * right_loss + total_loss
-                if shuffled_joint_loss is not None:
-                    total_loss = self._train_config.loss_weight.joint * shuffled_joint_loss * shuffled + total_loss
-                    total_loss = self._train_config.loss_weight._right * shuffled_right_loss * shuffled + total_loss
-                    tb_loss_kwargs['ShuffledRight'] = shuffled_right_loss
-                    tb_loss_kwargs['ShuffledJoint'] = shuffled_joint_loss
-                    if shuffled_direc_loss is not None:
-                        tb_loss_kwargs['ShuffledDirec'] = shuffled_direc_loss
-                        total_loss = self._train_config.loss_weight._direc * shuffled_direc_loss * shuffled + total_loss
-                tb_loss_kwargs['Right'] = right_loss
+                orient_loss, joint_loss, direc_loss = card_losses
+                tb_loss_kwargs['Right'] = orient_loss
                 if direc_loss is not None:
                     tb_loss_kwargs['Direc'] = direc_loss
                     total_loss = self._train_config.loss_weight._direc * direc_loss + total_loss
+                if shuffled_losses is not None:
+                    shuffled_orient_loss, shuffled_joint_loss, shuffled_direc_loss = shuffled_losses
+                    tb_loss_kwargs['ShuffledRight'] = shuffled_orient_loss
+                    tb_loss_kwargs['ShuffledJoint'] = shuffled_joint_loss
+                    if shuffled_direc_loss is not None:
+                        tb_loss_kwargs['ShuffledDirec'] = shuffled_direc_loss
+                        total_loss = self._train_config.loss_weight.shuffled_direc * shuffled_direc_loss + total_loss
+            if shuffled_losses is not None:
+                total_loss = self._train_config.loss_weight.shuffled_joint * shuffled_joint_loss + total_loss
+                total_loss = self._train_config.loss_weight.shuffled_orient * shuffled_orient_loss + total_loss
+            total_loss = self._train_config.loss_weight.orient * orient_loss + total_loss
+            total_loss = self._train_config.loss_weight.joint * joint_loss + total_loss
             total_loss.backward()
             
-            if hasattr(self._model, 'tensorboard'):
-                self._model.tensorboard(self.recorder, self.global_step)
-            self.recorder.tensorboard(self.global_step, 'Loss/%s',
-                                      Tag = tag_loss, Label = label_loss, Joint = joint_loss, Total = total_loss,
-                                       **tb_loss_kwargs)
-            self.recorder.tensorboard(self.global_step, 'Batch/%s',
-                                      SamplePerSec = batch_len / batch_time,
-                                      Length = batch_len,
-                                      Height = batch['segments'].shape[0])
+            if tensorboard:
+                self.recorder.tensorboard(self.global_step, 'Loss/%s',
+                    Tag = tag_loss, Label = label_loss, Joint = joint_loss, Total = total_loss,
+                    **tb_loss_kwargs)
+                self.recorder.tensorboard(self.global_step, 'Batch/%s',
+                    SamplePerSec = batch_len / batch_time,
+                    Length = batch_len,
+                    Height = batch['segments'].shape[0])
+                if hasattr(self._model, 'tensorboard'):
+                    self._model.tensorboard(self.recorder, self.global_step)
         else:
             vis, _, _, pending_heads, _ = self._vis_mode
             if vis.save_tensors:
@@ -272,30 +273,33 @@ class DiscoOperator(Operator):
                 loss_weight['tag']   = t = trial.suggest_float('tag',   0.0, 1.0)
                 loss_weight['label'] = l = trial.suggest_float('label', 0.0, 1.0)
                 loss_weight['joint'] = j = trial.suggest_float('joint', 0.0, 1.0)
+                loss_weight['orient'] = o = trial.suggest_float('orient', 0.0, 1.0)
                 loss_str = f'L={height_ratio(t)}{height_ratio(l)}{height_ratio(j)}'
+                mute = []
                 if self._model.orient_bits == 3:
-                    loss_weight['orient'] = o = trial.suggest_float('orient', 0.0, 1.0)
-                    loss_weight['_direc'] = loss_weight['_right'] = loss_weight['_undirect_orient'] = 0.0
+                    mute += ['_direc', '_udirec_strength']
+                    loss_weight['_direc'] = loss_weight['_udirec_strength'] = 0.0
                     loss_str += f'T{height_ratio(o)}'
                 else:
-                    loss_weight['_right'] = r = trial.suggest_float('_right', 0.0, 1.0)
-                    loss_weight['orient'] = 0
                     if self._model.orient_bits == 2:
                         loss_weight['_direc'] = d = trial.suggest_float('_direc', 0.0, 1.0)
-                        loss_weight['_undirect_orient'] = u = trial.suggest_float('_undirect_orient', 0.0, 1.0)
-                        loss_str += f'D{height_ratio(r)}{height_ratio(d)}{height_ratio(u)}'
+                        loss_weight['_udirec_strength'] = u = trial.suggest_float('_udirec_strength', 0.0, 1.0)
+                        loss_str += f'D{height_ratio(o)}{height_ratio(d)}{height_ratio(u)}'
                     else:
-                        loss_weight['_direc'] = loss_weight['_undirect_orient'] = 0
-                        loss_str += f'S{height_ratio(r)}'
+                        mute += ['_direc', '_udirec_strength', 'shuffled__direc', 'sudirec_strength']
+                        loss_str += f'S{height_ratio(o)}'
 
                 data = specs['data']
                 data = data['tiger' if 'tiger' in data else 'dptb']
-                if data['shuffle_swap'] is None:
-                    loss_weight['shuffled'] = 0
+                if data['ply_shuffle'] is None:
+                    mute += ['shuffled_joint', 'shuffled_orient']
                 else:
-                    loss_weight['shuffled'] = s = trial.suggest_float('shuffled', 0.0, 1.0)
-                    loss_str += f'X{height_ratio(s)}'
-                
+                    loss_weight['shuffled_joint']  = sj = trial.suggest_float('shuffled_joint',  0.0, 1.0)
+                    loss_weight['shuffled_orient'] = so = trial.suggest_float('shuffled_orient', 0.0, 1.0)
+                    loss_str += f'X{height_ratio(sj)}{height_ratio(so)}'
+
+                for mute in mute:
+                    loss_weight[mute] = 0
                 involve_head = data['binarization']['head'] > 0
                 E_ORIF = E_ORIF5_HEAD if involve_head else E_ORIF5
                 binarization = np.array([trial.suggest_loguniform(x, 1e-6, 1e3) for x in E_ORIF])
