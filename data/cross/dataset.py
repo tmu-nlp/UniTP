@@ -1,16 +1,21 @@
 from data.backend import LengthOrderedDataset, np, torch, token_first
 from utils.file_io import read_data
 from utils.shell_io import byte_style
+from utils.str_ops import height_ratio
 from tqdm import tqdm
 from data.delta import E_XDIM
-from data.cross.binary import unzip_xlogit, targets, unzip_swaps
+from data.cross.binary import unzip_xlogit, targets, disco_tree, TreeKeeper
+from data.cross.binary import unzip_and_double_swaps_p1, double_swaps_p1
 from data.trapezoid import trapezoid_to_layers
 from itertools import zip_longest
-from utils.types import O_HEAD, S_EXH
+from utils.types import O_HEAD, S_EXH, F_RAND_CON, F_RAND_CON_SUB, F_RAND_CON_MSB, beta_tuple
 
-fields = 'token', 'tag'
+simple_fields = 'token', 'tag'
 
-class StaticCrossDataset(LengthOrderedDataset):
+beta_string = lambda beta: f'Beta({", ".join(f"{x:.2e}" for x in beta)})'
+subs_string = lambda x, y: f'sub({x * 100:.0f}%)  msb({y * 100:.0f}%)'
+
+class BinaryDataset(LengthOrderedDataset):
     def __init__(self,
                  dir_join,
                  prefix,
@@ -36,12 +41,20 @@ class StaticCrossDataset(LengthOrderedDataset):
                     field_v2is.pop('tag')
                     field_v2is.pop('label')
                 field_v2is['xtype'] = (len(E_XDIM), int)
-
+        sub_ratio = factors.pop(F_RAND_CON_SUB, 0)
+        self._more_sub = factors.pop(F_RAND_CON_MSB, 0)
+        if fully_randomize := factors.pop(F_RAND_CON, False):
+            factors = {O_HEAD: 1}
+            _, w2i = field_v2is['token']
+            _, t2i = field_v2is['tag']
+            _, l2i = field_v2is['label']
+            v2is = w2i, t2i, l2i
         field_v2is = token_first(field_v2is)
+
         num_fields_left = -1
         field_names = []
         for f, _ in field_v2is:
-            if f in fields:
+            if f in simple_fields:
                 field_names.append(f)
                 num_fields_left += 1
             else:
@@ -49,17 +62,24 @@ class StaticCrossDataset(LengthOrderedDataset):
                 field_names.append(f + f'({num_factors})')
                 num_fields_left += num_factors
 
+        from utils.str_ops import StringProgressBar
+        sbar = StringProgressBar(field_names, ', ')
         tqdm_prefix = f"Load {prefix.title().ljust(5, '-')}Set: "
-        with tqdm(desc = tqdm_prefix + ', '.join(field_names)) as qbar:
+        with tqdm(desc = tqdm_prefix + str(sbar)) as qbar:
             for field, v2i in field_v2is:
-                qbar.desc = tqdm_prefix + f'\033[32m' + ', '.join((f + '\033[m') if f.startswith(field) else f for f in field_names)
-                if field in fields: # token /tag / ftag / finc
+                if fully_randomize and field != 'xtype':
+                    v2i = None
+                if field in simple_fields: # token /tag / ftag / finc
                     if field == 'token':
                         column, lengths, text = read_data(dir_join(f'{prefix}.word'), v2i, True)
-                        qbar.total = num_fields_left * len(lengths)
+                        num_samples = len(lengths)
+                        sbar.update(2, total = num_factors * num_samples)
+                        sbar.update(3, total = num_factors * num_samples)
+                        qbar.total = num_fields_left * num_samples
                     else:
                         column = read_data(dir_join(f'{prefix}.{field}'), v2i, qbar = qbar)
                     columns[field] = column
+                    qbar.desc = tqdm_prefix + str(sbar.update(field, 1.0))
                 else:
                     for factor in factors:
                         if factor not in factored_indices:
@@ -68,16 +88,17 @@ class StaticCrossDataset(LengthOrderedDataset):
                         flatten = read_data(dir_join(f'{prefix}.{field}.{factor}'), v2i)
                         if field == 'label':
                             column = []
-                            for layer, sizes in zip(flatten, factored_indices[factor]):
-                                column.append(trapezoid_to_layers(layer, sizes, sizes, big_endian = False))
+                            for line, sizes in zip(flatten, factored_indices[factor]):
+                                column.append(trapezoid_to_layers(line, sizes, sizes, big_endian = False))
                                 qbar.update(1)
+                                qbar.desc = tqdm_prefix + str(sbar.update(2))
                             columns[(field, factor)] = column
                         elif field == 'xtype':
                             c_joint, c_right, c_direc = [], [], []
                             if train_indexing_cnn:
                                 c_target = []
-                            for layer, sizes in zip(flatten, factored_indices[factor]):
-                                lr, lj, ld = unzip_xlogit(sizes, layer)
+                            for line, sizes in zip(flatten, factored_indices[factor]):
+                                lr, lj, ld = unzip_xlogit(sizes, line)
                                 c_right.append(lr)
                                 c_joint.append(lj)
                                 if train_indexing_cnn:
@@ -88,6 +109,7 @@ class StaticCrossDataset(LengthOrderedDataset):
                                 else:
                                     c_direc.append(ld)
                                 qbar.update(1)
+                                qbar.desc = tqdm_prefix + str(sbar.update(3))
                             columns[('right', factor)] = c_right
                             columns[('joint', factor)] = c_joint
                             if train_indexing_cnn:
@@ -102,8 +124,8 @@ class StaticCrossDataset(LengthOrderedDataset):
                 for lid, gap in enumerate(fr):
                     if int(gap) < min_gap:
                         lengths[lid] = 0
-            assert len(lengths) == lid + 1
-        assert all(len(lengths) == len(col) for col in columns.values())
+            assert num_samples == lid + 1
+        assert all(num_samples == len(col) for col in columns.values())
 
         for factor, column in factored_indices.items():
             columns[('seq_len', factor)] = column
@@ -114,41 +136,94 @@ class StaticCrossDataset(LengthOrderedDataset):
             heads = 'token', 'tag', 'seq_len', 'label', 'right', 'direc', 'joint'
         if extra_text_helper:
             extra_text_helper = extra_text_helper(text, device, c2i)
-        super().__init__(heads, lengths, factors, min_len, max_len, extra_text_helper)
-
-        self._swap = {}
-        if ply_shuffle:
-            for factor in factors:
-                swap = []
-                with open(dir_join(f'{prefix}.swap.{factor}')) as fr:
-                    for line in fr:
-                        swap.append(line)
-                self._swap[factor] = swap
-                assert len(lengths) == len(swap)
         self._swap_cache = None
         self._except_head = ply_shuffle == S_EXH
-
+        if fully_randomize:
+            fields = simple_fields + tuple((x, O_HEAD) for x in ('label', 'right', 'joint', 'direc'))
+            keepers = []
+            if isinstance(fully_randomize, tuple):
+                func = beta_string(fully_randomize)
+            else:
+                func = 'Uniform'
+            desc = f'Convert {prefix.title()}Set to {num_samples} dynamic TreeKeepers w/'
+            desc += ' ' if ply_shuffle else 'o '
+            desc += 'ply shuffle.'
+            print(byte_style(func, 6), '|', byte_style(subs_string(sub_ratio, self._more_sub), 3))
+            with StringProgressBar(desc).update(total = num_samples) as sbar:
+                for i in range(num_samples):
+                    btm, tpd, err = disco_tree(*(columns[x][i] for x in fields))
+                    keepers.append(TreeKeeper(btm, tpd, v2is))
+                    sbar.update()
+                    assert err is None
+            columns = keepers
+            if 0 < sub_ratio < 1:
+                factors = {False: 1 - sub_ratio, True: sub_ratio}
+            else:
+                factors = sub_ratio == 1
+            self._swap = ply_shuffle
+            self._beta = fully_randomize
+        else:
+            self._swap = {}
+            if ply_shuffle:
+                for factor in factors:
+                    swap = []
+                    with open(dir_join(f'{prefix}.swap.{factor}')) as fr:
+                        for line in fr:
+                            swap.append(line)
+                    self._swap[factor] = swap
+                    assert num_samples == len(swap)
+            
+        super().__init__(heads, lengths, factors, min_len, max_len, extra_text_helper)
         self._columns = columns
         self._device = device
 
+    def reset_factors(self, factors):
+        if factors.get(F_RAND_CON):
+            self._more_sub = msb = factors[F_RAND_CON_MSB]
+            self._beta = beta = factors[F_RAND_CON]
+            sub_ratio = factors[F_RAND_CON_SUB]
+            print(byte_style(beta_string(beta), 6), '|', byte_style(subs_string(sub_ratio, msb), 3))
+            if 0 < sub_ratio < 1:
+                factors = {False: 1 - sub_ratio, True: sub_ratio}
+            else:
+                factors = sub_ratio == 1
+        self._reset_factors(factors)
+
+    def __cache_swap(self, *swap):
+        if self._swap_cache is None:
+            self._swap_cache = [swap]
+        else:
+            self._swap_cache.append(swap)
+
     def at_idx(self, idx, factor, length, helper_outputs):
-        sample = {}
+        sample = dict(length = length)
+        if not isinstance(factor, str):
+            tk = self._columns[idx]
+            if isinstance(self._beta, tuple):
+                alpha, beta = self._beta
+                rho = np.random.beta(alpha, beta)
+            else:
+                rho = F_RANDOM
+            sample['token'], sample['tag'] = tk.word_tag
+            (label, sample['right'], sample['joint'], sample['direc'],
+             swap) = tk.stratify(rho, factor, self._more_sub)
+            sample['label'] = label
+            sample['seq_len'] = [len(x) for x in label]
+            if self._swap:
+                self.__cache_swap(factor, double_swaps_p1(swap))
+            return sample
         for field, column in self._columns.items():
             if isinstance(field, tuple) and field[1] == factor:
                 sample[field[0]] = column[idx]
             else:
                 sample[field]    = column[idx]
-        sample['length'] = length
 
         if self._swap:
             swap = self._swap[factor][idx]
             if isinstance(swap, str):
-                swap = unzip_swaps(swap, 1)
+                swap = unzip_and_double_swaps_p1(swap)
                 self._swap[factor][idx] = swap # update cache
-            if self._swap_cache is None:
-                self._swap_cache = [(factor, swap)]
-            else:
-                self._swap_cache.append((factor, swap))
+            self.__cache_swap(factor, swap)
         return sample
 
     def _collate_fn(self, batch):
@@ -162,7 +237,7 @@ class StaticCrossDataset(LengthOrderedDataset):
                 lengths = np.asarray(column, np.int32)
                 max_len = np.max(lengths) + pad_len # <nil>s as BOS
                 tensor = lengths
-            elif field in fields: # token or tags
+            elif field in simple_fields: # token or tags
                 tensor = np.zeros([batch_size, max_len], np.int32)
                 for i, (values, length) in enumerate(zip(column, lengths)):
                     tensor[i, pad_len: pad_len + length] = values
@@ -240,8 +315,8 @@ class StaticCrossDataset(LengthOrderedDataset):
 
 from data.io import sorting_order, sort_by_order
 from data.multib.dataset import fill_layers
-from data.cross.multib import F_RANDOM, total_fence, continuous_fence
-class DynamicCrossDataset(LengthOrderedDataset):
+from data.cross.multib import total_fence, continuous_fence, F_RANDOM
+class MultibDataset(LengthOrderedDataset):
     def __init__(self,
                  tree_keepers,
                  device,

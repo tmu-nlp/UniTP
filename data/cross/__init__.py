@@ -355,7 +355,7 @@ def draw_str_lines(bottom, top_down, *,
                    sort_fn = None,
                    ftag_fn = None,
                    label_fn = label_only,
-                   wrap_len = 1):
+                   wrap_len = 2):
     symbols, stroke_fn = style_fn(reverse)
     word_line, tag_line, bottom_up, jobs, cursors = draw_bottom(bottom, top_down, wrap_len)
     has_ma = any(len(p) > 1 for p in bottom_up.values())
@@ -379,6 +379,40 @@ def remove_repeated_unary(top_down, nid = 0):
         if len(children) == 1 and cid in top_down and top_down[nid].label == top_down[cid].label:
             ftag = children.pop(cid)
             top_down[nid] = top_down.pop(cid)
+
+from random import random
+def _more_sub(nid, td, rate, new_top_down, sub_prefix, nts):
+    if len(td.children) > 2:
+        td_in, td_out = {}, {}
+        for cid, val in td.children.items():
+            if random() < rate:
+                td_in[cid] = val
+            else:
+                td_out[cid] = val
+        if len(td_in) < 2 or not td_out:
+            new_top_down[nid] = td
+        else:
+            nts -= 1
+            label = td.label
+            new_top_down[nid] = TopDown(label, td_out)
+            new_nid = nts
+            td_out[new_nid] = None
+            if label[0] != sub_prefix:
+                label = sub_prefix + label
+            new_top_down[new_nid] = td = TopDown(label, td_in)
+            if len(td_in) > 2:
+                nts = _more_sub(new_nid, td, rate, new_top_down, sub_prefix, nts)
+    else:
+        new_top_down[nid] = td
+    return nts
+
+def new_more_sub(top_down, bottom_unary, rate, sub_prefix = '_'):
+    new_top_down = {}
+    if nts := top_down.keys() | bottom_unary.keys():
+        nts = min(nts)
+    for nid, td in top_down.items():
+        nts = _more_sub(nid, td, rate, new_top_down, sub_prefix, nts)
+    return new_top_down
 
 
 class BaseTreeKeeper:

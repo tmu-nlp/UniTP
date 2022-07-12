@@ -49,22 +49,23 @@ def count_lines(fname, count_sep = False, sep = b'\n', buffer_size = 1 << 24):
     return count
 
 def read_data(fname, v2i, lengths_and_lines = False, qbar = None):
-    byte = 1
-    v_size, v2i = v2i
-    v_size >>= 8
-    while v_size:
-        byte += 1
+    if v2i:
+        byte = 1
+        v_size, v2i = v2i
         v_size >>= 8
-    if byte == 1:
-        byte = 'B'
-    elif byte == 2:
-        byte = 'H'
-    elif byte <= 4:
-        byte = 'L'
-    elif byte <= 8:
-        byte = 'Q'
-    else:
-        raise ValueError(f'Too long: {v_size}')
+        while v_size:
+            byte += 1
+            v_size >>= 8
+        if byte == 1:
+            byte = 'B'
+        elif byte == 2:
+            byte = 'H'
+        elif byte <= 4:
+            byte = 'L'
+        elif byte <= 8:
+            byte = 'Q'
+        else:
+            raise ValueError(f'Too long: {v_size}')
     values = []
     if lengths_and_lines:
         lengths = []
@@ -94,29 +95,37 @@ def copy_with_prefix_and_rename(path_prefix, dst_path, new_prefix):
         if mf.startswith(f_prefix):
             copy(join(src_path, mf), join(dst_path, f'{new_prefix + mf[len(f_prefix):]}'))
 
-def encoding_to_utf8(in_fmt, in_file, out_file):
+def transcode(in_file, out_file, enc, dec = 'utf-8'):
     with open(in_file, 'rb') as fr, open(out_file, 'wb') as fw:
          for line in fr:
-             fw.write(line.decode(in_fmt).encode('utf-8'))
+             fw.write(line.decode(enc).encode(dec))
 
-import signal
-import logging
+from signal import signal, SIGINT
+from traceback import print_stack
+from collections import defaultdict
+from sys import stderr
 
-class DelayedKeyboardInterrupt(object):
-    def __init__(self, ignore = False):
+class DelayedKeyboardInterrupt:
+    def __init__(self, ignore = True, file = stderr):
         self._ignore = ignore
+        self._file = file
 
     def __enter__(self):
-        self.signal_received = False
-        self.old_handler = signal.signal(signal.SIGINT, self.handler)
+        self.received_signals = defaultdict(lambda:defaultdict(int))
+        self.old_handler = signal(SIGINT, self.handler)
+
+    def __exit__(self, exception_type, exception_value, traceback):
+        # swap back with the old handler
+        signal(SIGINT, self.old_handler)
+        for sig, frames in self.received_signals.items():
+            sig = f'SIG#{sig} with {sum(frames.values())} '
+            sig += 'recieval(s) from stack frame(s):'
+            print(sig, file = self._file)
+            for frame in frames:
+                print_stack(frame, file = self._file)
 
     def handler(self, sig, frame):
         if self._ignore:
             return
-        self.signal_received = (sig, frame)
-        logging.debug('SIGINT received. Delaying KeyboardInterrupt.')
-
-    def __exit__(self, type, value, traceback):
-        signal.signal(signal.SIGINT, self.old_handler)
-        if self.signal_received:
-            self.old_handler(*self.signal_received)
+        self.received_signals[sig][frame] += 1
+        print('SIGINT (KeyboardInterrupt) received and delayed.', file = self._file)

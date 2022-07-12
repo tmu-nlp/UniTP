@@ -3,7 +3,7 @@ from utils.operator import Operator
 from utils.param_ops import get_sole_key
 from time import time
 from utils.math_ops import is_bin_times #, f_score
-from utils.types import M_TRAIN, BaseType, frac_open_0, frac_06, frac_close, tune_epoch_type
+from utils.types import M_TRAIN, BaseType, frac_open_0, frac_06, frac_close, tune_epoch_type, beta_tuple
 from models.utils import PCA, fraction
 from experiments.helper import WarmOptimHelper
 from data.cross.evalb_lcfrs import DiscoEvalb, ExportWriter, read_param
@@ -261,7 +261,7 @@ class DiscoOperator(Operator):
         
     def _get_optuna_fn(self, train_params):
         import numpy as np
-        from utils.types import E_ORIF5_HEAD, E_ORIF5, O_HEAD
+        from utils.types import E_ORIF5_HEAD, E_ORIF5, O_HEAD, F_RAND_CON, F_RAND_CON_SUB, F_RAND_CON_MSB
         from utils.train_ops import train, get_optuna_params
         from utils.str_ops import height_ratio
 
@@ -276,42 +276,58 @@ class DiscoOperator(Operator):
                 loss_weight['orient'] = o = trial.suggest_float('orient', 0.0, 1.0)
                 loss_str = f'L={height_ratio(t)}{height_ratio(l)}{height_ratio(j)}'
                 mute = []
-                if self._model.orient_bits == 3:
-                    mute += ['_direc', '_udirec_strength']
+                if (orient_bits := self._model.orient_bits) == 3:
+                    mute += '_direc', '_udirec_strength'
                     loss_weight['_direc'] = loss_weight['_udirec_strength'] = 0.0
                     loss_str += f'T{height_ratio(o)}'
+                elif orient_bits == 2:
+                    loss_weight['_direc'] = d = trial.suggest_float('_direc', 0.0, 1.0)
+                    loss_weight['_udirec_strength'] = u = trial.suggest_float('_udirec_strength', 0.0, 1.0)
+                    loss_str += f'D{height_ratio(o)}{height_ratio(d)}{height_ratio(u)}'
                 else:
-                    if self._model.orient_bits == 2:
-                        loss_weight['_direc'] = d = trial.suggest_float('_direc', 0.0, 1.0)
-                        loss_weight['_udirec_strength'] = u = trial.suggest_float('_udirec_strength', 0.0, 1.0)
-                        loss_str += f'D{height_ratio(o)}{height_ratio(d)}{height_ratio(u)}'
-                    else:
-                        mute += ['_direc', '_udirec_strength', 'shuffled__direc', 'sudirec_strength']
-                        loss_str += f'S{height_ratio(o)}'
+                    mute += '_direc', 'shuffled__direc', '_udirec_strength'
+                    loss_str += f'S{height_ratio(o)}'
 
                 data = specs['data']
                 data = data['tiger' if 'tiger' in data else 'dptb']
                 if data['ply_shuffle'] is None:
-                    mute += ['shuffled_joint', 'shuffled_orient']
+                    mute += 'shuffled_joint', 'shuffled_orient', 'shuffled__direc', 'sudirec_strength'
                 else:
                     loss_weight['shuffled_joint']  = sj = trial.suggest_float('shuffled_joint',  0.0, 1.0)
                     loss_weight['shuffled_orient'] = so = trial.suggest_float('shuffled_orient', 0.0, 1.0)
                     loss_str += f'X{height_ratio(sj)}{height_ratio(so)}'
+                    if orient_bits == 2:
+                        loss_weight['shuffled__direc']  = sd = trial.suggest_float('shuffled__direc',  0.0, 1.0)
+                        loss_weight['sudirec_strength'] = su = trial.suggest_float('sudirec_strength', 0.0, 1.0)
+                        loss_str += height_ratio(sd) + height_ratio(su)
+                    else:
+                        mute += 'shuffled__direc', 'sudirec_strength'
 
-                for mute in mute:
+                for mute in set(mute):
                     loss_weight[mute] = 0
-                involve_head = data['binarization']['head'] > 0
-                E_ORIF = E_ORIF5_HEAD if involve_head else E_ORIF5
-                binarization = np.array([trial.suggest_loguniform(x, 1e-6, 1e3) for x in E_ORIF])
-                binarization /= np.sum(binarization)
-                bz = {k:float(v) for k, v in zip(E_ORIF, binarization)}
-                if not involve_head: bz[O_HEAD] = 0
-                data['binarization'] = bz
+
+                binarization = data['binarization']
+                if binarization[F_RAND_CON]:
+                    beta_0 = trial.suggest_loguniform('beta_0', 1e-3, 1e3) # even around 1e0!
+                    beta_1 = trial.suggest_loguniform('beta_1', 1e-3, 1e3)
+                    binarization[F_RAND_CON_SUB] = sub = trial.suggest_float('sub', 0.0, 1.0)
+                    binarization[F_RAND_CON_MSB] = msb = trial.suggest_float('msb', 0.0, 1.0)
+                    binarization[F_RAND_CON] = f'{beta_0}, {beta_1}'
+                    bz = {F_RAND_CON: (beta_0, beta_1), F_RAND_CON_SUB: sub, F_RAND_CON_MSB: msb}
+                    bin_str = f'bin=β{beta_0:.1e},{beta_1:.1e}' + height_ratio(sub) + height_ratio(msb)
+                else:
+                    involve_head = binarization['head'] > 0
+                    E_ORIF = E_ORIF5_HEAD if involve_head else E_ORIF5
+                    binarization = np.array([trial.suggest_loguniform(x, 1e-6, 1e3) for x in E_ORIF])
+                    binarization /= np.sum(binarization)
+                    bin_str = 'bin=' + ''.join(height_ratio(x) for x in binarization)
+                    bz = {k:float(v) for k, v in zip(E_ORIF, binarization)}
+                    if not involve_head: bz[O_HEAD] = 0
+                    data['binarization'] = bz
                 lr = specs['train']['learning_rate']
                 specs['train']['learning_rate'] = lr = trial.suggest_loguniform('learning_rate', 1e-6, lr)
                 self._train_config._nested.update(specs['train'])
                 self._train_materials = bz, self._train_materials[1] # for train/train_initials(max_epoch>0)
-                bin_str = 'bin=' + ''.join(height_ratio(x) for x in binarization)
                 return bin_str + ';' + loss_str + f';lr={lr:.1e}'
 
             self._mode_trees = [], [] # force init

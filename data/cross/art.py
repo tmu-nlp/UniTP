@@ -66,6 +66,11 @@ def style_2(reverse):
     S_CROSS  = '┼'
     return Symbol(D_BAR, T_LEFT, T_MIDDLE, T_RIGHT, D_COMB, S_CROSS), static_stroke
 
+def lcenter(text, num):
+    if num - len(text) < 2:
+        return text.ljust(num)
+    return text.center(num)
+
 def draw_bottom(bottom, top_down, wrap_len):
     bottom_up = defaultdict(dict)
     for pid, td in top_down.items():
@@ -75,12 +80,11 @@ def draw_bottom(bottom, top_down, wrap_len):
     tag_line  = ''
     cursors = {}
     jobs = defaultdict(dict)
-    wl = wrap_len << 1
     for eid, (bid, word, tag) in enumerate(bottom):
         num_wide_chars = count_wide_east_asian(word)
-        unit_len = max(len(word) + num_wide_chars, len(tag)) + wl
-        word_line += word.center(unit_len - num_wide_chars)
-        tag_line  +=  tag.center(unit_len)
+        unit_len = max(len(word) + num_wide_chars, len(tag)) + wrap_len
+        word_line += lcenter(word, unit_len - num_wide_chars)
+        tag_line  += lcenter(tag,  unit_len)
         bit    = 1 << eid
         cursor = len(tag_line) - round(unit_len // 2)
         cursors[cursor] = is_ma = len(parents := bottom_up[bid]) > 1

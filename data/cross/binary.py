@@ -1,5 +1,6 @@
 from random import random, randint
-from data.cross import TopDown, draw_str_lines, _pre_proc, gap_degree, _new_dep, BaseTreeKeeper, _dep_combine, _dep_on
+from data.cross import TopDown, draw_str_lines, _pre_proc, gap_degree, _new_dep, _dep_combine, _dep_on
+from data.cross import BaseTreeKeeper, new_more_sub
 from data.cross.tiger import read_tree as read_tiger
 from data.cross.dptb import read_tree as read_dptb
 
@@ -348,8 +349,9 @@ def validate_disco(word, tag, cnf_layers, lines):
             print('\n'.join(cnf_lines))
             breakpoint()
 
+
 class TreeKeeper(BaseTreeKeeper):
-    def stratify(self, factor = F_RANDOM, balancing_sub = False):
+    def stratify(self, factor = F_RANDOM, balancing_sub = False, more_sub = 0):
         bottom, node2tag, bottom_unary, top_down, l2i, dep, vf = self._materials
         if factor != F_DEP:
             dep = None
@@ -359,7 +361,10 @@ class TreeKeeper(BaseTreeKeeper):
             if self._balanced_top_down is None:
                 self._balanced_top_down = add_efficient_subs(top_down, bottom_unary)
             top_down = self._balanced_top_down
-        return cross_signals(bottom, node2tag, bottom_unary, deepcopy(top_down), factor, dep, l2i = l2i)
+        top_down = deepcopy(top_down)
+        if more_sub:
+            top_down = new_more_sub(top_down, bottom_unary, more_sub)
+        return cross_signals(bottom, node2tag, bottom_unary, top_down, factor, dep, l2i = l2i)
 
     def __str__(self):
         lines = ''
@@ -399,7 +404,7 @@ def targets(right_layer, joint_layer):
                     targets[r0id + 2] += 1
     return targets
 
-from data.cross import E_SHP, E_CMB, defaultdict, _combine, bottom_trees
+from data.cross import E_SHP, E_CMB, _combine, bottom_trees
 def disco_tree(word, bottom_tag, 
                layers_of_label,
                layers_of_right,
@@ -524,34 +529,32 @@ def zip_to_logit(layers_of_label, layers_of_right, layers_of_joint, layers_of_di
         xtypes.extend(xlogit_gen(ll, lr, ld, lj, cj, nj))
     return cindex, labels, xtypes
 
-def zip_swaps(lsp):
-    swapbl = ''
-    num_layers = len(lsp)
-    for lid, group_layer in enumerate(lsp):
-        num_groups = len(group_layer)
-        for gid, group in enumerate(group_layer):
-            if gid == num_groups - 1:
-                if lid == num_layers - 1:
-                    swapbl += ','.join(str(x) for x in group)
-                else:
-                    swapbl += ','.join(str(x) for x in group) + '|'
-            else:
-                swapbl += ','.join(str(x) for x in group) + ';'
-    return swapbl
+from utils.str_ops import zip_to_str, unzip_from_str
+def zip_group(group):
+    return zip_to_str(group, ',', str)
+def zip_layer(layer):
+    return zip_to_str(layer, ';', zip_group)
+def zip_swaps(layers):
+    return zip_to_str(layers, '|', zip_layer)
 
-def unzip_swaps(swapbl, offset = 0):
-    lsp = []
-    for layer in swapbl.split('|'):
-        groups = []
-        for group in layer.split(';'):
-            group_idx = array([int(x) + offset for x in group.split(',')])
-            group_ctn = array(group_idx)
-            groups.append((group_idx, group_ctn))
-        lsp.append(tuple(groups))
-    return lsp
+from numpy import asarray, fromiter
+def unzip_group(group):
+    return fromiter((int(i) for i in group.split(',')), int)
+unzip_swaps = lambda layers: unzip_from_str(layers, '|', tuple, ';', tuple, unzip_group)
+def unzip_group_and_double(group):
+    origin = fromiter((int(i) for i in group.split(',')), int) + 1
+    return origin, origin.copy()
+unzip_and_double_swaps_p1 = lambda layers: unzip_from_str(layers, '|', tuple, ';', tuple, unzip_group_and_double)
+
+def double_asarray(group):
+    origin = asarray(group) + 1
+    return origin, origin.copy()
+def double_layer(layer):
+    return tuple(double_asarray(group) for group in layer)
+def double_swaps_p1(layers):
+    return tuple(double_layer(layer) for layer in layers)
 
 from data.trapezoid import trapezoid_to_layers
-from numpy import asarray, array
 from data.delta import get_rgt, get_jnt, get_dir
 def unzip_xlogit(cindex, xtypes): #, the_joints, the_labels):
     xtypes = asarray(xtypes)

@@ -9,7 +9,7 @@ build_params = {C_DPTB: split_dict(   '2-21',          '22',          '23'),
 ft_bin = {C_DPTB: 'en', C_TGR: 'de'}
 call_fasttext = make_call_fasttext(ft_bin)
 
-from utils.types import false_type, true_type, binarization_5_head, NIL, ply_shuffle, frac_close_0, frac_close_1
+from utils.types import false_type, true_type, binarization_5_head, NIL, ply_shuffle, frac_close_0, frac_close_1, frac_25
 from utils.types import train_batch_size, train_max_len, train_bucket_len, vocab_size, tune_epoch_type, inter_height_2d
 dccp_data_config = dict(vocab_size     = vocab_size,
                         binarization   = binarization_5_head,
@@ -23,7 +23,7 @@ dccp_data_config = dict(vocab_size     = vocab_size,
 
 from data.cross.multib import F_CON, F_RANDOM, F_LEFT, F_RIGHT, F_DEP
 medium_factor = dict(balanced = frac_close_0,
-                     more_sub = frac_close_0,
+                     more_sub = frac_25,
                      others = {F_RANDOM: frac_close_1,
                                F_LEFT: frac_close_0,
                                F_RIGHT: frac_close_0,

@@ -48,7 +48,7 @@ class BaseType:
             if default_set is None: # uncountable value | default_val can be an exception
                 assert not as_index
                 if as_exception: # [0, 1) or None
-                    self._valid = lambda x: validator(x) or x == default_val
+                    self._valid = lambda x: x == default_val or validator(x)
                 else: # [0, 1] at 0.2
                     assert validator(default_val)
                     self._valid = validator
@@ -111,6 +111,7 @@ frac_3         = BaseType(0.3, validator = frac_open_1)
 frac_4         = BaseType(0.4, validator = frac_open_1)
 frac_5         = BaseType(0.5, validator = frac_open_1)
 frac_7         = BaseType(0.7, validator = frac_open_1)
+frac_25        = BaseType(0.25, validator = frac_open_1)
 frac_06        = BaseType(0.06, validator = frac_open_1)
 rate_5         = BaseType(0.5, validator = frac_close)
 distance_type  = BaseType(3.1, validator = lambda d: d > 0)
@@ -170,6 +171,17 @@ E_FACTOR = F_RANDOM, F_LEFT, F_RIGHT, F_DEP, F_CON
 import os
 num_threads = (os.cpu_count() - 2) if os.cpu_count() > 2 else 1
 
+def seg_type(seg_str, typ):
+    for seg in seg_str.split(','):
+        yield typ(seg)
+
+def beta_tuple(seg_str):
+    try:
+        alpha, beta = (seg_type(seg_str, float))
+    except:
+        return
+    return alpha, beta
+
 frac_00 = BaseType(0.0, frac_close)
 frac_85 = BaseType(0.85, frac_close)
 frac_15 = BaseType(0.15, frac_close)
@@ -181,5 +193,11 @@ frac_close_0 = BaseType(0.0, frac_close)
 frac_close_2 = BaseType(0.2, frac_close)
 frac_close_1 = BaseType(1.0, frac_close)
 binarization_5_head = {o: frac_close_0 if o == O_HEAD else frac_close_2 for o in E_ORIF5_HEAD}
+F_RAND_CON = F_CON + '_' + F_RANDOM
+F_RAND_CON_SUB = F_RAND_CON + '_balanced'
+F_RAND_CON_MSB = F_RAND_CON + '_more_sub'
+binarization_5_head[F_RAND_CON] = BaseType(True, beta_tuple, E_FT)
+binarization_5_head[F_RAND_CON_SUB] = rate_5
+binarization_5_head[F_RAND_CON_MSB] = frac_25
 S_ALL, S_EXH = 'all', 'except_head'
 ply_shuffle = BaseType(0, default_set = (None, S_ALL, S_EXH), as_index = True)

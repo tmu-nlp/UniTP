@@ -27,7 +27,7 @@ def mp_workers(works, q, core_fn, num_returns_from_core_fn, desc = None):
                     qbar.update(1)
             qbar.desc = desc + ' done'
         except KeyboardInterrupt as ex:
-            with DelayedKeyboardInterrupt(ignore = True):
+            with DelayedKeyboardInterrupt():
                 for x in works:
                     x.kill()
             raise ex
@@ -101,7 +101,6 @@ class DM:
 
     def batch(self, batch_id, *args): # split a batch for many workers
         q_workers, seg_size, batch_size, fdata, cat_files = self._mp_workers
-        # import pdb; pdb.set_trace()
         rin_q, rout_q, tr = self._q_receiver
         if tr is None:
             tr = TR(rin_q, rout_q, [False for _ in q_workers], fdata, cat_files)

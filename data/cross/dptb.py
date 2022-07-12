@@ -338,19 +338,23 @@ def read_materials(tree, trace_types, *catch_nodes, **wtnt_fns):
 from utils.param_ops import get_sole_key, change_key, shift_key
 def maintain(bottom_info, top_down, root_id, nt_start, get_inode, type_count = None):
     nids = {root_id}
-    bottom_up = {}
     remove_nids = set()
     seen_nids = set()
+    bottom_up = defaultdict(set)
     while nids:
         cids = set()
         for nid in nids:
             if nid < nt_start: # no redundant bids
+                # print('Bottom:', bottom_info[nid], nid)
                 if bottom_info[nid][1] == '-NONE-':
                     remove_nids.add(nid)
             else:
+                # print('TD:', top_down[nid].label, nid)
+                # if top_down[nid].label == 'S':
+                #     breakpoint()
                 if children := top_down[nid].children:
                     for cid in children:
-                        cids.add(cid); bottom_up[cid] = nid
+                        cids.add(cid); bottom_up[cid].add(nid)
                 else:
                     remove_nids.add(nid)
                 seen_nids.add(nid)
@@ -360,13 +364,7 @@ def maintain(bottom_info, top_down, root_id, nt_start, get_inode, type_count = N
             bottom_info.pop(cid)
         else:
             top_down.pop(cid) # maintain
-        pid = bottom_up.pop(cid)
-        top_down[pid].children.pop(cid)
-        while not top_down[pid].children: # empty again
-            top_down.pop(pid)
-            cid = pid
-            pid = bottom_up.pop(cid)
-            top_down[pid].children.pop(cid) # maintain
+        remove_empty_node(top_down, bottom_up, cid)
     for nid in top_down.keys() - seen_nids:
         top_down.pop(nid)
 
@@ -390,6 +388,14 @@ def maintain(bottom_info, top_down, root_id, nt_start, get_inode, type_count = N
             new_type_count[cid] = {(0 if p == root_id else get_inode(p)): t for p, t in pt.items()}
         return bottom, new_top_down, new_type_count
     return bottom, new_top_down
+
+def remove_empty_node(top_down, bottom_up, cid):
+    for pid in bottom_up[cid]:
+        children = top_down[pid].children
+        children.pop(cid)
+        if not children:
+            top_down.pop(pid)
+            remove_empty_node(top_down, bottom_up, pid)
 
 def read_tree(tree, *,
               adjust_fn = fix_for_dptb,

@@ -167,7 +167,7 @@ model_type = dict(fence_layer     = stem_config,
 from models.utils import get_logit_layer
 from models.loss import get_decision, get_decision_with_value, get_loss
 
-class BaseRnnTree(MultiStem):
+class BaseRnnParser(MultiStem):
     def __init__(self,
                  model_dim,
                  num_tags,

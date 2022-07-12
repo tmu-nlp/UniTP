@@ -9,55 +9,92 @@ load_optuna <- function(model_name, corp_name) {
     data <- load_corp(fname, corp_name)
     # data <- subset(data, lr > 10e-6)
     # min_tf <- min(data$tf) + 0.01
-    # data <- subset(data, tf > min_tf)
+    # data <- subset(data, gain > 0)
     data
 }
 
-load_db <- function(model_name, corp_name) {
-    #,lr,tf,df
-    levels <- c('l.tag', 'l.label', 'l.joint', 'l.orient', 'l.shuffle',
-                'b.left','b.midin25', 'b.midin50', 'b.midin75', 'b.right')
+load_db_dis <- function(model_name, corp_name) {
+    levels <- c('tag', 'label', 'joint', 'orient', 'shuffled_joint', 'shuffled_orient', 'left','midin25', 'midin50', 'midin75', 'right')
+    labels <- c('Tag', 'Label', 'Joint\nDB Loss Weights    ', ' Orient ', 'Sff\nJoint', 'Sff\n Orient', '0\n   Left', 0.25, '0.5\nBinarization', 0.75, '1\nRight      ')
     data <- melt(data = load_optuna(model_name, corp_name),
-                 id.vars = c('tf', 'df'),
+                 id.vars = c('dev.tf', 'tf', 'df'),
                  measure.vars = c(levels, 'lr'))
     ns <- subset(data, variable != 'lr')
     ls <- subset(data, variable == 'lr')
-    ns$variable <- factor(ns$variable, levels = levels,
-                          labels = c('Tag', 'Label', 'Joint \nDB Loss Weights', 'Orient ', '  Shuffle', '0\n   Left', 0.25, '0.5\nBinarization', 0.75, '1\nRight      '))
+    ns$variable <- factor(ns$variable, levels = levels, labels = labels)
     ls$variable <- factor(ls$variable, levels = c('lr'), labels = c('\nLearning Rate              '))
     list(ns = ns, ls = ls)
 }
 
-load_dm <- function(model_name, corp_name) {
-    #, 'm.head', 'm.continuous', 'm.left', 'm.right'
-    data <- melt(data = load_optuna(model_name, corp_name),
-                 id.vars = c('tf', 'df'),
-                 #  measure.vars = c('lr'))
-                 measure.vars = c('l.tag', 'l.label', 'l.joint', 'l.disc', 'l.biaff', 'l.neg',
-                                  'm.neg', 'm.sub', 'lr'))#, 'm.left', 'm.random', 'm.right'))
-    ns <- subset(data, variable != 'lr' & variable != 'm.neg')
-    ls <- subset(data, variable == 'lr' | variable == 'm.neg')
-    ns$variable <- factor(ns$variable, levels = c('l.tag', 'l.label', 'l.joint', 'l.disc', 'l.biaff', 'l.neg', 'm.sub'),
-                          labels = c('Tag', 'Label', 'Joint', 'Disc.\nDM Loss Weights', ' Biaff.', 'nBiaff.', '   P.sub'))
-    ls$variable <- factor(ls$variable, levels = c('m.neg', 'lr'), labels = c('P.neg  \nSampling Rates                          ', '\n                  Learning Rate'))
-    list(ns = ns, ls = ls)
+beta_to_data <- function(parameters, n) {
+    gx <- c()
+    gy <- c()
+    gg <- c()
+    gs <- c()
+    gt <- c()
+    for (i in seq_len(nrow(parameters))) {
+        left <- parameters$left[i]
+        right <- parameters$right[i]
+        by <- 1 / n
+        x <- seq(0, 1, by)
+        y <- dbeta(x, left, right)
+        # v <- y != Inf
+        # x <- x[v]
+        # y <- y[v]
+        if (left > 1) {
+            if (right > 1) {
+                t <- 'both'
+            } else {
+                t <- 'left'
+            }
+        } else if (right > 1) {
+            t <- 'right'
+        } else {
+            t <- 'neither'
+        }
+        gx <- c(gx, x)
+        gy <- c(gy, y)
+        gg <- c(gg, rep(i, length(x)))
+        gs <- c(gs, rep(parameters$dev.tf[i], length(x)))
+        gt <- c(gt, rep(t, length(x)))
+    }
+    gg <- factor(gg)
+    gt <- factor(gt)
+    data.frame(x = gx, y = gy, g = gg, tf = gs, gt = gt)
+}
+
+load_db_con <- function(model_name, corp_name) {
+    levels <- c('tag', 'label', 'joint', 'orient', 'shuffled_joint', 'shuffled_orient', 'sub', 'msb')
+    labels <- c('Tag', 'Label', 'Joint\nDB Loss Weights    ', ' Orient ', 'Sff\nJoint', 'Sff\n Orient', '          Subtree\nNCCP', '\nDCCP')
+    data <- load_optuna(model_name, corp_name)
+    beta <- beta_to_data(data, 1000)
+    data <- melt(data = data,
+                 id.vars = c('dev.tf', 'tf', 'df'),
+                 measure.vars = c(levels, 'lr'))
+    ns <- subset(data, variable != 'lr')
+    ls <- subset(data, variable == 'lr')
+    ns$variable <- factor(ns$variable, levels = levels, labels = labels)
+    ls$variable <- factor(ls$variable, levels = c('lr'), labels = c('\nLearning Rate              '))
+    list(ns = ns, ls = ls, beta = beta)
 }
 
 load_dm_ext <- function(model_name, corp_name) {
-    #, 'm.head', 'm.continuous', 'm.left', 'm.right'
     data <- load_optuna(model_name, corp_name)
     data$max_inter_height <- data$max_inter_height / max(data$max_inter_height)
-    data <- melt(data = data, id.vars = c('tf', 'df'),
-                 measure.vars = c('l.tag', 'l.label', 'l.joint', 'l.disc', 'l.biaff', 'l.disco_2d_intra', 'l.disco_2d_inter', 'max_inter_height',
-                                  'r.intra', 'r.inter', 'r.sub', 'r.more_sub', 'lr'))
-    ns <- subset(data, variable != 'lr' & variable != 'r.intra' & variable != 'r.inter')
-    ls <- subset(data, variable == 'lr' | variable == 'r.intra' | variable == 'r.inter')
-    ns$variable <- factor(ns$variable,
-                          levels = c('l.tag', 'l.label', 'l.joint', 'l.disc', 'l.biaff', 'l.disco_2d_intra', 'l.disco_2d_inter', 'max_inter_height', 'r.sub', 'r.more_sub'),
-                          labels = c('Tag', 'Label', 'Joint', 'Disc.\n                    DM Loss Weights (Intra  Inter)', ' Biaff.', 'L\'ba', 'L\'\'ba', 'Xi\n| [0,9]', '   P.sub', 'P.msb'))
-    ls$variable <- factor(ls$variable, levels = c('r.intra', 'r.inter', 'lr'), labels = c('P\'ba         \n|    Sampling Rates                         ',
-                                                                                          'P\'\'ba',
-                                                                                          '|\n                  | Learning Rate'))
+    levels <- c('tag', 'label', 'fence', 'disco_1d', 'disco_2d', 'disco_2d_inter', 'disco_2d_intra', 'max_inter_height', 'sub', 'msb')
+    labels <- c('Tag', 'Label', 'Joint', 'Disc.\nDM Loss Weights', 'D', 'C', 'X', 'Xi\n| [0,9]', 'NCCP\n        Subtree', 'DCCP')
+    log.levels <- c('inter_rate', 'intra_rate', 'lr')
+    data <- melt(data = data,
+                 id.vars = c('dev.tf', 'tf', 'df'),
+                 measure.vars = c(levels, log.levels))
+    ls <- data$variable %in% log.levels
+    ns <- subset(data, !ls)
+    ls <- subset(data, ls)
+    ns$variable <- factor(ns$variable, levels = levels, labels = labels)
+    labels <- c('c\n|    Sampling Rates                         ',
+                'x',
+                '|\n                  | Learning Rate')
+    ls$variable <- factor(ls$variable, levels = log.levels, labels = labels)
     list(ns = ns, ls = ls)
 }
 
@@ -71,10 +108,9 @@ break_fn <- function(x) {
 }
 
 draw <- function(data, gd, lc, hc) {
-    data <- data[order(data$tf), ]
+    data <- data[order(data$dev.tf), ]
 
-
-    p <- ggplot(data, aes(variable, value, color = tf, size = tf))
+    p <- ggplot(data, aes(variable, value, color = dev.tf, size = dev.tf))
     # p <- p + facet_wrap(~coeff, scale = 'free_y')
     p <- p + geom_point(alpha = I(0.618)) #+ geom_violin()
     p <- p + guides(size = gd, color = gd)
@@ -99,7 +135,14 @@ replace_corp_name <- function(x) {
 
 hyperparameter_plot <- function(model_name, corp_name) {
     if (model_name == 'db') {
-        data <- load_db(model_name, corp_name)
+        data <- load_db_con(model_name, corp_name)
+        beta <- data$beta
+        beta <- beta[order(beta$tf), ]
+        p <- ggplot(beta, aes(x, y, group = g, alpha = tf, color = gt))
+        p <- p + geom_line()
+        p <- p + theme(axis.title = element_blank())
+        p
+        ggsave(paste0(folder, paste('bin', model_name, corp_name, 'pdf', sep = '.')), height = 3, width = 5.5)
         ws <- c(5, 1)
         legend.position <- 'left'
         hc <- "tomato"
@@ -159,7 +202,7 @@ score_plot <- function() {
     ggsave(paste0(folder, 'optuna.score.pdf'), height = 4.5, width = 5)
 }
 
-score_plot()
+# score_plot()
 
 get.bin <- function(threshold) {
     if (threshold == 0.5) {
@@ -209,7 +252,7 @@ disco_2d_error_plot <- function() {
     ggsave(paste0(folder, 'biaff.tries.pdf'), height = 1.7, width = 4.5)
 }
 
-disco_2d_error_plot()
+# disco_2d_error_plot()
 
 # diff_dev_test <- function(data) {
 #     p <- ggplot(data, aes(dev.tf, test.tf))

@@ -40,10 +40,31 @@ def gen_trial_model_dev_test_string(fpath):
         dev_model, dev_score = max(dev_specs['results'].items(), key = lambda x: x[1])
         yield Trial(tid, dev_model, dev_score, trial_rt[tid]['key'], trial_string, dev_specs)
 
+def summary_trials(fpath, fname):
+    trials = sorted(gen_trial_model_dev_test_string(fpath),
+                    key = dev_test_fns[0], reverse = True)
+    rank_n = max(len(t.tid) for t in trials) + 1
+    best_by_dev = trials[0]
+    def write(fw, trials):
+        for eid, t in enumerate(trials):
+            fw.write(f'{eid:{rank_n}d}.[{t.test_score:.2f} {t.dev_score:.2f}]  ')
+            fw.write(f'#{t.tid}'.rjust(rank_n) + '.' + t.model + '  ')
+            fw.write(t.spec_string + '\n')
+
+    with open(join(fpath, fname), 'w') as fw:
+        fw.write('Rank [test *dev]  #Trail.best_model  Hyper-parameters\n')
+        write(fw, trials)
+        fw.write('\n\n')
+        fw.write('Rank [*test dev]  #Trail.best_model  Hyper-parameters\n')
+        trials.sort(key = dev_test_fns[1], reverse = True)
+        write(fw, trials)
+    return best_by_dev, trials[0]
+
+
 class Recorder:
     '''A Recorder provides environment for an Operator, created in a Manager, operated by the Operator.'''
     
-    def __init__(self, task_dir, task_module, config_dict_or_instance, instance_name = None, keep_top_k = 4, evalb = None, child_mode = False):
+    def __init__(self, task_dir, get_configs, config_dict_or_instance, instance_name = None, keep_top_k = 4, evalb = None, child_mode = False):
         new_instance = isinstance(config_dict_or_instance, dict)
 
         rt_file, rt_lock = _rt_file_lock(task_dir)
@@ -87,21 +108,20 @@ class Recorder:
             assert isfile(sv_file), f"'{sv_file}' is not found."
 
         self._instance_dir = instance, instance_dir
-        self._initial_rt = rt[instance]
-        self._module     = task_module
+        self._test_metrics = rt[instance]
+        self._get_configs  = get_configs
         self._ckpt_fname = join(instance_dir, 'checkpoint')
         self._model_dir  = create_join(instance_dir, 'models')
         _, self._sv_unlock = load_yaml(sv_file, sv_lock, wait_then_block = True)
         self._rt_file_lock = rt_file, rt_lock
         self._sv_file_lock = sv_file, sv_lock
-        self._key = None
         self._writer = None
         self._keep_top_k = keep_top_k
         self._evalb = evalb
         self.log(datetime.now())
 
     def new_trial_recorder(self, specs_update_fn, trial, fpath):
-        assert self._initial_rt, 'Current version does not allow direct optuna'
+        assert self._test_metrics, 'Current version does not allow direct optuna'
         specs = load_yaml(*self._sv_file_lock, wait = False)
         # specs.pop('optuna', None)
         dev_results    = specs.pop('results')
@@ -109,7 +129,7 @@ class Recorder:
         best_score     = dev_results.pop(best_model)
         specs['results'] = {best_model: best_score}
         trial_name     = specs_update_fn(specs, trial)
-        child_recorder = Recorder(fpath, self._module, specs, trial_name, 3, self._evalb, True)
+        child_recorder = Recorder(fpath, self._get_configs, specs, trial_name, 3, self._evalb, True)
         link(join(self._model_dir, best_model), join(child_recorder._model_dir, best_model))
         _, child_dir   = child_recorder._instance_dir
         child_dir = basename(child_dir)
@@ -117,32 +137,11 @@ class Recorder:
         trial.set_user_attr('dir', child_dir)
         self.log(f'⌙→ Trial [{child_dir}] on best model {best_model}')
         return child_recorder
-
-    def summary_trials(self, fname = 'rank.txt', fpath = 'trials'): # should only be a super_recorder
-        assert callable(self._sv_unlock), 'Not main recorder?'
-        fpath = join(self._instance_dir[1], fpath)
         
-        trials = sorted(gen_trial_model_dev_test_string(fpath),
-                        key = dev_test_fns[0], reverse = True)
-        rank_n = max(len(t.tid) for t in trials) + 1
-        def write(fw, trials):
-            for eid, t in enumerate(trials):
-                fw.write(f'{eid:{rank_n}d}.[{t.test_score:.2f} {t.dev_score:.2f}]  ')
-                fw.write(f'#{t.tid}'.rjust(rank_n) + '.' + t.model + '  ')
-                fw.write(t.spec_string + '\n')
-
-        with open(join(fpath, fname), 'w') as fw:
-            fw.write('Rank [test *dev]  #Trail.best_model  Hyper-parameters\n')
-            write(fw, trials)
-            fw.write('\n\n')
-            fw.write('Rank [*test dev]  #Trail.best_model  Hyper-parameters\n')
-            trials.sort(key = dev_test_fns[1], reverse = True)
-            write(fw, trials)
-        return self._initial_rt
-
-    def best_trial(self, fpath = 'trials', by_test_score = False):
+    def best_trial(self, fpath = 'trials', fname = 'rank.txt', by_test_score = False):
+        assert callable(self._sv_unlock), 'Not main recorder?'
         if isdir(fpath := join(self._instance_dir[1], fpath)):
-            return max(gen_trial_model_dev_test_string(fpath), key = dev_test_fns[by_test_score])
+            return summary_trials(fpath, fname)[by_test_score]
 
     def detach(self):
         if callable(self._sv_unlock):
@@ -203,7 +202,7 @@ class Recorder:
     def task_specs(self): # TODO if not training set trainset & develset to {}
         from utils.param_ops import HParams
         specs = load_yaml(*self._sv_file_lock, wait = False)
-        _, model_type, train_type = self._module.get_configs()
+        _, model_type, train_type = self._get_configs()
         model_config = get_obj_from_config(model_type, specs['model'])
         train_config = get_obj_from_config(train_type, specs['train'])
         train_config = HParams(train_config)
@@ -330,7 +329,7 @@ class Recorder:
                     except ValueError as e:
                         self.msg(byte_style('Optimzer loading error:' , '3'), e)
             epoch, fine_validation, global_step = checkpoint['status']
-            self._key = key = checkpoint['key']
+            self._test_metrics['key'] = key = checkpoint['key']
             
             self.log('Model restored from', model_fname, f'dev[{key:.2f}]')
             Recorder.msg('Restore model (' + byte_style(f'{epoch:.2f}', '3') + ') with dev score ' + byte_style(f'{key:.2f}', '3'))
@@ -343,8 +342,9 @@ class Recorder:
         if isnan(key):
             key = float('-inf')
         specs = load_yaml(*self._sv_file_lock, wait = False)
-        betterment = (self._key is None or self._key < key)
-        in_top_k = any(old_key < key for old_key in specs['results'].values())
+        old_key = self._test_metrics.get('key')
+        betterment = (old_key is None or old_key < key)
+        in_top_k = any(k < key for k in specs['results'].values())
         fine_validation = falling and not betterment
         torch.save({'model_state_dict':         model.state_dict(),
                     'optimizer_state_dict': optimizer.state_dict(),
@@ -352,7 +352,7 @@ class Recorder:
                     'key': key}, self._ckpt_fname)
         if betterment or in_top_k:
             if betterment:
-                self._key = key
+                self._test_metrics['key'] = key
             model_fname = timestamp(epoch)
             copy_with_prefix_and_rename(self._ckpt_fname, self._model_dir, model_fname)
             results = specs['results'], listdir(self._model_dir)
@@ -441,7 +441,11 @@ class Recorder:
 
     @property
     def key_score(self):
-        return self._key
+        return self._test_metrics['key']
+
+    @property
+    def test_metrics(self):
+        return self._test_metrics
 
 from utils.param_ops import zip_nt_params, iter_zipped_nt_params
 def get_obj_from_config(types, configs):

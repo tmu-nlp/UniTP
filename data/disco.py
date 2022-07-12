@@ -1,7 +1,12 @@
-from utils.types import M_TRAIN, M_DEVEL, M_TEST
+from utils.types import M_TRAIN, M_DEVEL, M_TEST, F_RAND_CON, beta_tuple
 from data.io import load_i2vs
 
 from data.backend import WordBaseReader, post_batch, defaultdict, CharTextHelper, add_char_from_word
+
+def beta(k, v):
+    if k == F_RAND_CON:
+        return v if isinstance(v, (tuple, bool)) else beta_tuple(v)
+    return v
 
 class DiscoReader(WordBaseReader):
     def __init__(self,
@@ -27,7 +32,7 @@ class DiscoReader(WordBaseReader):
               batch_size,
               bucket_length,
               binarization   = None,
-              ply_shuffle   = None,
+              ply_shuffle    = None,
               min_len        = 2, # to prevent some errors
               max_len        = None,
               min_gap        = None,
@@ -37,8 +42,11 @@ class DiscoReader(WordBaseReader):
 
         if load_label:
             assert isinstance(binarization, dict)
-            binarization = {k:v for k,v in binarization.items() if v}
-            assert abs(sum(v for v in binarization.values()) - 1) < 1e-10
+            if binarization.get(F_RAND_CON):
+                binarization = {k:beta(k,v) for k,v in binarization.items() if k.startswith(F_RAND_CON)}
+            else:
+                binarization = {k:v for k,v in binarization.items() if not k.startswith(F_RAND_CON) and v > 0}
+                assert abs(sum(binarization.values()) - 1) < 1e-10
         else:
             assert binarization is None
 
@@ -52,10 +60,9 @@ class DiscoReader(WordBaseReader):
                            extra_text_helper = extra_text_helper,
                            train_indexing_cnn = train_indexing_cnn)
 
-        from data.cross.dataset import StaticCrossDataset
-        len_sort_ds = StaticCrossDataset(self.dir_join, mode, **common_args)
-        self.loaded_ds[mode] = len_sort_ds
-        return post_batch(mode, len_sort_ds, sort_by_length, bucket_length, batch_size)
+        from data.cross.dataset import BinaryDataset
+        self.loaded_ds[mode] = ds = BinaryDataset(self.dir_join, mode, **common_args)
+        return post_batch(mode, ds, sort_by_length, bucket_length, batch_size)
 
 
 class DiscoMultiReader(WordBaseReader):
@@ -107,7 +114,7 @@ class DiscoMultiReader(WordBaseReader):
               medium_factors = None,
               sort_by_length = True,
               **kwargs):
-        from data.cross.dataset import DynamicCrossDataset
+        from data.cross.dataset import MultibDataset
         from tqdm import tqdm
         (from_tree_fn, v2is, has_greedy_sub, continuous_fence_only, word_trace,
          samples, extra_text_helper, c2i) = self._load_options
@@ -120,12 +127,12 @@ class DiscoMultiReader(WordBaseReader):
                 errors[ae.args[0]] += 1
         if errors:
             print(errors)
-        len_sort_ds = DynamicCrossDataset(signals,
-                                          self.device,
-                                          medium_factors,
-                                          extra_text_helper,
-                                          c2i,
-                                          continuous_fence_only,
-                                          **kwargs)
+        len_sort_ds = MultibDataset(signals,
+                                    self.device,
+                                    medium_factors,
+                                    extra_text_helper,
+                                    c2i,
+                                    continuous_fence_only,
+                                    **kwargs)
         self.loaded_ds[mode] = len_sort_ds
         return post_batch(mode, len_sort_ds, sort_by_length, bucket_length, batch_size)

@@ -315,11 +315,11 @@ class Manager:
         assert task in self._exp_modules, f'No such task module {task} in [' + ', '.join(self._exp_modules.keys()) + ']'
         assert task in ready_tasks, f'No such ready task_spec {task} in [' + ', '.join(ready_paths.keys()) + ']'
         module = self._exp_modules[task]
+        task_path = create_join(self._work_dir, task)
         task_spec = ready_tasks[task]
         data_config = task_spec['data']
 
         def diff_recorder(config_dict_or_instance):
-            task_dir = create_join(self._work_dir, task)
             if task.endswith('_nccp') or task.endswith('_accp') or task.endswith('_sentiment') or task.endswith('_ner'):
                 evalb = status['tool']['evalb']
                 evalb = abspath(evalb['path']), '-p', abspath(evalb['prm'])
@@ -327,8 +327,8 @@ class Manager:
                 evalb = abspath(status['tool']['evalb_lcfrs_prm'])
             else:
                 evalb = None
-            return Recorder(task_dir,
-                            module,
+            return Recorder(task_path,
+                            module.get_configs,
                             config_dict_or_instance,
                             spec_name,
                             evalb = evalb)
@@ -371,7 +371,11 @@ class Manager:
                 trial = recorder.best_trial(trail_folder)
                 pid, path = recorder._instance_dir
                 spec_name = f'{{{pid}.{trial.tid}}}'
-                fr = Recorder(join(self._work_dir, task), module, trial.specs, spec_name, evalb = recorder.evalb)
+                fr = Recorder(task_path,
+                              module.get_configs,
+                              trial.specs,
+                              spec_name,
+                              evalb = recorder.evalb)
                 fr.detach()
                 path = join(path, trail_folder, f'{trial.tid}.{trial.spec_string}', 'models')
                 for model in listdir(path):

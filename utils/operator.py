@@ -44,8 +44,8 @@ class Operator:
             self._validate_materials = self._get_materials(M_DEVEL), devel_icon
             self._train_materials    = self._get_datasets(M_TRAIN) if with_train_set else None, train_icon
         else: # from optuna
-            train_cnf, train_icon = self._train_materials
-            self._train_materials = self._get_datasets(M_TRAIN, train_cnf), train_icon
+            train_args, train_icon = self._train_materials
+            self._train_materials = self._get_datasets(M_TRAIN, train_args), train_icon
 
         if with_train_set and multiprocessing_decode:
             from utils.shell_io import byte_style
@@ -249,11 +249,11 @@ class Operator:
                                     load_if_exists = True)
         self._recorder.log(f'Start optuna with {n_trials} trials ...')
         study.optimize(self._get_optuna_fn(train_params), n_trials = n_trials) # core
-        with DelayedKeyboardInterrupt(True):
+        with DelayedKeyboardInterrupt():
             self._recorder.detach() # child: 1 operator vs. 2 recorders (super + trial)
             self._recorder = self._optuna_mode[0]
             self._optuna_mode = None
-            return self._recorder.summary_trials() # main
+        return self._recorder.test_metrics # main
 
     def _get_optuna_fn(self, train_params):
         raise NotImplementedError()

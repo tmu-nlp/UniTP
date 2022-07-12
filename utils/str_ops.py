@@ -146,7 +146,6 @@ def cat_lines(lhs_lines, rhs_lines, offset = 0, from_top = False):
         #     line += rhs_space
         lines.append(line)
     rhs_remain = lhs_len - offset
-    # print('\n'.join(lines), rhs_remain)
     while rhs_remain < rhs_len:
         if rhs_remain < 0:
             line = ''
@@ -162,3 +161,99 @@ import unicodedata
 def count_wide_east_asian(string):
     nfc_string = unicodedata.normalize('NFC', string)
     return sum(unicodedata.east_asian_width(c) in 'WF' for c in nfc_string)
+
+def zip_to_str(x, sep, str_fn):
+    return sep.join(str_fn(i) for i in x)
+
+def unzip_from_str(x, *fns):
+    if len(fns) == 1:
+        return fns[0](x)
+    sep, fn = fns[:2]
+    return fn(unzip_from_str(i, *fns[2:]) for i in x.split(sep))
+
+class StringProgressBar:
+    __active_lines__ = -1
+    @classmethod
+    def line(cls, desc, total, length = 30, char = '─', **kwargs):
+        return cls((desc, length * char), **kwargs).update(total = total)
+
+    def __init__(self, texts, sep = ' ', color = '5', finish_color = '2', error_color = '1'):
+        if isinstance(texts, str):
+            texts = texts,
+        else:
+            assert isinstance(texts, (list, tuple))
+        self._sep = sep, texts, color, finish_color, error_color
+        p, g, c, t = [], [], [], []
+        for text in texts:
+            p.append(0)
+            c.append(0)
+            t.append(None)
+            g.append(len(text))
+        self._progress = p, tuple(g), c, t
+        self._cache = None
+        self._file = None
+
+    def update(self, idx = -1, num = None, *, total = None):
+        p, g, c, t = self._progress
+        if isinstance(idx, str):
+            idx = self._sep[1].index(idx)
+        if num is None:
+            if isinstance(total, int):
+                t[idx] = float(total)
+                return self
+            if t[idx] is None:
+                num = -1
+            else:
+                c[idx] += 1
+                num = c[idx] / t[idx]
+        if isinstance(num, float):
+            num = int(num * g[idx])
+        if p[idx] != num:
+            p[idx] = num
+            self._cache = None
+        if self._file:
+            self.__update()
+            self.__draw()
+        return self
+
+    def __update(self):
+        line = []
+        sep, texts, color, fc, ec = self._sep
+        for text, p, g in zip(texts, *self._progress[:2]):
+            if p < 0 or p > g:
+                c = ec
+            elif p == g:
+                c = fc
+            else:
+                c = color
+            seg = f'\033[3{c}m' + text[:p] + '\033[m' + text[p:]
+            line.append(seg)
+        self._cache = sep.join(line)
+
+    def __draw(self):
+        if offset := (StringProgressBar.__active_lines__ - self._line_id):
+            print(f'\033[{offset}A\r' + self._cache, file = self._file, end = '\n' * offset)
+        else:
+            print('\r' + self._cache, file = self._file, end = '')
+
+    def __str__(self):
+        if self._cache is None:
+            self.__update()
+        return self._cache
+
+    def __enter__(self):
+        from sys import stderr
+        self._file = stderr
+        StringProgressBar.__active_lines__ += 1
+        self._line_id = StringProgressBar.__active_lines__
+        if self._line_id:
+            print(file = self._file)
+        self.__update()
+        self.__draw()
+        return self
+
+    def __exit__(self, exception_type, exception_value, traceback):
+        self._file = None
+        if StringProgressBar.__active_lines__ == 0:
+            print(file = self._file)
+        StringProgressBar.__active_lines__ -= 1

@@ -1,4 +1,4 @@
-from models.xccp import BaseRnnTree, model_type
+from models.xccp import BaseRnnParser, model_type
 from utils.types import word_dim
 from models.plm import plm_leaves_config
 
@@ -6,7 +6,7 @@ model_type = model_type.copy()
 model_type['input_layer'] = plm_leaves_config
 model_type['model_dim']   = word_dim
 
-class DiscoPlmTree(BaseRnnTree):
+class DiscoPlmTree(BaseRnnParser):
     def __init__(self,
                  cls_plm,
                  model_dim,

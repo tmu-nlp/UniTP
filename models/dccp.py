@@ -373,6 +373,7 @@ class DiscoStem(nn.Module):
         joint       = torch.cat(layers_of_joint,       dim = 1)
         existence   = torch.cat(layers_of_existence,   dim = 1)
 
+        shuffled_right_direc = shuffled_joint = None
         if teacher_forcing:
             if swap is not None:
                 shuffled_right_direc = torch.cat(layers_of_shuffled_right_direc, dim = 1)
@@ -380,7 +381,6 @@ class DiscoStem(nn.Module):
             assert joint.shape[1] == supervised_joint.shape[1], f'{joint.shape[1]} vs. {supervised_joint.shape[1]}'
             assert right_direc.shape[1] == supervised_right.shape[1], f'{right_direc.shape[1]} vs. {supervised_right.shape[1]}'
         else:
-            shuffled_right_direc = shuffled_joint = None
             # segment    = torch.stack(segment,    dim = 0)
             seg_length = torch.stack(seg_length, dim = 1)
 
@@ -409,17 +409,20 @@ class DiscoStem(nn.Module):
         gold_right = gold['right']
         gold_direc = gold['direc']
         gold_joint = gold['joint']
-        if self._orient_bits == 3:
+        if (orient_bits := self._orient_bits) == 3:
             orient_loss = cross_entropy(right_direc_logits, convert23_gold(gold_right, gold_direc))
             return orient_loss, self._loss_fns(joint_logits, gold_joint, None)
 
-        if undirec_strength == 0:
-            direc_weight = gold_direc
-        elif undirec_strength == 1:
-            direc_weight = gold['existence']
+        if orient_bits == 2:
+            if undirec_strength == 0:
+                direc_weight = gold_direc
+            elif undirec_strength == 1:
+                direc_weight = gold['existence']
+            else:
+                direc_weight = gold_direc * (1 - undirec_strength) + undirec_strength
+                direc_weight *= gold['existence']
         else:
-            direc_weight = gold_direc * (1 - undirec_strength) + undirec_strength
-            direc_weight *= gold['existence']
+            direc_weight = gold_direc
         right_loss, direc_loss, joint_loss = self._loss_fns
         if direc_loss is not None:
             direc_loss = direc_loss(right_direc_logits[:, :, 1], gold_direc, None)
@@ -439,7 +442,7 @@ model_type = dict(orient_layer    = stem_config,
 from models.utils import get_logit_layer
 from models.loss import get_decision, get_decision_with_value, get_loss
 
-class BaseRnnTree(DiscoStem):
+class BaseRnnParser(DiscoStem):
     def __init__(self,
                  model_dim,
                  num_tags,

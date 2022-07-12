@@ -515,7 +515,7 @@ model_type = dict(space_layer     = stem_config,
 from models.utils import get_logit_layer
 from models.loss import get_decision, get_decision_with_value, get_loss
 
-class BaseRnnTree(DiscoMultiStem):
+class BaseRnnParser(DiscoMultiStem):
     def __init__(self,
                  model_dim,
                  num_tags,

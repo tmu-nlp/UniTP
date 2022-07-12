@@ -1,7 +1,6 @@
-from data.cross import dataset
 from data.disco import DiscoReader
 from data.disco_types import C_ABSTRACT, C_DPTB, C_TGR, dccp_data_config
-from utils.types import M_TRAIN
+from utils.types import M_TRAIN, E_ORIF5_HEAD
 from utils.param_ops import HParams
 
 from experiments.t_xbert_dccp.model import DiscoPlmTree, model_type
@@ -22,7 +21,7 @@ def get_configs(recorder = None):
     corp_name, disco, DatasetHelper, Leaves = get_any_disco(**data_config)
     disco = HParams(disco, fallback_to_none = True)
     train_cnf     = disco.binarization._nested
-    non_train_cnf = {max(train_cnf, key = lambda x: train_cnf[x]): 1}
+    non_train_cnf = {max(train_cnf, key = lambda x: train_cnf[x] if x in E_ORIF5_HEAD else 0): 1}
 
     reader = DiscoReader(disco.data_path,
                          disco.vocab_size,

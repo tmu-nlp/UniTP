@@ -1,6 +1,6 @@
 from models.backend import torch, InputLeaves, Contextual, input_config, contextual_config
 from models.backend import PadRNN, char_rnn_config, nn
-from models.accp import BaseRnnTree, model_type
+from models.accp import BaseRnnParser, model_type
 from utils.types import word_dim, true_type, false_type
 from models.combine import get_combinator, combine_static_type
 
@@ -12,7 +12,7 @@ model_type['use']              = dict(char_rnn = false_type, word_emb = true_typ
 model_type['contextual_layer'] = contextual_config
 model_type['combine_static']   = combine_static_type
 
-class MultiRnnTree(BaseRnnTree):
+class MultiRnnTree(BaseRnnParser):
     def __init__(self,
                  paddings,
                  model_dim,

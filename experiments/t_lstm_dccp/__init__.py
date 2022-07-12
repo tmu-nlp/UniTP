@@ -1,6 +1,6 @@
 from data.disco import DiscoReader
 from data.disco_types import C_ABSTRACT, dccp_data_config
-from utils.types import M_TRAIN
+from utils.types import M_TRAIN, E_ORIF5_HEAD
 from utils.param_ops import HParams, get_sole_key
 from data.backend import CharTextHelper
 
@@ -15,7 +15,7 @@ def get_configs(recorder = None):
     data_config, model_config, train_config, _ = recorder.task_specs()
     disco = HParams(get_any_disco(**data_config), fallback_to_none = True)
     train_cnf     = disco.binarization._nested
-    non_train_cnf = {max(train_cnf, key = lambda x: train_cnf[x]): 1}
+    non_train_cnf = {max(train_cnf, key = lambda x: train_cnf[x] if x in E_ORIF5_HEAD else 0): 1}
     corp_name = get_sole_key(data_config)
 
     model = HParams(model_config)
@@ -27,14 +27,20 @@ def get_configs(recorder = None):
     def get_datasets(mode, new_train_cnf = None):
         datasets = {}
         if mode == M_TRAIN:
-            datasets[corp_name] = reader.batch(M_TRAIN,
-                                               disco.batch_size,
-                                               disco.bucket_len,
-                                               new_train_cnf or train_cnf,
-                                               max_len = disco.max_len,
-                                               min_gap = disco.min_gap,
-                                               ply_shuffle = disco.ply_shuffle,
-                                               sort_by_length = disco.sort_by_length)
+            train_ds = reader.loaded_ds.get(mode)
+            if train_ds is None:
+                datasets[corp_name] = reader.batch(M_TRAIN,
+                                                   disco.batch_size,
+                                                   disco.bucket_len,
+                                                   new_train_cnf or train_cnf,
+                                                   max_len = disco.max_len,
+                                                   min_gap = disco.min_gap,
+                                                   ply_shuffle = disco.ply_shuffle,
+                                                   sort_by_length = disco.sort_by_length)
+            else:
+                from data.backend import post_batch
+                train_ds.reset_factors(new_train_cnf)
+                datasets[corp_name] = post_batch(mode, train_ds, disco.sort_by_length, disco.bucket_len, disco.batch_size)
         else:
             datasets[corp_name] = reader.batch(mode, disco.batch_size << 1, 0, non_train_cnf)
         return datasets

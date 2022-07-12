@@ -84,7 +84,7 @@ class MAryDataset(LengthOrderedDataset):
                             lengths.append(len(words))
                             signals.append(signal)
             except KeyboardInterrupt as ex:
-                with DelayedKeyboardInterrupt(ignore = True):
+                with DelayedKeyboardInterrupt():
                     for x in works:
                         x.kill()
                 raise ex
