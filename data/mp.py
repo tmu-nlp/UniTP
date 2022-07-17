@@ -35,12 +35,12 @@ def mp_workers(works, q, core_fn, num_returns_from_core_fn, desc = None):
 
 
 class D2T(Process):
-    def __init__(self, idx, in_q, out_q, vocabs, tree_gen_fn, cat_dir):
+    def __init__(self, idx, in_q, out_q, multi_corp, vocabs, tree_gen_fn, cat_dir):
         super().__init__()
-        self._id_q_vocabs_fn = idx, in_q, out_q, vocabs, tree_gen_fn, cat_dir
+        self._id_q_vocabs_fn = idx, in_q, out_q, multi_corp, vocabs, tree_gen_fn, cat_dir
 
     def run(self):
-        idx, in_q, out_q, (i2w, i2t, i2l), tree_gen_fn, cat_dir = self._id_q_vocabs_fn
+        idx, in_q, out_q, multi_corp, vocabs, tree_gen_fn, cat_dir = self._id_q_vocabs_fn
         t_sleep = t_sleep_shallow
         last_wake = time()
         while True:
@@ -59,8 +59,12 @@ class D2T(Process):
             elif isinstance(signal, int):
                 if signal < 0:
                     break
-            key, tensor_args = signal
-            tree_gen = tree_gen_fn(i2w, i2t, i2l, *tensor_args)
+            key, tensor_args, corp_key = signal
+            if multi_corp:
+                i2vs_args = vocabs[corp_key] + tensor_args
+            else:
+                i2vs_args = vocabs + tensor_args
+            tree_gen = tree_gen_fn(*i2vs_args)
             if cat_dir:
                 fname = join(cat_dir, 'mp.%d_%d.tree' % key)
                 with open(fname, 'w') as fw:
@@ -86,11 +90,14 @@ class DM:
         self._q_receiver = rin_q, rout_q, None
         fpath = dirname(fdata) if fdata and cat_files else None
 
-        vocabs = before_to_seq(vocabs._nested)
+        if multi_corp := isinstance(vocabs, dict):
+            vocabs = {k: before_to_seq(v._nested) for k,v in vocabs.items()}
+        else:
+            vocabs = before_to_seq(vocabs._nested)
         q_workers = []
         for seg_id in range(num_workers):
             in_q = Queue()
-            d2t = D2T(seg_id, in_q, rin_q, vocabs, self.tree_gen_fn, fpath)
+            d2t = D2T(seg_id, in_q, rin_q, multi_corp, vocabs, self.tree_gen_fn, fpath)
             d2t.start()
             q_workers.append((in_q, d2t))
         self._mp_workers = q_workers, ceil(batch_size / num_workers), batch_size, fdata, cat_files
@@ -99,7 +106,7 @@ class DM:
     def timeit(self):
         self._timer = time()
 
-    def batch(self, batch_id, *args): # split a batch for many workers
+    def batch(self, batch_id, *args, key = None): # split a batch for many workers
         q_workers, seg_size, batch_size, fdata, cat_files = self._mp_workers
         rin_q, rout_q, tr = self._q_receiver
         if tr is None:
@@ -110,7 +117,7 @@ class DM:
         for seg_id, (in_q, _) in enumerate(q_workers):
             major_args = self.arg_segment_fn(seg_id, seg_size, batch_size, args)
             if major_args:
-                in_q.put(((batch_id, seg_id), major_args))
+                in_q.put(((batch_id, seg_id), major_args, key))
 
     def batched(self):
         q_workers, _, _, fdata, _ = self._mp_workers

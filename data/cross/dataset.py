@@ -1,14 +1,13 @@
 from data.backend import LengthOrderedDataset, np, torch, token_first
 from utils.file_io import read_data
 from utils.shell_io import byte_style
-from utils.str_ops import height_ratio
 from tqdm import tqdm
 from data.delta import E_XDIM
 from data.cross.binary import unzip_xlogit, targets, disco_tree, TreeKeeper
 from data.cross.binary import unzip_and_double_swaps_p1, double_swaps_p1
 from data.trapezoid import trapezoid_to_layers
 from itertools import zip_longest
-from utils.types import O_HEAD, S_EXH, F_RAND_CON, F_RAND_CON_SUB, F_RAND_CON_MSB, beta_tuple
+from utils.types import O_HEAD, S_EXH, F_RAND_CON, F_RAND_CON_SUB, F_RAND_CON_MSB, device
 
 simple_fields = 'token', 'tag'
 
@@ -20,7 +19,6 @@ class BinaryDataset(LengthOrderedDataset):
                  dir_join,
                  prefix,
                  field_v2is,
-                 device,
                  factors  = None,
                  min_len  = 0,
                  max_len  = None,
@@ -135,7 +133,7 @@ class BinaryDataset(LengthOrderedDataset):
         else:
             heads = 'token', 'tag', 'seq_len', 'label', 'right', 'direc', 'joint'
         if extra_text_helper:
-            extra_text_helper = extra_text_helper(text, device, c2i)
+            extra_text_helper = extra_text_helper(text, c2i)
         self._swap_cache = None
         self._except_head = ply_shuffle == S_EXH
         if fully_randomize:
@@ -175,7 +173,6 @@ class BinaryDataset(LengthOrderedDataset):
             
         super().__init__(heads, lengths, factors, min_len, max_len, extra_text_helper)
         self._columns = columns
-        self._device = device
 
     def reset_factors(self, factors):
         if factors.get(F_RAND_CON):
@@ -292,7 +289,7 @@ class BinaryDataset(LengthOrderedDataset):
                 dtype = torch.long
             else:
                 dtype = torch.bool
-            field_columns[f] = torch.as_tensor(column, dtype = dtype, device = self._device)
+            field_columns[f] = torch.as_tensor(column, dtype = dtype, device = device)
 
         if self._swap_cache: # TODO swap for emb, label
             swappers = []
@@ -309,7 +306,7 @@ class BinaryDataset(LengthOrderedDataset):
                         np.random.shuffle(group_ctn)
                         layer_tensor[sid, group_idx] = group_ctn
             self._swap_cache = None # clear batch
-            field_columns['swap'] = [torch.as_tensor(x, dtype = torch.long, device = self._device) for x in swappers]
+            field_columns['swap'] = [torch.as_tensor(x, dtype = torch.long, device = device) for x in swappers]
         field_columns['offset'] = pad_len
         return field_columns
 
@@ -319,7 +316,6 @@ from data.cross.multib import total_fence, continuous_fence, F_RANDOM
 class MultibDataset(LengthOrderedDataset):
     def __init__(self,
                  tree_keepers,
-                 device,
                  factors = None,
                  extra_text_helper = None,
                  c2i = None,
@@ -366,9 +362,9 @@ class MultibDataset(LengthOrderedDataset):
         self._keepers_heads = tree_keepers, heads, rate
         if extra_text_helper:
             text = sort_by_order(order, text)
-            extra_text_helper = extra_text_helper(text, device, c2i)
+            extra_text_helper = extra_text_helper(text, c2i)
         super().__init__(heads, lengths, factors, min_len, max_len, extra_text_helper)
-        self._device_cfo = device, continuous_fence_only, inter_2d
+        self._fence_2d = continuous_fence_only, inter_2d
         InterLayerDisco.tensor_args.update(device = device)
 
     def __reset_and_show_factors(self, factors, prefix):
@@ -400,7 +396,7 @@ class MultibDataset(LengthOrderedDataset):
     def reset_factors(self, factors, inter_2d = 0):
         factors, lines, rate = self.__reset_and_show_factors(factors, 'Reset ')
         self._keepers_heads = self._keepers_heads[:2] + (rate,)
-        self._device_cfo = self._device_cfo[:2] + (inter_2d,)
+        self._fence_2d = self._fence_2d[0], inter_2d
         if inter_2d: lines.append(f'  Max. inter-height: {inter_2d}')
         print('\n'.join(lines))
         self._reset_factors(factors)
@@ -418,7 +414,7 @@ class MultibDataset(LengthOrderedDataset):
 
     def _collate_fn(self, batch):
         field_columns = {}
-        device, continuous_fence_only, inter_2d = self._device_cfo
+        continuous_fence_only, inter_2d = self._fence_2d
         for field, column in zip(self.heads, zip(*batch)):
             if field == 'length':
                 batch_size = len(column)

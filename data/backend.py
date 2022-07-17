@@ -5,7 +5,7 @@ from data.delta import xtype_to_logits, logits_to_xtype
 from collections import defaultdict, namedtuple
 from utils.param_ops import HParams
 from utils.file_io import parpath
-from utils.types import NIL, UNK, BOS, EOS, M_TRAIN, PAD
+from utils.types import NIL, UNK, BOS, EOS, M_TRAIN, PAD, device
 import torch
 
 BatchSpec = namedtuple('BatchSpec', 'size, iter')
@@ -23,12 +23,6 @@ class _BaseReader:
                  **to_model):
         self._vocab_dir = vocab_dir
         self._paddings = paddings
-        self._device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-        from utils.types import memory_in_gigabyte
-        if memory_in_gigabyte:
-            gb = int(memory_in_gigabyte * 1000 * 1000 * 1000)
-            print(f'Pre-occupy {gb:,} byte memory.')
-            torch.empty(gb, dtype = torch.int8, device = self._device)
         to_model['paddings'] = paddings
         self._to_model = {}
         self._oovs = oovs
@@ -76,10 +70,6 @@ class _BaseReader:
         return self._paddings
 
     @property
-    def device(self):
-        return self._device
-
-    @property
     def loaded_ds(self):
         return self._loaded_ds
 
@@ -111,7 +101,7 @@ class _BaseReader:
             tid = tok_list.index(tok) if tok in tok_list else oov_id
             sum_cnt[tid] += cnt
         if log_inv:
-            sum_cnt = torch.tensor(sum_cnt, dtype = torch.get_default_dtype(), device = self._device)
+            sum_cnt = torch.tensor(sum_cnt, dtype = torch.get_default_dtype(), device = device)
             sum_cnt = 1 / sum_cnt.log()
         return sum_cnt
 
@@ -510,12 +500,11 @@ def substitute_word(wi, indices, values, ws = None):
     return new_wi, new_ws
 
 class TextHelper:
-    def __init__(self, cache, device):
+    def __init__(self, cache):
         self._cache = cache
         self._buffer  = []
         self._max_len  = 0
         self._drop_cache = {}
-        self._device = device
 
     def buffer(self, idx):
         wi, ws = self._cache[idx]
@@ -546,7 +535,7 @@ class TextHelper:
 
 from tqdm import tqdm
 class CharTextHelper(TextHelper):
-    def __init__(self, text, device, alphabet_fn):
+    def __init__(self, text, alphabet_fn):
         cache = []
         pad_idx = alphabet_fn(PAD)
         for words in tqdm(text, 'CharTextHelper'):
@@ -557,11 +546,11 @@ class CharTextHelper(TextHelper):
                 char_seq.append(pad_idx)
                 segment.append(len(word) + 1 + segment[-1])
             cache.append((char_seq, segment))
-        super().__init__(cache, device)
+        super().__init__(cache)
         
     def get(self):
         char_idx = []
         for wi, ws, len_diff in self.gen_from_buffer():
             char_idx.append(wi + [0] * len_diff)
-        char_idx = torch.tensor(char_idx,   device = self._device)
+        char_idx = torch.tensor(char_idx, device = device)
         return dict(sub_idx = char_idx)

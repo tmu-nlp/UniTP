@@ -183,12 +183,15 @@ class Recorder:
             self._writer = SummaryWriter(fpath)
             Recorder.msg(byte_style('Tracking training statistics:', '2'), fpath)
 
-    def tensorboard(self, step, template, **kwargs):
+    def tensorboard(self, step, prefix, suffix = None, **kwargs):
         if self._writer is None:
             return
         for key, value in kwargs.items():
             if value is None: continue
-            self._writer.add_scalar(template % key, value, step)
+            key = prefix % key
+            if suffix:
+                key = key + '/' + suffix
+            self._writer.add_scalar(key, value, step)
 
     def tensorboard_histogram(self, step, key, vector):
         if self._writer is None:
@@ -256,9 +259,8 @@ class Recorder:
             self.log('Total:', total)
         else:
             checkpoint = torch.load(model_fname)
-            try:
-                model.load_state_dict(checkpoint['model_state_dict'])
-            except:
+            missing_keys, unexpected_keys = model.load_state_dict(checkpoint['model_state_dict'], strict = False)
+            if not all(x.startswith('_word_emb._main_emb_layer.') for x in missing_keys) or unexpected_keys: # TODO make a list and leave?
                 model_old_dict = checkpoint['model_state_dict']
                 model_new_dict = model.state_dict()
                 new_keys = tuple(model_new_dict)

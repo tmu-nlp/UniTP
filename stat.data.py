@@ -9,7 +9,7 @@ from data.trapezoid.dataset import distribute_jobs, Queue, PennWorker, PennTreeK
 from data.multib.dataset import MAryWorker
 from data.cross.multib import TreeKeeper, total_fence
 from data.penn_types import CorpusReader, C_CTB, C_PTB, C_KTB
-from data.disco_types import C_DPTB, C_TGR
+from data.disco_types import C_DPTB, C_TIGER
 from data.mp import mp_workers
 from nltk.corpus import BracketParseCorpusReader
 from data.io import load_i2vs, encapsulate_vocabs
@@ -273,10 +273,10 @@ def run(corpura, func):
         if not isdir(local_path):
             print(byte_style(corp_name + f' is not prepared: use ./manager {base_path} -p', '1'))
             continue
-        if not isdir(source_path) and (corp_name != C_TGR or not isfile(source_path)):
+        if not isdir(source_path) and (corp_name != C_TIGER or not isfile(source_path)):
             print(byte_style(corp_name + f' source_path is invalid: check key under data.{corp_name} in {mfile}', '1'))
             continue
         func(corp_name, local_path, source_path)
 
 run((C_PTB, C_CTB, C_KTB), lambda *args: continuous_stratification(*args))
-run((C_DPTB, C_TGR), lambda *args: discontinuous_stratification(*args))
+run((C_DPTB, C_TIGER), lambda *args: discontinuous_stratification(*args))

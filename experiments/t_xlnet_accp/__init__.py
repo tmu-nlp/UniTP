@@ -1,6 +1,6 @@
 from data.penn import MultiReader
 from data.penn_types import C_PTB, accp_data_config, select_and_split_corpus
-from utils.types import M_TRAIN, M_DEVEL, M_TEST
+from utils.types import M_TRAIN
 from utils.param_ops import HParams, get_sole_key
 
 from models.plm import XLNetDatasetHelper
@@ -46,5 +46,4 @@ def get_configs(recorder = None):
     task_params = {pname: reader.get_to_model(pname) for pname in ('num_tags', 'num_labels', 'paddings')}
 
     model = ContinuousXLNetTree(**model_config, **task_params)
-    model.to(reader.device)
     return MultiOperator(model, get_datasets, recorder, reader.i2vs, recorder.evalb, train_config)

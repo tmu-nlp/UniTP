@@ -1,11 +1,12 @@
-from utils.types import M_TRAIN, M_DEVEL, M_TEST
 from numpy.random import choice, random
 from tqdm import tqdm
 from time import time, sleep
 from datetime import timedelta
 from torch import nn, no_grad
 from utils.recorder import Recorder, timestamp
+from utils.types import M_TRAIN, M_DEVEL, M_TEST
 from utils.emoji import get_train_validation_pair
+from utils.shell_io import byte_style
 import torch
 
 class Operator:
@@ -16,7 +17,13 @@ class Operator:
         assert isinstance(model, nn.Module)
         assert callable(get_datasets)
         assert isinstance(recorder, Recorder)
-        assert 'token' in i2vs._nested
+        self._multi_corp = isinstance(i2vs, dict)
+        if self._multi_corp:
+            assert all('token' in v._nested for v in i2vs.values())
+        else:
+            assert 'token' in i2vs._nested
+        from utils.types import device
+        model.to(device)
         self._model = model
         self._get_datasets = get_datasets
         self._recorder = recorder
@@ -25,7 +32,7 @@ class Operator:
         self._train_materials = None
         self._validate_materials = None
         self._test_materials = (_, ds_names, _) = self._get_materials(M_TEST)
-        self._ds_icons = {ds_name: icon for ds_name, icon in zip(ds_names, '⚀⚁⚂⚃⚄⚅')}
+        self._ds_icons = {ds_name: byte_style(icon, '2') for ds_name, icon in zip(ds_names, '⚀⚁⚂⚃⚄⚅')}
         self._optuna_mode = None
         self._dm = None
         self._get_dm = get_dm
@@ -292,6 +299,10 @@ class Operator:
     @property
     def global_step(self):
         return self._global_step
+
+    @property
+    def multi_corp(self):
+        return self._multi_corp
 
     def close(self):
         if self._dm is not None:

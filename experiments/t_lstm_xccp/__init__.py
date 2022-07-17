@@ -1,6 +1,7 @@
 from data.disco import DiscoMultiReader
-from data.disco_types import C_ABSTRACT, C_DPTB, C_TGR, xccp_data_config, select_and_split_corpus, parpath
-from utils.types import M_TRAIN, M_DEVEL, M_TEST
+from data.disco_types import C_ABSTRACT, xccp_data_config
+from data.disco_types import select_and_split_corpus, parpath, select_corpus
+from utils.types import M_TRAIN
 from utils.param_ops import HParams, get_sole_key
 from data.backend import CharTextHelper
 
@@ -72,7 +73,6 @@ def get_configs(recorder = None):
     
     model_config['space_layer']['continuous_fence_only'] = penn.continuous_fence_only
     model = DiscoMultiRnnTree(**model_config, **task_params)
-    model.to(reader.device)
     # train_config.create(label_log_freq_inv = reader.frequency('label', log_inv = True))
     from data.cross.multib import MxDM
     get_dm = lambda i2vs, num_threads: MxDM(penn.batch_size << 1, i2vs, num_threads)

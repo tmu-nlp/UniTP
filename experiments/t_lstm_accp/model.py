@@ -3,6 +3,7 @@ from models.backend import PadRNN, char_rnn_config, nn
 from models.accp import BaseRnnParser, model_type
 from utils.types import word_dim, true_type, false_type
 from models.combine import get_combinator, combine_static_type
+from torch.nn import ModuleDict
 
 model_type = model_type.copy()
 model_type['model_dim']        = word_dim
@@ -28,13 +29,21 @@ class MultiRnnTree(BaseRnnParser):
         super().__init__(model_dim, **base_config)
         
         if use['word_emb']:
-            self._word_emb = InputLeaves(model_dim, num_tokens, initial_weights, not paddings, **word_emb)
-            input_dim = self._word_emb.input_dim
+            if isinstance(num_tokens, int):
+                self._word_emb = InputLeaves(model_dim, num_tokens, initial_weights, not paddings, **word_emb)
+                input_dim = self._word_emb.input_dim
+            else:
+                from utils.param_ops import get_sole_key
+                self._word_emb = ModuleDict({k: InputLeaves(model_dim, v, initial_weights[k], not paddings[k], **word_emb) for k,v in num_tokens.items()})
+                input_dim = get_sole_key(n.input_dim for n in self._word_emb.values())
         else:
             self._word_emb = None
             input_dim = model_dim
         if use['char_rnn']:
+            embed_dim = char_rnn['embed_dim']
             self._char_rnn = PadRNN(num_chars, None, None, fence_dim = model_dim, char_space_idx = 1, **char_rnn)
+            self._char_lin = nn.Linear(embed_dim, model_dim)
+            self._char_act = nn.Tanh()
         else:
             self._char_rnn = None
 
@@ -53,22 +62,19 @@ class MultiRnnTree(BaseRnnParser):
             assert diff >= 0, 'invalid difference'
         self._half_dim_diff = diff >> 1
 
-    def get_static_pca(self):
-        if self._word_emb and self._word_emb.has_static_pca:
-            return self._word_emb.pca
-        return None
-
-    def update_static_pca(self):
-        if self._word_emb and self._word_emb.has_static_pca:
-            self._word_emb.flush_pc_if_emb_is_tuned()
-
     def forward(self, word_idx, tune_pre_trained,
-                sub_idx = None, sub_fence = None, offset = None, **kw_args):
-        batch_size,   batch_len  = word_idx.shape
+                sub_idx = None, sub_fence = None, offset = None, key = None,
+                **kw_args):
+        batch_size, batch_len  = word_idx.shape
         if self._word_emb:
-            static, bottom_existence = self._word_emb(word_idx, tune_pre_trained)
+            emb = self._word_emb if key is None else self._word_emb[key]
+            static, bottom_existence = emb(word_idx, tune_pre_trained)
             if self._char_rnn:
-                static = static + self._char_rnn(sub_idx, sub_fence, offset) * bottom_existence
+                char_info = self._char_rnn(sub_idx, sub_fence, offset)
+                char_info = self._stem_dp(char_info)
+                char_info = self._char_lin(char_info)
+                char_info = self._char_act(char_info)
+                static = static + char_info * bottom_existence
         else:
             bottom_existence = word_idx > 0
             bottom_existence.unsqueeze_(dim = 2)
@@ -84,9 +90,22 @@ class MultiRnnTree(BaseRnnParser):
             base_inputs  = dynamic * bottom_existence
             if self._combine_static is not None:
                 base_inputs = self._combine_static.compose(static, base_inputs, None)
-        base_returns = super().forward(base_inputs, bottom_existence.squeeze(dim = 2), **kw_args)
+        base_returns = super().forward(base_inputs, bottom_existence.squeeze(dim = 2), key = key, **kw_args)
         top3_labels  = super().get_label(top3_hidden) if top3_hidden is not None else None
         return (batch_size, batch_len, static, top3_labels) + base_returns
+
+    def state_dict(self, *args, **kwargs):
+        odc = super().state_dict(*args, **kwargs)
+        emb = self._word_emb
+        prefix = '_word_emb.'
+        suffix = '_main_emb_layer.weight'
+        if isinstance(emb, InputLeaves) and not emb._main_emb_tuned:
+            odc.pop(prefix)
+        elif isinstance(emb, ModuleDict):
+            for k, v in emb.items():
+                if not v._main_emb_tuned:
+                    odc.pop(prefix + k + '.' + suffix)
+        return odc
 
     def tensorboard(self, recorder, global_step):
         if self._bias_only:

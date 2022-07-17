@@ -50,7 +50,6 @@ class PennReader(WordBaseReader):
 
         common_args = dict(field_v2is = self.v2is,
                            paddings = self.paddings,
-                           device = self.device,
                            factors = binarization,
                            min_len = min_len,
                            max_len = max_len, 
@@ -66,8 +65,8 @@ class PennReader(WordBaseReader):
         return post_batch(mode, len_sort_ds, sort_by_length, bucket_length, batch_size)
 
 
-from data.io import isfile
 from utils.shell_io import byte_style
+from sys import stderr
 
 class MultiReader(WordBaseReader):
     def __init__(self,
@@ -94,7 +93,7 @@ class MultiReader(WordBaseReader):
         oovs = {}
         labels = i2vs['label']
         if has_greedy_sub:
-            print(byte_style('+ greedy_subs', '2'))
+            print(byte_style('+ Balancing subs', '2'), file = stderr)
         if unify_sub:
             labels = [t for t in labels if t[0] not in '#_']
             oovs['label'] = len(labels)
@@ -114,7 +113,7 @@ class MultiReader(WordBaseReader):
               sort_by_length = True):
         from data.multib.dataset import MAryDataset
         samples, word_trace, extra_text_helper = self._load_options
-        len_sort_ds = MAryDataset(mode, samples[mode], self.v2is, self.device, balanced, min_len, max_len, word_trace, extra_text_helper)
+        len_sort_ds = MAryDataset(mode, samples[mode], self.v2is, balanced, min_len, max_len, word_trace, extra_text_helper)
         return post_batch(mode, len_sort_ds, sort_by_length, bucket_length, batch_size)
 
 from utils.types import false_type, true_type
@@ -161,5 +160,5 @@ class LexiconReader(SequenceBaseReader):
         if noise_specs is None:
             assert sum(factors[k] for k in 'swap insert replace delete'.split() if k in factors) == 0, 'Need specs!'
         char, data = self._char_data
-        len_sort_ds = CharDataset(char, data, self.v2is, noise_specs, factors, self.device, min_len, max_len)
+        len_sort_ds = CharDataset(char, data, self.v2is, noise_specs, factors, min_len, max_len)
         return post_batch(mode, len_sort_ds, sort_by_length, bucket_length, batch_size)

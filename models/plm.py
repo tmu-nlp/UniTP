@@ -1,4 +1,4 @@
-from utils.types import BaseType
+from utils.types import BaseType, device
 E_SUB = S_LFT, S_RGT, S_AVG, S_SGT = 'leftmost rightmost average selfgate'.split()
 subword_proc = BaseType(0, as_index = True, default_set = E_SUB)
 
@@ -168,10 +168,10 @@ from unidecode import unidecode
 from multiprocessing import Pool
 from data.backend import TextHelper
 class PreDatasetHelper(TextHelper):
-    def __init__(self, text, device, *args):
+    def __init__(self, text, *args):
         with Pool() as p:
             cache = p.map(self._append, text)
-        super().__init__(cache, device)
+        super().__init__(cache)
         # self._cache = cache =  []
         # for penn_words in tqdm(text, desc = self.tknz_name):
         #     cache.append(self._append(penn_words))
@@ -197,8 +197,8 @@ class PreDatasetHelper(TextHelper):
         for wi, ws, len_diff in self.gen_from_buffer():
             plm_idx  .append(wi + [pad_token_id] * len_diff)
             plm_start.append(start + ws + [True] + [False] * (len_diff + end)) # TODO check!
-        plm_idx   = torch.tensor(plm_idx,   device = self._device)
-        plm_start = torch.tensor(plm_start, device = self._device)
+        plm_idx   = torch.tensor(plm_idx,   device = device)
+        plm_start = torch.tensor(plm_start, device = device)
         return dict(plm_idx = plm_idx, plm_start = plm_start)
 
     @staticmethod

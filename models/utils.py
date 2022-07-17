@@ -41,7 +41,7 @@ def hinge_score(hinge_logits, inplace):
 
 import math
 from torch.nn import Module, Parameter, init
-from torch.nn import Linear, Softmax, Softmin, ModuleList
+from torch.nn import Linear, Softmax, Softmin, ModuleDict
 class SimplerLinear(Module):
     __constants__ = ['bias', 'in_features']
     def __init__(self, in_features, weight = True, bias = True):
@@ -167,14 +167,11 @@ def get_logit_layer(logit_type):
             repulsion = 0
         score_fn = Softmin
         Net = lambda i_size, o_size: GaussianCodebook(i_size, o_size, coeff = repulsion)
-    return Net, argmax, score_fn
-
-def linear_list(in_size, *out_sizes):
-    return ModuleList([Linear(in_size, out) for out in out_sizes])
-
-def module_list_unary_forward(ml, *inputs):
-    for m, x in zip(ml, inputs):
-        yield m(x)
+    def net_fn(i_size, o_size):
+        if isinstance(o_size, int):
+            return Net(i_size, o_size)
+        return ModuleDict({k: Net(i_size, v) for k,v in o_size.items()})
+    return net_fn, argmax, score_fn
 
 class GaussianCodebook(Module):
     __constants__ = ['codebook' 'io_features']

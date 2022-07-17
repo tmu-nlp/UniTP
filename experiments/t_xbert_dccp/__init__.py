@@ -1,5 +1,6 @@
 from data.disco import DiscoReader
-from data.disco_types import C_ABSTRACT, C_DPTB, C_TGR, dccp_data_config
+from data.disco_types import C_ABSTRACT, C_DPTB, C_TIGER
+from data.disco_types import dccp_data_config, select_corpus
 from utils.types import M_TRAIN, E_ORIF5_HEAD
 from utils.param_ops import HParams
 
@@ -10,7 +11,7 @@ from experiments.t_lstm_dccp.operator import train_type
 def get_any_disco(dptb = None, tiger = None):
     from models.plm import XLNetDatasetHelper, XLNetLeaves, GBertDatasetHelper, GBertLeaves
     if dptb is None:
-        return C_TGR, tiger, GBertDatasetHelper, GBertLeaves
+        return C_TIGER, tiger, GBertDatasetHelper, GBertLeaves
     return C_DPTB, dptb, XLNetDatasetHelper, XLNetLeaves
 
 def get_configs(recorder = None):
@@ -52,7 +53,6 @@ def get_configs(recorder = None):
     task_params = {pname: reader.get_to_model(pname) for pname in ('num_tags', 'num_labels', 'paddings')}
 
     model = DiscoPlmTree(Leaves, **model_config, **task_params)
-    model.to(reader.device)
     from data.cross.binary import BxDM
     get_dm = lambda i2vs, num_threads: BxDM(disco.batch_size << 1, i2vs, num_threads)
     return DiscoOperator_lr(model, get_datasets, recorder, reader.i2vs, get_dm, train_config, recorder.evalb)

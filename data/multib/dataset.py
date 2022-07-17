@@ -1,11 +1,12 @@
-from data.backend import LengthOrderedDataset, np, torch
-from utils.shell_io import byte_style
 from data.multib import MAryX
+from data.backend import LengthOrderedDataset, np, torch
+from data.io import distribute_jobs, sorting_order, sort_by_order
+from utils.file_io import DelayedKeyboardInterrupt
+from utils.shell_io import byte_style
+from utils.types import device
 from tqdm import tqdm
 from itertools import zip_longest
-from data.io import distribute_jobs, sorting_order, sort_by_order
 from multiprocessing import Process, Queue
-from utils.file_io import DelayedKeyboardInterrupt
 from time import sleep
 from sys import stderr
 from collections import defaultdict, Counter
@@ -43,7 +44,6 @@ class MAryDataset(LengthOrderedDataset):
                  mode,
                  samples,
                  field_v2is,
-                 device,
                  balanced = 0,
                  min_len = 0,
                  max_len = None,
@@ -113,6 +113,7 @@ class MAryDataset(LengthOrderedDataset):
                 error_string += ' '.join(w+f'/{c}' for w,c in oov_words.items())
             # if oov_tags: error_string += f'; {oov_tags} OOV tag(s)'
             print(error_string, file = stderr)
+        # breakpoint()
 
         order = sorting_order(text) # make stable for ordered | this fixes a minor bug?
         text, lengths, signals = (sort_by_order(order, x) for x in (text, lengths, signals))
@@ -121,13 +122,12 @@ class MAryDataset(LengthOrderedDataset):
         self._signals_heads = signals, heads
         if extra_text_helper:
             c2i = field_v2is['char'][1] if 'char' in field_v2is else None
-            extra_text_helper = extra_text_helper(text, device, c2i)
+            extra_text_helper = extra_text_helper(text, c2i)
         if 0 < balanced < 1:
             factors = {0: 1 - balanced, 1: balanced}
         else:
             factors = None
         super().__init__(heads, lengths, factors, min_len, max_len, extra_text_helper)
-        self._device = device
 
     def at_idx(self, idx, factor, length, helper_outputs):
         signals, heads = self._signals_heads
@@ -156,13 +156,13 @@ class MAryDataset(LengthOrderedDataset):
                     sl = [len(seq) for seq in layer]
                     segment.append(max(sl))
                     seg_len.append(sl)
-                field_columns['segment'] = torch.tensor(segment, device = self._device)
-                field_columns['seg_length'] = torch.tensor(seg_len, device = self._device).transpose(0, 1)
+                field_columns['segment'] = torch.tensor(segment, device = device)
+                field_columns['seg_length'] = torch.tensor(seg_len, device = device).transpose(0, 1)
                 tensor = fill_layers(column, segment, np.int32)
             else:
                 tensor_seg = [x + 1 for x in segment[1:]]
                 tensor = fill_layers(column, tensor_seg, np.int32, 1)
-            field_columns[field] = torch.as_tensor(tensor, dtype = torch.long, device = self._device)
+            field_columns[field] = torch.as_tensor(tensor, dtype = torch.long, device = device)
         return field_columns
 
 def fill_layers(sample_layers, tensor_seg, np_dtype, last_elem = None):

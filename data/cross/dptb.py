@@ -95,9 +95,9 @@ def shift_node_fn(tree, s_path, d_path):
 def rename_node_fn(tree, path, label):
     tree[path].set_label(label)
 
-E_DISCO = '*T*', '*ICH*', '*EXP*', '*RNR*'
+E_DTREE = '*T*', '*ICH*', '*EXP*', '*RNR*'
 A_MOVEMENT = '*',
-E_GRAPH = E_DISCO + A_MOVEMENT#  '*PPA*'
+E_GRAPH = E_DTREE + A_MOVEMENT#  '*PPA*'
 
 def typed_trace(types, word):
     if '-' in word:
@@ -161,7 +161,7 @@ def fix_for_ptb(tree, short_circuits):
 
 def fix_for_dptb(tree):
     fix_for_ptb(tree, short_circuits)
-    remove_irrelevant_trace(tree, E_DISCO)
+    remove_irrelevant_trace(tree, E_DTREE)
     return dict(w_fn = XRB2brackets, nt_fn = remove_eq)
 
 def direct_read(tree, *, cid = 1, nid = 0):
@@ -405,7 +405,7 @@ def read_tree(tree, *,
         wtnt_fns.update(adjust_fn(tree))
 
     (bottom, top_down, root_id, nt_start, get_inode, trace_refs, trace_ids, _,
-     catch_nodes) = read_materials(tree, E_DISCO, 'PRN', **wtnt_fns)
+     catch_nodes) = read_materials(tree, E_DTREE, 'PRN', **wtnt_fns)
     remaining_PRN_nodes = catch_nodes.pop('PRN')
 
     # cross trace along the bottom (ordered and reversed for bottom.pop(i) stability)

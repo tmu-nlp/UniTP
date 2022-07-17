@@ -24,8 +24,13 @@ class PennOperator(Operator):
         super().__init__(model, get_datasets, recorder, i2vs, get_dm)
         self._evalb = evalb
         self._sigmoid = nn.Sigmoid()
-        self._mode_length_bins = None, None
-        self._initial_run = True, True
+        if self.multi_corp:
+            make = lambda v: {k: v for k in i2vs}
+            self._mode_length_bins = make(None), make(None)
+            self._initial_run      = make(True), make(True)
+        else:
+            self._mode_length_bins = None, None
+            self._initial_run      = True, True
         self._train_config = train_config
         self._tune_pre_trained = False
 
@@ -48,8 +53,8 @@ class PennOperator(Operator):
 
     def _step(self, mode, ds_name, batch, batch_id = None):
 
-        # assert ds_name == C_ABSTRACT
         gold_orients = get_rgt(batch['xtype'])
+        batch['key'] = corp = ds_name if self.multi_corp else None
         if mode == M_TRAIN:
             batch['supervised_orient'] = gold_orients
             #(batch['offset'], batch['length'])
@@ -89,7 +94,7 @@ class PennOperator(Operator):
             else:
                 height_mask = batch['mask_length'] # ?? negative effect ???
 
-            tag_loss, label_loss = self._model.get_losses(batch, tag_logits, top3_label_logits, label_logits, height_mask, None)
+            tag_loss, label_loss = self._model.get_losses(batch, tag_logits, top3_label_logits, label_logits, height_mask, None, corp)
 
             if self._train_config.orient_hinge_loss:
                 orient_loss = hinge_loss(orient_logits, gold_orients, orient_weight)
@@ -101,25 +106,27 @@ class PennOperator(Operator):
             total_loss = self._train_config.loss_weight.orient * orient_loss + total_loss
             total_loss.backward()
             
-            if hasattr(self._model, 'tensorboard'):
-                self._model.tensorboard(self.recorder, self.global_step)
-            self.recorder.tensorboard(self.global_step, 'Accuracy/%s',
-                                      Tag    = 1 - fraction(tag_mis,     tag_weight),
-                                      Label  = 1 - fraction(label_mis, label_weight),
-                                      Orient = fraction(orient_match, orient_weight))
-            self.recorder.tensorboard(self.global_step, 'Loss/%s',
-                                      Tag    = tag_loss,
-                                      Label  = label_loss,
-                                      Orient = orient_loss,
-                                      Total  = total_loss)
-            batch_kwargs = dict(Length = batch_len, SamplePerSec = batch_len / batch_time)
-            if 'segment' in batch:
-                batch_kwargs['Height'] = len(batch['segment'])
-            self.recorder.tensorboard(self.global_step, 'Batch/%s', **batch_kwargs)
+            if self.recorder._writer is not None:
+                suffix = ds_name if self.multi_corp else None
+                if hasattr(self._model, 'tensorboard'):
+                    self._model.tensorboard(self.recorder, self.global_step)
+                self.recorder.tensorboard(self.global_step, 'Accuracy/%s', suffix,
+                    Tag    = 1 - fraction(tag_mis,     tag_weight),
+                    Label  = 1 - fraction(label_mis, label_weight),
+                    Orient = fraction(orient_match, orient_weight))
+                self.recorder.tensorboard(self.global_step, 'Loss/%s', suffix,
+                    Tag    = tag_loss,
+                    Label  = label_loss,
+                    Orient = orient_loss,
+                    Total  = total_loss)
+                batch_kwargs = dict(Length = batch_len, SamplePerSec = batch_len / batch_time)
+                if 'segment' in batch:
+                    batch_kwargs['Height'] = len(batch['segment'])
+                self.recorder.tensorboard(self.global_step, 'Batch/%s', suffix, **batch_kwargs)
         else:
             vis, _, _, serial, c_vis = self._vis_mode
             if serial:
-                pca = self._model.get_static_pca() if hasattr(self._model, 'get_static_pca') else None
+                pca = self._model.get_static_pca(corp) if hasattr(self._model, 'get_static_pca') else None
                 if pca is None:
                     pca = PCA(layers_of_base.reshape(-1, layers_of_base.shape[2]))
                 mpc_token = pca(static)
@@ -186,19 +193,35 @@ class PennOperator(Operator):
                 folder = ds_name + '_test_with_devel'
                 save_tensors = is_bin_times(int(epoch_major)) if int(epoch_minor) == 0 else False
                 scores_of_bins = False
+            if self.multi_corp:
+                flush_heads = test_init[ds_name]
+                test_init[ds_name] = False
+            else:
+                flush_heads = test_init
+                self._initial_run = devel_init, False
             length_bins = test_bins
-            flush_heads = test_init
-            self._initial_run = devel_init, False
         else:
             folder = ds_name + '_devel'
-            length_bins = devel_bins
             save_tensors = is_bin_times(int(epoch_major)) if int(epoch_minor) == 0 else False
             scores_of_bins = False
-            flush_heads = devel_init
-            self._initial_run = False, test_init
+            if self.multi_corp:
+                flush_heads = devel_init[ds_name]
+                devel_init[ds_name] = False
+            else:
+                flush_heads = devel_init
+                self._initial_run = False, test_init
+            length_bins = devel_bins
 
+        if self.multi_corp:
+            m_corp = ds_name
+            i2vs = self.i2vs[ds_name]
+            length_bins = length_bins[ds_name]
+        else:
+            m_corp = None
+            i2vs = self.i2vs
         if hasattr(self._model, 'update_static_pca'):
-            self._model.update_static_pca()
+            self._model.update_static_pca(m_corp)
+
         work_dir = self.recorder.create_join(folder)
         serial = save_tensors or flush_heads or self.dm is None
         if serial:
@@ -206,7 +229,7 @@ class PennOperator(Operator):
             vis = SerialVis(epoch,
                             work_dir,
                             self._evalb,
-                            self.i2vs,
+                            i2vs,
                             self.recorder.log,
                             save_tensors,
                             length_bins,
@@ -214,7 +237,7 @@ class PennOperator(Operator):
                             flush_heads)
         else:
             async_ = False
-            vis = ParallelVis(epoch, work_dir, self._evalb, self.recorder.log, self.dm)
+            vis = ParallelVis(epoch, work_dir, self._evalb, self.recorder.log, self.dm, m_corp)
         vis = VisRunner(vis, async_ = async_) # wrapper
         vis.before()
         if final_test:
@@ -228,13 +251,20 @@ class PennOperator(Operator):
     def _after_validation(self, ds_name, count, seconds):
         vis, use_test_set, final_test, serial, c_vis = self._vis_mode
         scores, desc, logg = vis.after()
+        desc = (ds_name.upper() if self.multi_corp else 'Evalb') + desc
         length_bins = vis.length_bins
         devel_bins, test_bins = self._mode_length_bins
         if length_bins is not None:
-            if use_test_set:
-                self._mode_length_bins = devel_bins, length_bins # change test
+            if self.multi_corp:
+                if use_test_set:
+                    test_bins [ds_name] = length_bins
+                else:
+                    devel_bins[ds_name] = length_bins
             else:
-                self._mode_length_bins = length_bins, test_bins # change devel
+                if use_test_set:
+                    self._mode_length_bins = devel_bins, length_bins # change test
+                else:
+                    self._mode_length_bins = length_bins, test_bins # change devel
         speed_outer = float(f'{count / seconds:.1f}')
         speed_inner = float(f'{count / vis.proc_time:.1f}') # unfolded with multiprocessing
         if vis.is_async:
@@ -251,16 +281,21 @@ class PennOperator(Operator):
 
         logg += f' @{speed_outer} ◇ {speed_inner}{speed_dm} sps. (sym:nn {rate:.2f}; {seconds:.3f}{dmt} sec.)'
         scores['speed'] = speed_outer
-        if not final_test:
-            self.recorder.tensorboard(self.global_step, 'TestSet/%s' if use_test_set else 'DevelSet/%s',
+        if not final_test and self.recorder._writer is not None:
+            prefix = 'TestSet' if use_test_set else 'DevelSet'
+            suffix = ds_name if self.multi_corp else None
+            self.recorder.tensorboard(self.global_step, prefix + '/%s', suffix,
                                       F1 = scores.get('F1', 0), SamplePerSec = speed_outer)
         self._vis_mode = None
         if c_vis is not None:
             c_vis.after()
         return scores, desc, logg
 
-    @staticmethod
-    def combine_scores_and_decide_key(epoch, ds_scores):
+    def combine_scores_and_decide_key(self, epoch, ds_scores):
+        if self.multi_corp:
+            key = [s.get('F1', 0) for s in ds_scores.values()]
+            ds_scores['key'] = sum(key) / len(key)
+            return ds_scores
         scores = ds_scores[get_sole_key(ds_scores)]
         scores['key'] = scores.get('F1', 0)
         return scores
@@ -387,7 +422,7 @@ class SerialVis(BaseVis):
                 fname = f'data.{self.epoch}.rpt'
                 with open(self._ctvis.join(fname), 'w') as fw:
                     fw.write(report)
-                self._logger(f'  Go check {fname} for details.')
+                self._logger(f'  (Check {fname} for details.)')
 
         self._head_tree = self._data_tree = None
 
@@ -403,7 +438,7 @@ class SerialVis(BaseVis):
                     remove(fhead)
                     remove(fdata)
 
-        desc = f'Evalb({scores["LP"]:.2f}/{scores["LR"]:.2f}/'
+        desc = f'({scores["LP"]:.2f}/{scores["LR"]:.2f}/'
         key_score = f'{scores["F1"]:.2f}'
         desc_for_screen = desc + byte_style(key_score, underlined = True) + ')'
         desc_for_logger = f'N: {scores["N"]} {desc}{key_score})'
@@ -434,10 +469,10 @@ class ScatterVis(BaseVis):
 
 
 class ParallelVis(BaseVis):
-    def __init__(self, epoch, work_dir, evalb, logger, dm):
+    def __init__(self, epoch, work_dir, evalb, logger, dm, corp_key):
         assert dm
         super().__init__(epoch)
-        self._args = dm, evalb, logger
+        self._args = dm, evalb, logger, corp_key
         self._join = lambda fname: join(work_dir, fname)
         self._fdata = self._join(f'data.{self.epoch}.tree')
 
@@ -447,16 +482,16 @@ class ParallelVis(BaseVis):
     def _process(self, batch, d_trapezoid_info):
         (batch_id, _, _, h_offset, h_length, h_token,
          d_tag, d_label, d_right) = batch
-        dm, _, _ = self._args
+        dm, _, _, corp_key = self._args
         
         if d_trapezoid_info:
             d_segment, d_seg_length = d_trapezoid_info
-            dm.batch(batch_id, d_segment, h_offset, h_length, h_token, d_tag, d_label, d_right, d_seg_length)
+            dm.batch(batch_id, d_segment, h_offset, h_length, h_token, d_tag, d_label, d_right, d_seg_length, key = corp_key)
         else:
-            dm.batch(batch_id, h_offset, h_length, h_token, d_tag, d_label, d_right)
+            dm.batch(batch_id, h_offset, h_length, h_token, d_tag, d_label, d_right, key = corp_key)
     
     def _after(self):
-        dm, evalb, logger = self._args
+        dm, evalb, logger, _ = self._args
         fhead = self._join(f'head.tree')
         fdata = self._fdata
 
@@ -479,9 +514,9 @@ class ParallelVis(BaseVis):
                 fname = f'data.{self.epoch}.rpt'
                 with open(self._join(fname), 'w') as fw:
                     fw.write(report)
-                logger(f'  Go check {fname} for details.')
+                logger(f'  (Check {fname} for details.)')
 
-        desc = f'Evalb({scores["LP"]:.2f}/{scores["LR"]:.2f}/'
+        desc = f'({scores["LP"]:.2f}/{scores["LR"]:.2f}/'
         key_score = f'{scores["F1"]:.2f}'
         desc_for_screen = desc + byte_style(key_score, underlined = True) + ')'
         desc_for_logger = f'N: {scores["N"]} {desc}{key_score})'

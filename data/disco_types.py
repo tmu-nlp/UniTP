@@ -1,12 +1,18 @@
-C_TGR = 'tiger'
+C_TIGER = 'tiger'
 C_DPTB = 'dptb'
-C_ABSTRACT = 'disco'
-E_DISCO = C_TGR, C_DPTB
+C_ABSTRACT = 'discontinuous'
+E_DISCONTINUOUS = C_TIGER, C_DPTB
+
+from utils.param_ops import change_key
+def select_corpus(data_config, corpus_name):
+    assert C_ABSTRACT in data_config
+    assert corpus_name in E_DISCONTINUOUS
+    change_key(data_config, C_ABSTRACT, corpus_name)
 
 from data.io import make_call_fasttext, check_fasttext, check_vocab, split_dict
 build_params = {C_DPTB: split_dict(   '2-21',          '22',          '23'),
-                C_TGR:  split_dict('1-40474', '40475-45474', '45475-50474')}
-ft_bin = {C_DPTB: 'en', C_TGR: 'de'}
+                C_TIGER:  split_dict('1-40474', '40475-45474', '45475-50474')}
+ft_bin = {C_DPTB: 'en', C_TIGER: 'de'}
 call_fasttext = make_call_fasttext(ft_bin)
 
 from utils.types import false_type, true_type, binarization_5_head, NIL, ply_shuffle, frac_close_0, frac_close_1, frac_25
@@ -84,7 +90,7 @@ def select_and_split_corpus(corp_name, corp_path,
             for duet, dep in zip(corpus, dep_root):
                 duet.append(dep)
         read_func = read_disco_penn if binary else TreeKeeper.from_disco_penn
-    elif corp_name == C_TGR:
+    elif corp_name == C_TIGER:
         from xml.etree import ElementTree
         from data.cross.tiger2dep import get_tiger_heads
         devel_set = strange_to(devel_set)

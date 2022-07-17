@@ -1,8 +1,27 @@
 C_PTB = 'ptb'
 C_CTB = 'ctb'
 C_KTB = 'ktb'
-C_ABSTRACT = 'penn'
-E_PENN = C_PTB, C_CTB, C_KTB
+C_ABSTRACT = 'continuous'
+E_CONTINUE = C_PTB, C_CTB, C_KTB
+
+from utils.types import O_LFT, O_RGT
+multilingual_binarization = {
+    C_PTB: {O_LFT: 0.15, O_RGT: 0.85},
+    C_CTB: {O_LFT: 0.2, O_RGT: 0.8},
+    C_KTB: {O_LFT: 0.8, O_RGT: 0.2},
+}
+
+from utils.param_ops import change_key
+def select_corpus(data_config, corpus_name):
+    assert C_ABSTRACT in data_config
+    if corpus_name is None:
+        config = change_key(data_config, C_ABSTRACT, *E_CONTINUE)
+        if 'binarization' in config:
+            for corp_name, binarization in multilingual_binarization.items():
+                data_config[corp_name]['binarization'] = binarization
+    else:
+        assert corpus_name in E_CONTINUE
+        change_key(data_config, C_ABSTRACT, corpus_name)
 
 from data.io import make_call_fasttext, check_fasttext, check_vocab, split_dict
 build_params = {C_PTB: split_dict('2-21',             '22',      '23'    ),

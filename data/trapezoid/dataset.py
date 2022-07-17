@@ -1,11 +1,9 @@
+from data.mp import mp_workers
 from data.backend import LengthOrderedDataset, np, torch
 from data.delta import s_index, DeltaX, xtype_to_logits, preproc_cnf
-from data.penn_types import select_and_split_corpus, SourcePool
-from tqdm import tqdm
-from itertools import zip_longest, count
+from utils.types import device
+from itertools import zip_longest
 from multiprocessing import Process, Queue
-from time import sleep
-from data.mp import mp_workers
 # from data.delta import E_XDIM
 
 fields = 'token', 'tag', 'ftag'
@@ -151,7 +149,6 @@ class TrapezoidDataset(LengthOrderedDataset):
                   trapezoid_height,
                   field_v2is,
                   paddings,
-                  device,
                   factors,
                   word_trace,
                   min_len  = 0,
@@ -183,7 +180,6 @@ class TrapezoidDataset(LengthOrderedDataset):
                     trapezoid_height,
                     field_v2is,
                     paddings,
-                    device,
                     factors,
                     min_len,
                     max_len,
@@ -195,7 +191,6 @@ class TrapezoidDataset(LengthOrderedDataset):
                   trapezoid_height,
                   field_v2is,
                   paddings,
-                  device,
                   factors,
                   min_len  = 0,
                   max_len  = None,
@@ -227,7 +222,6 @@ class TrapezoidDataset(LengthOrderedDataset):
                     trapezoid_height,
                     field_v2is,
                     paddings,
-                    device,
                     factors,
                     min_len,
                     max_len,
@@ -241,7 +235,6 @@ class TrapezoidDataset(LengthOrderedDataset):
                  trapezoid_height,
                  field_v2is,
                  paddings,
-                 device,
                  factors,
                  min_len,
                  max_len,
@@ -250,10 +243,10 @@ class TrapezoidDataset(LengthOrderedDataset):
         heads = tuple(heads.split())
         if extra_text_helper:
             c2i = field_v2is['char'][1] if 'char' in field_v2is else None
-            extra_text_helper = extra_text_helper(text, device, c2i)
+            extra_text_helper = extra_text_helper(text, c2i)
         super().__init__(heads, lengths, factors, min_len, max_len, extra_text_helper)
 
-        self._paddings_device_height = paddings, device, trapezoid_height
+        self._paddings_height = paddings, trapezoid_height
         self._keepers = tuple(keepers)
 
     def at_idx(self, idx, factor, length, helper_outputs):
@@ -268,7 +261,7 @@ class TrapezoidDataset(LengthOrderedDataset):
     def _collate_fn(self, batch):
         dtype = np.int32
         field_columns = {}
-        paddings, device, height = self._paddings_device_height
+        paddings, height = self._paddings_height
 
         for field, column in zip(self.heads, zip(*batch)):
             if field == 'length':

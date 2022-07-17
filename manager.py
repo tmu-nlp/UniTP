@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
-import os
 import sys
 import argparse
 import importlib
 import data
 import experiments
-from os import mkdir, listdir
+from os import mkdir, listdir, environ
 from os.path import isdir, isfile, join, abspath
 from utils.yaml_io import save_yaml, load_yaml
 from utils.file_io import create_join, DelayedKeyboardInterrupt, link
@@ -313,7 +312,7 @@ class Manager:
         assert op_code in (None, False, 'r', 'd', 'f'), f'Unknown operation {op_code}, options are [r]esume [d]elete [f]ork'
 
         assert task in self._exp_modules, f'No such task module {task} in [' + ', '.join(self._exp_modules.keys()) + ']'
-        assert task in ready_tasks, f'No such ready task_spec {task} in [' + ', '.join(ready_paths.keys()) + ']'
+        assert task in ready_tasks, f'No such ready task_spec {task} in [' + ', '.join(ready_tasks.keys()) + ']'
         module = self._exp_modules[task]
         task_path = create_join(self._work_dir, task)
         task_spec = ready_tasks[task]
@@ -338,19 +337,10 @@ class Manager:
             train_params = check_train(args.train)
         
         if None in exp_ids: # train new
-            from data.penn_types import E_PENN, C_ABSTRACT as C_PENN_ABS
-            try:
-                from data.disco_types import E_DISCO, C_ABSTRACT as C_DISCO_ABS
-            except:
-                E_DISCO = C_DISCO_ABS = None
-            if corp_name in E_PENN: # only happen at penn data
-                change_key(data_config, C_PENN_ABS, corp_name)
-            elif E_DISCO and corp_name in E_DISCO:
-                change_key(data_config, C_DISCO_ABS, corp_name)
+            if hasattr(module, 'select_corpus'):
+                module.select_corpus(data_config, corp_name)
+
             for dn, dc in data_config.items():
-                if dn not in ready_paths:
-                    print(f"/{dn} is an abstract data, you might mean: {' or '.join(ready_paths.keys())}", file = sys.stderr)
-                    exit()
                 if dc is None:
                     data_config[dc] = dict(data_path = ready_paths[dc])
                 else:
@@ -437,12 +427,19 @@ def get_args():
 
 if __name__ == '__main__':
     args = get_args()
+    environ['CUDA_VISIBLE_DEVICES'] = args.gpu
     manager = Manager(args.base, args.reset)
-    os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu
+
+    import torch
     from utils import types
-    types.memory_in_gigabyte = args.memory
+    types.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     if args.threads > 0:
         types.num_threads = args.threads
+    if args.memory:
+        gb = int(args.memory * 1000 * 1000 * 1000)
+        torch.empty(gb, dtype = torch.int8, device = types.device)
+        print(f'Pre-occupy {gb:,} byte memory on GPU{args.gpu}')
+    
     if args.prepare:
         manager.check_data(build_if_not_yet = True, print_file = sys.stderr if args.select else None)
     if args.select:

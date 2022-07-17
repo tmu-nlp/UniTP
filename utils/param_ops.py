@@ -53,10 +53,14 @@ class HParams:
     def __str__(self):
         return dict_print(self._nested, 2)
 
+from copy import deepcopy
 def change_key(dict_data, from_key, *to_keys):
     value = dict_data.pop(from_key)
-    for to_key in to_keys:
-        dict_data[to_key] = value
+    for eid, to_key in enumerate(to_keys):
+        if eid:
+            dict_data[to_key] = deepcopy(value)
+        else:
+            dict_data[to_key] = value
     return value
 
 def shift_key(key, from_dict, *to_dicts):

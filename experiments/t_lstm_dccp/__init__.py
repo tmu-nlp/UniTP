@@ -1,5 +1,5 @@
 from data.disco import DiscoReader
-from data.disco_types import C_ABSTRACT, dccp_data_config
+from data.disco_types import C_ABSTRACT, dccp_data_config, select_corpus
 from utils.types import M_TRAIN, E_ORIF5_HEAD
 from utils.param_ops import HParams, get_sole_key
 from data.backend import CharTextHelper
@@ -53,7 +53,6 @@ def get_configs(recorder = None):
     task_params = {pname: reader.get_to_model(pname) for pname in task_params}
 
     model = DiscoRnnTree(**model_config, **task_params)
-    model.to(reader.device)
     # train_config.create(label_log_freq_inv = reader.frequency('label', log_inv = True))
     from data.cross.binary import BxDM
     get_dm = lambda i2vs, num_threads: BxDM(disco.batch_size << 1, i2vs, num_threads)

@@ -267,7 +267,7 @@ class NerVis(BaseVis):
                 logger(f'    {e}. ' + error)
             if num_errors > 10:
                 logger('     ....')
-            logger(f'  Go check {self._err} for details.')
+            logger(f'  (Check {self._err} for details.)')
         with open(self._err, 'w') as fw:
             fw.write(report)
 

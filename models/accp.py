@@ -196,6 +196,7 @@ class BaseRnnParser(MultiStem):
                 base_inputs,
                 bottom_existence,
                 ingore_logits = False,
+                key = None,
                 **kw_args):
         (existence, embeddings, weight, fence, fence_idx, fence_vote, segment,
          seg_length) = super().forward(base_inputs, bottom_existence, **kw_args)
@@ -210,12 +211,14 @@ class BaseRnnParser(MultiStem):
                 tags = None
             else:
                 _, batch_len, _ = base_inputs.shape
-                tags = self._tag_layer(layers_of_hidden[:, :batch_len]) # diff small endian
+                tag_fn = self._tag_layer if key is None else self._tag_layer[key]
+                tags = tag_fn(layers_of_hidden[:, :batch_len]) # diff small endian
             
             if self._label_layer is None or ingore_logits:
                 labels = None
             else:
-                labels = self._label_layer(layers_of_hidden)
+                label_fn = self._label_layer if key is None else self._label_layer[key]
+                labels = label_fn(layers_of_hidden)
         else:
             layers_of_hidden = tags = labels = None
 
@@ -238,10 +241,12 @@ class BaseRnnParser(MultiStem):
     def get_decision_with_value(self, logits):
         return get_decision_with_value(self._score_fn, logits)
 
-    def get_losses(self, batch, weight_mask, tag_logits, label_logits):
+    def get_losses(self, batch, weight_mask, tag_logits, label_logits, key = None):
+        tag_fn = self._tag_layer if key is None else self._tag_layer[key]
+        label_fn = self._label_layer if key is None else self._label_layer[key]
         height_mask = batch['segment'][None] * (batch['seg_length'] > 0)
         height_mask = height_mask.sum(dim = 1)
-        tag_loss   = get_loss(self._tag_layer,   self._logit_max, tag_logits,   batch, 'tag')
-        label_loss = get_loss(self._label_layer, self._logit_max, label_logits, batch, False, height_mask, weight_mask, 'label')
+        tag_loss   = get_loss(tag_fn,   self._logit_max, tag_logits,   batch, 'tag')
+        label_loss = get_loss(label_fn, self._logit_max, label_logits, batch, False, height_mask, weight_mask, 'label')
         # height mask and weight_mask are both beneficial! (nop, weight_mask by freq is not helping)
         return tag_loss, label_loss

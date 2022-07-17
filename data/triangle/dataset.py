@@ -1,7 +1,7 @@
 from data.backend import LengthOrderedDataset, np, torch, token_first
 from data.delta import s_index
 from utils.file_io import read_data
-from utils.shell_io import byte_style
+from utils.types import device
 from tqdm import tqdm
 from data.delta import write_tensors, E_XDIM
 
@@ -15,7 +15,6 @@ class TriangularDataset(LengthOrderedDataset):
                  prefix,
                  field_v2is,
                  paddings,
-                 device,
                  factors  = None,
                  min_len  = 0,
                  max_len  = None,
@@ -62,12 +61,12 @@ class TriangularDataset(LengthOrderedDataset):
         assert all(len(lengths) == len(col) for col in columns.values())
         
         if extra_text_helper:
-            extra_text_helper = extra_text_helper(text, device, c2i if has_char else None)
+            extra_text_helper = extra_text_helper(text, c2i if has_char else None)
         heads = tuple(heads)
         super().__init__(heads, lengths, factors, min_len, max_len, extra_text_helper)
 
         self._columns = columns
-        self._paddings_device = paddings, device
+        self._paddings = paddings
 
     def at_idx(self, idx, factor, length, helper_outputs):
         sample = {}
@@ -82,7 +81,7 @@ class TriangularDataset(LengthOrderedDataset):
     def _collate_fn(self, batch):
         dtype = np.int32
         field_columns = {}
-        paddings, device = self._paddings_device
+        paddings = self._paddings
 
         for field, column in zip(self.heads, zip(*batch)):
             if field == 'length':

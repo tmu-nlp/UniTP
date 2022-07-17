@@ -49,5 +49,4 @@ def get_configs(recorder = None):
     task_params = {pname: reader.get_to_model(pname) for pname in ('num_tags', 'num_labels', 'paddings')}
 
     model = ContinuousXLNetTree(**model_config, **task_params)
-    model.to(reader.device)
     return  PennOperator(model, get_datasets, recorder, reader.i2vs, recorder.evalb, train_config)

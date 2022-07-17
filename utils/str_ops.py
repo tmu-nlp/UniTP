@@ -206,6 +206,8 @@ class StringProgressBar:
             else:
                 c[idx] += 1
                 num = c[idx] / t[idx]
+        elif isinstance(num, int) and num == 0:
+            c[idx] = 0
         if isinstance(num, float):
             num = int(num * g[idx])
         if p[idx] != num:

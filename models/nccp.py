@@ -225,6 +225,7 @@ class BaseRnnParser(nn.Module):
                 base_inputs,
                 bottom_existence,
                 ingore_logits = False,
+                key = None,
                 **kw_args):
 
         (layers_of_base, layers_of_orient, layers_of_existence,
@@ -242,12 +243,14 @@ class BaseRnnParser(nn.Module):
                 tags = None
             else:
                 _, batch_len, _ = base_inputs.shape
-                tags = self._tag_layer(layers_of_hidden[:, -batch_len:])
+                tag_fn = self._tag_layer if key is None else self._tag_layer[key]
+                tags = tag_fn(layers_of_hidden[:, -batch_len:])
             
             if self._label_layer is None or ingore_logits:
                 labels = None
             else:
-                labels = self._label_layer(layers_of_hidden)
+                label_fn = self._label_layer if key is None else self._label_layer[key]
+                labels = label_fn(layers_of_hidden)
         else:
             layers_of_hidden = tags = labels = None
 
@@ -261,8 +264,9 @@ class BaseRnnParser(nn.Module):
     def hidden_dim(self):
         return self._hidden_dim
 
-    def get_label(self, hidden):
-        return self._label_layer(hidden)
+    def get_label(self, hidden, key = None):
+        label_fn = self._label_layer if key is None else self._label_layer[key]
+        return label_fn(hidden)
 
     def get_decision(self, logits):
         return get_decision(self._logit_max, logits)
@@ -270,9 +274,11 @@ class BaseRnnParser(nn.Module):
     def get_decision_with_value(self, logits):
         return get_decision_with_value(self._score_fn, logits)
 
-    def get_losses(self, batch, tag_logits, top3_label_logits, label_logits, height_mask, weight_mask):
-        tag_loss   = get_loss(self._tag_layer,   self._logit_max, tag_logits,   batch, 'tag')
-        label_loss = get_loss(self._label_layer, self._logit_max, label_logits, batch, True, height_mask, weight_mask, 'label')
+    def get_losses(self, batch, tag_logits, top3_label_logits, label_logits, height_mask, weight_mask, key = None):
+        tag_fn = self._tag_layer if key is None else self._tag_layer[key]
+        label_fn = self._label_layer if key is None else self._label_layer[key]
+        tag_loss   = get_loss(tag_fn,   self._logit_max, tag_logits,   batch, 'tag')
+        label_loss = get_loss(label_fn, self._logit_max, label_logits, batch, True, height_mask, weight_mask, 'label')
         if top3_label_logits is not None:
-            tag_loss += get_loss(self._label_layer, self._logit_max, top3_label_logits, batch, 'top3_label')
+            label_loss += get_loss(label_fn, self._logit_max, top3_label_logits, batch, 'top3_label')
         return tag_loss, label_loss

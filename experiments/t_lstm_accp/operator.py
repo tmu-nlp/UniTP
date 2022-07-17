@@ -1,11 +1,8 @@
 import torch
-from torch import nn
-from utils.operator import Operator
-from utils.param_ops import get_sole_key
 from time import time
 from utils.math_ops import is_bin_times
 from utils.types import M_TRAIN, BaseType, frac_open_0, true_type, false_type, tune_epoch_type, frac_06, frac_close
-from models.utils import PCA, fraction, hinge_score, mean_stdev
+from models.utils import fraction, mean_stdev
 from models.loss import binary_cross_entropy, hinge_loss
 from experiments.t_lstm_nccp.operator import PennOperator
 from data.penn_types import C_PTB
@@ -67,6 +64,7 @@ class MultiOperator(PennOperator):
     def _step(self, mode, ds_name, batch, batch_id = None):
 
         supervised_signals = {}
+        supervised_signals['key'] = corp = ds_name if self.multi_corp else None
         if mode == M_TRAIN:
             supervised_signals['supervised_fence'] = gold_fences = unpack_fence(batch['fence'], batch['segment'], True)
             # supervised_signals['keep_low_attention_rate'] = self._train_config.keep_low_attention_rate
@@ -97,13 +95,8 @@ class MultiOperator(PennOperator):
             tag_weight   = (  tag_mis | bottom_existence)
             label_weight = (label_mis | existences)
             extended_gold_fences = extend_fence_idx(gold_fences)
-
-            # if self._train_config.label_freq_as_loss_weight:
-            #     label_mask = self._train_config.label_log_freq_inv[batch['label']]
-            # else:
-            #     label_mask = None
             
-            tag_loss, label_loss = self._model.get_losses(batch, None, tag_logits, label_logits)
+            tag_loss, label_loss = self._model.get_losses(batch, None, tag_logits, label_logits, corp)
             if self._train_config.fence_hinge_loss:
                 fence_loss = hinge_loss(fence_logits, extended_gold_fences, None)
             else:
@@ -114,21 +107,23 @@ class MultiOperator(PennOperator):
             total_loss = self._train_config.loss_weight.fence * fence_loss + total_loss
             total_loss.backward()
             
-            if hasattr(self._model, 'tensorboard'):
-                self._model.tensorboard(self.recorder, self.global_step)
-            self.recorder.tensorboard(self.global_step, 'Accuracy/%s',
-                                      Tag   = 1 - fraction(tag_mis,     tag_weight),
-                                      Label = 1 - fraction(label_mis, label_weight),
-                                      Fence = fraction(fences == extended_gold_fences))
-            self.recorder.tensorboard(self.global_step, 'Loss/%s',
-                                      Tag   = tag_loss,
-                                      Label = label_loss,
-                                      Fence = fence_loss,
-                                      Total = total_loss)
-            batch_kwargs = dict(Length = batch_len, SamplePerSec = batch_len / batch_time)
-            if 'segment' in batch:
-                batch_kwargs['Height'] = batch['segment'].shape[0]
-            self.recorder.tensorboard(self.global_step, 'Batch/%s', **batch_kwargs)
+            if self.recorder._writer is not None:
+                suffix = ds_name if self.multi_corp else None
+                if hasattr(self._model, 'tensorboard'):
+                    self._model.tensorboard(self.recorder, self.global_step)
+                self.recorder.tensorboard(self.global_step, 'Accuracy/%s', suffix,
+                    Tag   = 1 - fraction(tag_mis,     tag_weight),
+                    Label = 1 - fraction(label_mis, label_weight),
+                    Fence = fraction(fences == extended_gold_fences))
+                self.recorder.tensorboard(self.global_step, 'Loss/%s', suffix,
+                    Tag   = tag_loss,
+                    Label = label_loss,
+                    Fence = fence_loss,
+                    Total = total_loss)
+                batch_kwargs = dict(Length = batch_len, SamplePerSec = batch_len / batch_time)
+                if 'segment' in batch:
+                    batch_kwargs['Height'] = batch['segment'].shape[0]
+                self.recorder.tensorboard(self.global_step, 'Batch/%s', suffix, **batch_kwargs)
         else:
             vis, _, _, serial, draw_weights = self._vis_mode
 
@@ -167,19 +162,34 @@ class MultiOperator(PennOperator):
                     draw_weights = is_bin_times(int(epoch_major))
                 else:
                     draw_weights = False
+            if self.multi_corp:
+                flush_heads = test_init[ds_name]
+                test_init[ds_name] = False
+            else:
+                flush_heads = test_init
+                self._initial_run = devel_init, False
             length_bins = test_bins
-            flush_heads = test_init
-            self._initial_run = devel_init, False
         else:
             folder = ds_name + '_devel'
-            length_bins = devel_bins
             if int(epoch_minor) == 0:
                 draw_weights = is_bin_times(int(epoch_major))
             else:
                 draw_weights = False
-            flush_heads = devel_init
-            self._initial_run = False, test_init
+            if self.multi_corp:
+                flush_heads = devel_init[ds_name]
+                devel_init[ds_name] = False
+            else:
+                flush_heads = devel_init
+                self._initial_run = False, test_init
+            length_bins = devel_bins
 
+        if self.multi_corp:
+            m_corp = ds_name
+            i2vs = self.i2vs[ds_name]
+            length_bins = length_bins[ds_name]
+        else:
+            m_corp = None
+            i2vs = self.i2vs
         work_dir = self.recorder.create_join(folder)
         serial = draw_weights or flush_heads or self.dm is None
         if serial:
@@ -187,7 +197,7 @@ class MultiOperator(PennOperator):
             vis = MultiVis(epoch,
                           work_dir,
                           self._evalb,
-                          self.i2vs,
+                          i2vs,
                           self.recorder.log,
                           ds_name == C_PTB,
                           draw_weights,
@@ -195,7 +205,7 @@ class MultiOperator(PennOperator):
                           flush_heads)
         else:
             async_ = False
-            vis = ParallelVis(epoch, work_dir, self._evalb, self.recorder.log, self.dm)
+            vis = ParallelVis(epoch, work_dir, self._evalb, self.recorder.log, self.dm, m_corp)
         vis = VisRunner(vis, async_ = async_) # wrapper
         vis.before()
         self._vis_mode = vis, use_test_set, final_test, serial, draw_weights
@@ -208,12 +218,19 @@ class MultiOperator(PennOperator):
         else:
             scores, desc, logg = vis.after()
             length_bins = None
+        desc = (ds_name.upper() if self.multi_corp else 'Evalb') + desc
 
         if length_bins is not None:
-            if use_test_set:
-                self._mode_length_bins = devel_bins, length_bins # change test
+            if self.multi_corp:
+                if use_test_set:
+                    test_bins [ds_name] = length_bins
+                else:
+                    devel_bins[ds_name] = length_bins
             else:
-                self._mode_length_bins = length_bins, test_bins # change devel
+                if use_test_set:
+                    self._mode_length_bins = devel_bins, length_bins # change test
+                else:
+                    self._mode_length_bins = length_bins, test_bins # change devel
 
         speed_outer = float(f'{count / seconds:.1f}')
         speed_inner = float(f'{count / vis.proc_time:.1f}') # unfolded with multiprocessing
@@ -233,9 +250,10 @@ class MultiOperator(PennOperator):
         logg += f' @{speed_outer} ◇ {speed_inner}{speed_dm} sps. (sym:nn {rate:.2f}; {seconds:.3f}{dmt} sec.)'
         scores['speed'] = speed_outer
         if not final_test:
-            self.recorder.tensorboard(self.global_step, 'TestSet/%s' if use_test_set else 'DevelSet/%s',
+            prefix = 'TestSet' if use_test_set else 'DevelSet'
+            suffix = ds_name if self.multi_corp else None
+            self.recorder.tensorboard(self.global_step, prefix + '/%s', suffix,
                                       F1 = scores.get('F1', 0), SamplePerSec = speed_outer)
-        self._vis_mode = None
         return scores, desc, logg
 
 
@@ -353,7 +371,7 @@ class MultiVis(BaseVis):
                     if not safe:
                         fw.write('\n[FORCING TREE WITH ROOT = S]\n')
                     try:
-                        fw.write('\n'.join(draw_str_lines(tree, 2)) + '\n\n')
+                        fw.write('\n'.join(draw_str_lines(tree)) + '\n\n')
                     except Exception as err:
                         print('  FAILING DRAWING:', err, file = stderr)
                         fw.write('FAILING DRAWING\n\n')
@@ -382,7 +400,7 @@ class MultiVis(BaseVis):
         with open(self._rpt_file, 'w') as fw:
             fw.write(report)
             if num_errors >= 10:
-                self._logger(f'  Go check {self._rpt_file} for details.')
+                self._logger(f'  (Check {self._rpt_file} for details.)')
                 fw.write('\n\n' + '\n'.join(errors))
 
         if self.length_bins is not None and self._draw_file is not None:
@@ -403,29 +421,29 @@ class MultiVis(BaseVis):
                     line += f'{h}({c}); '
                 fw.write(line[:-2] + '\n')
 
-        desc = f'Evalb({scores["LP"]:.2f}/{scores["LR"]:.2f}/'
+        desc = f'({scores["LP"]:.2f}/{scores["LR"]:.2f}/'
         key_score = f'{scores["F1"]:.2f}'
         desc_for_screen = desc + byte_style(key_score, underlined = True) + ')'
         desc_for_logger = f'N: {scores["N"]} {desc}{key_score})'
         return scores, desc_for_screen, desc_for_logger, self.length_bins
 
 class ParallelVis(BaseVis):
-    def __init__(self, epoch, work_dir, evalb, logger, dm):
+    def __init__(self, epoch, work_dir, evalb, logger, dm, corp_key):
         super().__init__(epoch)
         self._join = lambda fname: join(work_dir, fname)
         self._fdata = self._join(f'data.{self.epoch}.tree')
-        self._args = dm, evalb, logger
+        self._args = dm, evalb, logger, corp_key
 
     def _before(self):
         self._args[0].timeit()
 
     def _process(self, batch):
         batch_id, h_token, d_tag, d_label, d_fence, d_segment, d_seg_length = batch
-        dm, _, _ = self._args
-        dm.batch(batch_id, d_segment, h_token, d_tag, d_label, d_fence, d_seg_length)
+        dm, _, _, corp_key = self._args
+        dm.batch(batch_id, d_segment, h_token, d_tag, d_label, d_fence, d_seg_length, key = corp_key)
     
     def _after(self):
-        dm, evalb, logger = self._args
+        dm, evalb, logger, _ = self._args
         fhead = self._join(f'head.tree')
         fdata = self._fdata
 
@@ -448,9 +466,9 @@ class ParallelVis(BaseVis):
                 fname = f'data.{self.epoch}.rpt'
                 with open(self._join(fname), 'w') as fw:
                     fw.write(report)
-                logger(f'  Go check {fname} for details.')
+                logger(f'  (Check {fname} for details.)')
 
-        desc = f'Evalb({scores["LP"]:.2f}/{scores["LR"]:.2f}/'
+        desc = f'({scores["LP"]:.2f}/{scores["LR"]:.2f}/'
         key_score = f'{scores["F1"]:.2f}'
         desc_for_screen = desc + byte_style(key_score, underlined = True) + ')'
         desc_for_logger = f'N: {scores["N"]} {desc}{key_score})'

@@ -51,7 +51,6 @@ class DiscoReader(WordBaseReader):
             assert binarization is None
 
         common_args = dict(field_v2is = self.v2is,
-                           device = self.device,
                            factors = binarization,
                            min_len = min_len,
                            max_len = max_len,
@@ -82,7 +81,7 @@ class DiscoMultiReader(WordBaseReader):
         labels = i2vs['label']
         if has_greedy_sub:
             from utils.shell_io import byte_style
-            print(byte_style('+ greedy_subs', '2'))
+            print(byte_style('+ Balancing subs', '2'))
         if unify_sub:
             labels = [t for t in labels if t[0] not in '#_']
             oovs['label'] = len(labels)
@@ -128,7 +127,6 @@ class DiscoMultiReader(WordBaseReader):
         if errors:
             print(errors)
         len_sort_ds = MultibDataset(signals,
-                                    self.device,
                                     medium_factors,
                                     extra_text_helper,
                                     c2i,

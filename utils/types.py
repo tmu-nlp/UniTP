@@ -1,4 +1,6 @@
-memory_in_gigabyte = None
+import os
+num_threads = (os.cpu_count() - 2) if os.cpu_count() > 2 else 1
+device = None
 
 class BaseWrapper:
     def __init__(self, item, to_str):
@@ -167,9 +169,6 @@ F_LEFT, F_RIGHT = E_ORIF4[:2]
 F_RANDOM = 'random'
 F_CON = 'continuous'
 E_FACTOR = F_RANDOM, F_LEFT, F_RIGHT, F_DEP, F_CON
-
-import os
-num_threads = (os.cpu_count() - 2) if os.cpu_count() > 2 else 1
 
 def seg_type(seg_str, typ):
     for seg in seg_str.split(','):

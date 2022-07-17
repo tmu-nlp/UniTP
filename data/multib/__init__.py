@@ -228,7 +228,7 @@ def get_tree_from_signals(word, tag, layers_of_labels, layers_of_splits,
                 sub_tree = bottom[start]
                 if label[0] in '#_' or (unary_label_match(sub_tree[0], label) if add_fence_vote else (sub_tree.label() == label)):
                     # relay sub
-                    if balancing_sub:
+                    if isinstance(sub_tree, Tree) and balancing_sub:
                         relay_label = sub_tree.label()
                         if '│' in relay_label:
                             sub_tree.set_label(unary_chars + unary_chars + relay_label)
@@ -348,3 +348,38 @@ class MAryX:
 
     # def __len__(self):
     #     return len(self._signals[0])
+
+    def check_signals(self):
+        origin = clear_raw_tree(self._raw_tree)
+        tree     = get_tree_from_signals(*self.signals())
+        sub_tree = get_tree_from_signals(*self.sub_signals())
+        tree    .collapse_unary(collapseRoot = True)
+        sub_tree.collapse_unary(collapseRoot = True)
+        if not origin == tree == sub_tree:
+            origin = ('\n'.join(draw_str_lines(origin)))
+            tree = ('\n'.join(draw_str_lines(tree)))
+            sub_tree = ('\n'.join(draw_str_lines(sub_tree)))
+            if origin != tree:
+                print(origin)
+                print(tree)
+                breakpoint()
+            if origin != sub_tree:
+                print(origin)
+                print(sub_tree)
+                breakpoint()
+
+def clear_raw_tree(raw):
+    label = raw.label()
+    if raw.height() < 3:
+        if label in ('LRB', 'RRB'):
+            return Tree('-' + label + '-', raw[:])
+        return raw
+    if label[0] in '_#':
+        return [clear_raw_tree(x) for x in raw]
+    segs = []
+    for x in label.split('+'):
+        if (at := x.find('@')) >= 0:
+            x = x[:at]
+        if x not in segs:
+            segs.append(x)
+    return Tree('+'.join(segs), flatten_children(clear_raw_tree(sub) for sub in raw))

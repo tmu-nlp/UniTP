@@ -3,6 +3,7 @@ from models.backend import PadRNN, char_rnn_config, nn
 from models.nccp import BaseRnnParser, model_type
 from utils.types import word_dim, true_type, false_type
 from models.combine import get_combinator, combine_static_type
+from torch.nn import ModuleDict
 
 model_type = model_type.copy()
 model_type['model_dim']        = word_dim
@@ -28,8 +29,13 @@ class ContinuousRnnTree(BaseRnnParser):
         super().__init__(model_dim, **base_config)
         
         if use['word_emb']:
-            self._word_emb = InputLeaves(model_dim, num_tokens, initial_weights, not paddings, **word_emb)
-            input_dim = self._word_emb.input_dim
+            if isinstance(num_tokens, int):
+                self._word_emb = InputLeaves(model_dim, num_tokens, initial_weights, not paddings, **word_emb)
+                input_dim = self._word_emb.input_dim
+            else:
+                from utils.param_ops import get_sole_key
+                self._word_emb = ModuleDict({k: InputLeaves(model_dim, v, initial_weights[k], not paddings[k], **word_emb) for k,v in num_tokens.items()})
+                input_dim = get_sole_key(n.input_dim for n in self._word_emb.values())
         else:
             self._word_emb = None
             input_dim = model_dim
@@ -56,20 +62,32 @@ class ContinuousRnnTree(BaseRnnParser):
             assert diff >= 0, 'invalid difference'
         self._half_dim_diff = diff >> 1
 
-    def get_static_pca(self):
-        if self._word_emb and self._word_emb.has_static_pca:
-            return self._word_emb.pca
+    def get_static_pca(self, key = None):
+        if self._word_emb:
+            if isinstance(self._word_emb, InputLeaves):
+                word_emb = self._word_emb
+            else:
+                word_emb = self._word_emb[key]
+            if word_emb.has_static_pca:
+                return word_emb.pca
         return None
 
-    def update_static_pca(self):
-        if self._word_emb and self._word_emb.has_static_pca:
-            self._word_emb.flush_pc_if_emb_is_tuned()
+    def update_static_pca(self, key = None):
+        if self._word_emb:
+            if isinstance(self._word_emb, InputLeaves):
+                word_emb = self._word_emb
+            else:
+                word_emb = self._word_emb[key]
+            if word_emb.has_static_pca:
+                word_emb.flush_pc_if_emb_is_tuned()
 
     def forward(self, word_idx, tune_pre_trained, ingore_logits = False,
-                sub_idx = None, sub_fence = None, offset = None, **kw_args):
+                sub_idx = None, sub_fence = None, offset = None, key = None,
+                **kw_args):
         batch_size, batch_len = word_idx.shape
         if self._word_emb:
-            static, bottom_existence = self._word_emb(word_idx, tune_pre_trained)
+            emb = self._word_emb if key is None else self._word_emb[key]
+            static, bottom_existence = emb(word_idx, tune_pre_trained)
             if self._char_rnn:
                 char_info = self._char_rnn(sub_idx, sub_fence, offset)
                 char_info = self._stem_dp(char_info)
@@ -91,7 +109,7 @@ class ContinuousRnnTree(BaseRnnParser):
             base_inputs  = dynamic * bottom_existence
             if self._combine_static is not None:
                 base_inputs = self._combine_static.compose(static, base_inputs, None)
-        base_returns = super().forward(base_inputs, bottom_existence, ingore_logits, **kw_args)
+        base_returns = super().forward(base_inputs, bottom_existence, ingore_logits, key, **kw_args)
         top3_labels  = super().get_label(top3_hidden) if top3_hidden is not None else None
         return (batch_size, batch_len, static, top3_labels) + base_returns
 

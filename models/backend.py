@@ -2,10 +2,10 @@ import torch
 from torch import nn
 from utils.types import BaseType, true_type, frac_4, frac_2
 from utils.types import num_ori_layer, false_type
-from models.utils import PCA
 from utils.types import num_ctx_layer, hidden_dim
 from utils.param_ops import HParams
 from models.types import act_fasttext
+from models.utils import PCA
 input_config = dict(pre_trained = true_type, activation = act_fasttext, drop_out = frac_4)
 
 class InputLeaves(nn.Module):
