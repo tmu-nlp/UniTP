@@ -224,6 +224,7 @@ class SelectCache:
             return (gn(lhs_fn(self._x)),) * 2
         return (gn(fn(self._x)) for fn in fns)
 
+from models import StemOutput
 class DiscoMultiStem(MultiStem):
     def __init__(self,
                  model_dim,
@@ -283,7 +284,13 @@ class DiscoMultiStem(MultiStem):
                 return self.cat_2d_disco(self._stem_dp(hidden), self._stem_dp)
         self.predict_2d_disco = predict_2d_disco
 
-    def forward(self, unit_emb, existence, supervision = None, disco_2d_intra_rate = 0, disco_2d_inter_rate = 0, **kw_args):
+    def forward(self,
+                existence,
+                unit_emb,
+                supervision = None,
+                disco_2d_intra_rate = 0,
+                disco_2d_inter_rate = 0,
+                **kw_args):
         batch_size, seg_len, model_dim = unit_emb.shape
         h0c0 = self.get_h0c0(batch_size)
         max_iter_n = seg_len << 1 # 2 times
@@ -488,8 +495,12 @@ class DiscoMultiStem(MultiStem):
                 weight = torch.cat(layers_of_weight, dim = 1)
             seg_length = torch.stack(seg_length, dim = 1)
 
-        return existence, embeddings, weight, disco_1d, fence, disco_2d, disco_2d_positive, disco_2d_negative, inter_2d_negative, space, segment, seg_length
+        return StemOutput(embeddings, existence, (weight, disco_1d, fence, disco_2d, disco_2d_positive, disco_2d_negative, inter_2d_negative, space, segment, seg_length))
 
+    @property
+    def message(self):
+        if hasattr(self, 'biaff_2d_disco'):
+            return f'Biaff.bias: {self.biaff_2d_disco.bias.bias.mean()}'
 
 # batch_insert(101011, 4444) -> 1010000011
 #  001132324    001112334 [_-]=[01]
@@ -512,88 +523,23 @@ multi_class = dict(hidden_dim = hidden_dim,
 
 model_type = dict(space_layer     = stem_config,
                   tag_label_layer = multi_class)
-from models.utils import get_logit_layer
-from models.loss import get_decision, get_decision_with_value, get_loss
 
-class BaseRnnParser(DiscoMultiStem):
-    def __init__(self,
-                 model_dim,
-                 num_tags,
-                 num_labels,
-                 space_layer,
-                 tag_label_layer,
-                 **kw_args):
-        super().__init__(model_dim, **space_layer)
+from models.loss import get_loss
+from models.backend import OutputLayer
+from utils.param_ops import change_key
+class BaseRnnParser(OutputLayer):
+    def __init__(self, *args, **kwargs):
+        change_key(kwargs, 'space_layer', 'stem_layer')
+        super().__init__(DiscoMultiStem, *args, **kwargs)
 
-        hidden_dim = tag_label_layer['hidden_dim']
-        if hidden_dim:
-            self._shared_layer = nn.Linear(model_dim, hidden_dim)
-            self._dp_layer = nn.Dropout(tag_label_layer['drop_out'])
-
-            Net, argmax, score_act = get_logit_layer(tag_label_layer['logit_type'])
-            self._tag_layer   = Net(hidden_dim, num_tags) if num_tags else None
-            self._label_layer = Net(hidden_dim, num_labels) if num_labels else None
-            self._logit_max = argmax
-            if argmax:
-                self._activation = tag_label_layer['activation']()
-            self._score_fn = score_act(dim = 2)
-        self._hidden_dim = hidden_dim
-        self._model_dim = model_dim
-
-    def forward(self,
-                base_inputs,
-                bottom_existence,
-                ingore_logits = False,
-                **kw_args):
-        (existence, embeddings, weight, disco_1d, fence, disco_2d,
-         disco_2d_pos, disco_2d_neg, inter_2d_neg, space, segment,
-         seg_length) = super().forward(base_inputs, bottom_existence, **kw_args)
-
-        if self._hidden_dim:
-            layers_of_hidden = self._shared_layer(embeddings)
-            layers_of_hidden = self._dp_layer(layers_of_hidden)
-            if self._logit_max:
-                layers_of_hidden = self._activation(layers_of_hidden)
-
-            if self._tag_layer is None or ingore_logits:
-                tags = None
-            else:
-                _, batch_len, _ = base_inputs.shape
-                tags = self._tag_layer(layers_of_hidden[:, :batch_len]) # diff small endian
-            
-            if self._label_layer is None or ingore_logits:
-                labels = None
-            else:
-                labels = self._label_layer(layers_of_hidden)
-        else:
-            layers_of_hidden = tags = labels = None
-
-        return existence, embeddings, weight, disco_1d, fence, disco_2d, disco_2d_pos, disco_2d_neg, inter_2d_neg, space, tags, labels, segment, seg_length
-
-    @property
-    def model_dim(self):
-        return self._model_dim
-
-    @property
-    def hidden_dim(self):
-        return self._hidden_dim
-
-    def get_label(self, hidden):
-        return self._label_layer(hidden)
-
-    def get_decision(self, logits):
-        return get_decision(self._logit_max, logits)
-
-    def get_decision_with_value(self, logits):
-        return get_decision_with_value(self._score_fn, logits)
-
-    def get_losses(self, batch, tag_logits, label_logits):
+    def get_losses(self, batch, tag_logits, label_logits, key = None):
+        tag_fn = self._tag_layer if key is None else self._tag_layer[key]
+        label_fn = self._label_layer if key is None else self._label_layer[key]
         height_mask = batch['segment'][None] * (batch['seg_length'] > 0)
         height_mask = height_mask.sum(dim = 1)
-        tag_loss   = get_loss(self._tag_layer,   self._logit_max, tag_logits,   batch, 'tag')
-        label_loss = get_loss(self._label_layer, self._logit_max, label_logits, batch, False, height_mask, None, 'label')
+        tag_loss   = get_loss(tag_fn,   self._logit_max, tag_logits,   batch, 'tag')
+        label_loss = get_loss(label_fn, self._logit_max, label_logits, batch, False, height_mask, None, 'label')
         return tag_loss, label_loss
-
 
 
 

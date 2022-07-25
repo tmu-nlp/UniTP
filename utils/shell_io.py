@@ -37,10 +37,10 @@ def parseval(cmd_tuple, fhead, fdata):
     command.append(fdata)
     return run(command, stdout = PIPE, stderr = PIPE)
 
-from collections import Counter, defaultdict
+from collections import Counter
 def rpt_summary(rpt_lines, get_individual, get_summary):
+    summary = {}
     individuals = get_individual
-    summary = defaultdict(int)
     for line in rpt_lines.split('\n'):
         if line.startswith('===='):
             if individuals is True: # start

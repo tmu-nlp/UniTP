@@ -57,6 +57,21 @@ def unpack_fence_vote(fence_vote, batch_size, segment):
         start = end
     return layers
 
+def upper_triangle(m, skip):
+    for rid, row in enumerate(m):
+        for cid, val in enumerate(row[rid + skip:]):
+            yield rid, rid + skip + cid, float(val)
+
+def sort_matrix(m, lhs, rhs, higher_better):
+    lines = []
+    n = max(len(n) for n in lhs) + 1
+    for rid, row in enumerate(m):
+        line = []
+        for cid, _ in sorted(enumerate(row), key = lambda x: x[1], reverse = higher_better):
+            line.append(rhs[cid])
+        lines.append(lhs[rid].ljust(n) + ': ' + ' '.join(line))
+    return '\n'.join(lines)
+
 class MultiOperator(PennOperator):
     def __init__(self, model, get_datasets, recorder, i2vs, get_dm, evalb, train_config):
         super().__init__(model, get_datasets, recorder, i2vs, get_dm, evalb, train_config)
@@ -76,10 +91,11 @@ class MultiOperator(PennOperator):
             for x in ('plm_idx', 'plm_start'):
                 supervised_signals[x] = batch[x]
 
-        batch_time = time()
+        batch_time = time() # weight, fence, fence_idx, fence_vote, segment, seg_length
         (batch_size, batch_len, static, top3_label_logits,
-         existences, embeddings, weights, fence_logits, fence_idx, fence_vote, tag_logits, label_logits,
-         segment, seg_length) = self._model(batch['token'], self._tune_pre_trained, **supervised_signals)
+         embeddings, existences, _, tag_logits, label_logits,
+         (weights, fence_logits, fence_idx, fence_vote,
+          segment, seg_length)) = self._model(batch['token'], self._tune_pre_trained, **supervised_signals)
         batch_time = time() - batch_time
 
         fences = fence_logits > 0
@@ -210,6 +226,36 @@ class MultiOperator(PennOperator):
         vis.before()
         self._vis_mode = vis, use_test_set, final_test, serial, draw_weights
 
+        if final_test and hasattr(self._model, 'get_multilingual'):
+            work_dir = self._recorder.create_join('multilingual')
+            for corp, i2vs in self.i2vs.items():
+                with open(join(work_dir, 'tag.' + corp), 'w') as fw:
+                    fw.write('\n'.join(i2vs.tag))
+                with open(join(work_dir, 'label.' + corp), 'w') as fw:
+                    fw.write('\n'.join(i2vs.label))
+            for get_label in (False, True):
+                fname = ('tag', 'label')[get_label] + '.'
+                for lhs, rhs, dst, cos in self._model.get_multilingual(get_label):
+                    with open(join(work_dir, fname + lhs + '.' + rhs + '.csv'), 'w') as fw:
+                        fw.write('type,row,col,value\n')
+                        for r, c, v in upper_triangle(dst, 1):
+                            fw.write(f'd,{r},{c},{v}\n')
+                        for r, c, v in upper_triangle(cos, 1):
+                            fw.write(f'c,{c},{r},{v}\n')
+                    with open(join(work_dir, lhs + '.' + rhs + '.txt'), 'a+' if get_label else 'w') as fw:
+                        lhv, rhv = self.i2vs[lhs], self.i2vs[rhs]
+                        if get_label:
+                            fw.write('\nDistance\n  Label:\n')
+                            fw.write(sort_matrix(dst, lhv.label, rhv.label, False))
+                            fw.write('\nCosine\n  Label:\n')
+                            fw.write(sort_matrix(cos, lhv.label, rhv.label, True))
+                        else:
+                            fw.write('Distance\n  Tag:\n')
+                            fw.write(sort_matrix(dst, lhv.tag, rhv.tag, False))
+                            fw.write('\nCosine\n  Tag:\n')
+                            fw.write(sort_matrix(cos, lhv.tag, rhv.tag, True))
+
+
     def _after_validation(self, ds_name, count, seconds):
         vis, use_test_set, final_test, serial, _ = self._vis_mode
         devel_bins, test_bins = self._mode_length_bins
@@ -253,8 +299,35 @@ class MultiOperator(PennOperator):
             prefix = 'TestSet' if use_test_set else 'DevelSet'
             suffix = ds_name if self.multi_corp else None
             self.recorder.tensorboard(self.global_step, prefix + '/%s', suffix,
-                                      F1 = scores.get('F1', 0), SamplePerSec = speed_outer)
+                                      F1 = scores.get('F1', 0),
+                                      SamplePerSec = None if serial else speed_dm)
         return scores, desc, logg
+
+    def _get_optuna_fn(self, train_params):
+        assert self.multi_corp
+        from utils.train_ops import train, get_optuna_params
+        from utils.str_ops import height_ratio
+
+        optuna_params = get_optuna_params(train_params)
+
+        def obj_fn(trial):
+            def spec_update_fn(specs, trial):
+                data = specs['data']
+                balanced = {}
+                for corp, data_config in data.items():
+                    balanced[corp] = data_config['balanced'] = trial.suggest_float(corp, 0.0, 1.0)
+                self._train_materials = balanced, self._train_materials[1] # for train/train_initials(max_epoch>0)
+                lr = specs['train']['learning_rate']
+                specs['train']['learning_rate'] = lr = trial.suggest_loguniform('learning_rate', 1e-6, lr)
+                self._train_config._nested.update(specs['train'])
+                self._train_materials = balanced, self._train_materials[1] # for train/train_initials(max_epoch>0)
+                return ''.join(height_ratio(b) for b in balanced.values()) + f';lr={lr:.1e}'
+
+            self._init_mode_trees()
+            self.setup_optuna_mode(spec_update_fn, trial)
+            
+            return train(optuna_params, self)['key']
+        return obj_fn
 
 
 from utils.vis import BaseVis, VisRunner
@@ -411,7 +484,7 @@ class MultiVis(BaseVis):
                     fdata = self._join_fn(f'data.{self.epoch}.bin_{wbin}.tree')
                     proc = parseval(self._evalb, fhead, fdata)
                     smy = rpt_summary(proc.stdout.decode(), False, True)
-                    fw.write(f"{wbin},{smy['N']},{smy['LP']},{smy['LR']},{smy['F1']},{smy['TA']}\n")
+                    fw.write(f"{wbin},{','.join(str(smy.get(x, 0)) for x in ('N', 'LP', 'LR', 'F1', 'TA'))}\n")
 
         fname, head_stat = self._headedness_stat
         with open(fname, 'w') as fw:

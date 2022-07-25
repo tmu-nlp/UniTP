@@ -57,5 +57,5 @@ def get_configs(recorder = None):
     model_config['space_layer']['continuous_fence_only'] = penn.continuous_fence_only
     model = DiscoPlmTree(Leaves, **model_config, **task_params)
     from data.cross.multib import MxDM
-    get_dm = lambda i2vs, num_threads: MxDM(penn.batch_size << 1, i2vs, num_threads)
+    get_dm = lambda num_threads: MxDM(penn.batch_size << 1, i2vs, num_threads)
     return DiscoMultiOperator_lr(model, get_datasets, recorder, reader.i2vs, get_dm, train_config, recorder.evalb)

@@ -18,10 +18,10 @@ stem_config = dict(orient_dim   = orient_dim,
 
 model_type = dict(orient_layer    = stem_config,
                   tag_label_layer = multi_class)
-from models.utils import get_logit_layer, condense_helper, condense_left
-from models.loss import get_decision, get_decision_with_value, get_loss
 from utils.math_ops import s_index
 from itertools import count
+from models.utils import condense_helper, condense_left
+from models import StemOutput
 class Stem(nn.Module):
     def __init__(self,
                  model_dim,
@@ -94,7 +94,7 @@ class Stem(nn.Module):
         orient      = torch.cat(layers_of_orient, dim = 1)
         existence   = torch.cat(layers_of_existence, dim = 1)
 
-        return unit_hidden, orient, existence, trapezoid_info
+        return StemOutput(unit_hidden, existence, (orient, trapezoid_info))
 
     def triangle_forward(self,
                          existence,
@@ -136,7 +136,7 @@ class Stem(nn.Module):
 
             (existence, new_jnt, lw_relay, rw_relay,
              unit_hidden) = self.combine(right, unit_hidden, existence)
-        return (layers_of_unit, layers_of_existence, layers_of_orient, None)
+        return layers_of_unit, layers_of_existence, layers_of_orient, None
 
 
     def trapozoids_forward(self,
@@ -191,88 +191,16 @@ class Stem(nn.Module):
             seg_length.reverse()
             seg_length = torch.cat(seg_length, dim = 1)
 
-        return (layers_of_unit, layers_of_existence, layers_of_orient, (segment, seg_length))
+        return layers_of_unit, layers_of_existence, layers_of_orient, (segment, seg_length)
 
 
-class BaseRnnParser(nn.Module):
-    def __init__(self,
-                 model_dim,
-                 num_tags,
-                 num_labels,
-                 orient_layer,
-                 tag_label_layer,
-                 **kw_args):
-        super().__init__(**kw_args)
-
-        self._stem_layer = Stem(model_dim, **orient_layer)
-
-        hidden_dim = tag_label_layer['hidden_dim']
-        if hidden_dim:
-            self._shared_layer = nn.Linear(model_dim, hidden_dim)
-            self._dp_layer = nn.Dropout(tag_label_layer['drop_out'])
-
-            Net, argmax, score_act = get_logit_layer(tag_label_layer['logit_type'])
-            self._tag_layer   = Net(hidden_dim, num_tags) if num_tags else None
-            self._label_layer = Net(hidden_dim, num_labels) if num_labels else None
-            self._logit_max = argmax
-            if argmax:
-                self._activation = tag_label_layer['activation']()
-            self._score_fn = score_act(dim = 2)
-        self._hidden_dim = hidden_dim
-        self._model_dim = model_dim
-
-    def forward(self,
-                base_inputs,
-                bottom_existence,
-                ingore_logits = False,
-                key = None,
-                **kw_args):
-
-        (layers_of_base, layers_of_orient, layers_of_existence,
-         trapezoid_info) = self._stem_layer(bottom_existence,
-                                            base_inputs, # dynamic can be none
-                                            **kw_args)
-
-        if self._hidden_dim:
-            layers_of_hidden = self._shared_layer(layers_of_base)
-            layers_of_hidden = self._dp_layer(layers_of_hidden)
-            if self._logit_max:
-                layers_of_hidden = self._activation(layers_of_hidden)
-
-            if self._tag_layer is None or ingore_logits:
-                tags = None
-            else:
-                _, batch_len, _ = base_inputs.shape
-                tag_fn = self._tag_layer if key is None else self._tag_layer[key]
-                tags = tag_fn(layers_of_hidden[:, -batch_len:])
-            
-            if self._label_layer is None or ingore_logits:
-                labels = None
-            else:
-                label_fn = self._label_layer if key is None else self._label_layer[key]
-                labels = label_fn(layers_of_hidden)
-        else:
-            layers_of_hidden = tags = labels = None
-
-        return layers_of_base, layers_of_hidden, layers_of_existence, layers_of_orient, tags, labels, trapezoid_info
-
-    @property
-    def model_dim(self):
-        return self._model_dim
-
-    @property
-    def hidden_dim(self):
-        return self._hidden_dim
-
-    def get_label(self, hidden, key = None):
-        label_fn = self._label_layer if key is None else self._label_layer[key]
-        return label_fn(hidden)
-
-    def get_decision(self, logits):
-        return get_decision(self._logit_max, logits)
-
-    def get_decision_with_value(self, logits):
-        return get_decision_with_value(self._score_fn, logits)
+from models.loss import get_loss
+from models.backend import OutputLayer
+from utils.param_ops import change_key
+class BaseRnnParser(OutputLayer):
+    def __init__(self, *args, **kwargs):
+        change_key(kwargs, 'orient_layer', 'stem_layer')
+        super().__init__(Stem, *args, **kwargs)
 
     def get_losses(self, batch, tag_logits, top3_label_logits, label_logits, height_mask, weight_mask, key = None):
         tag_fn = self._tag_layer if key is None else self._tag_layer[key]

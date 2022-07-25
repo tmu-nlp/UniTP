@@ -112,6 +112,7 @@ class InputLeaves(nn.Module):
             static_emb = self._act_pre_trained(static_emb)
         return static_emb, bottom_existence
 
+
 state_usage = BaseType(None, as_index = False, as_exception = True,
                        validator   = lambda x: isinstance(x, int),
                        default_set = ('sum_layers', 'weight_layers'))
@@ -186,6 +187,280 @@ class Contextual(nn.Module):
             top_3 = self._state_to_top3(final_state).reshape(batch_size, 3, hidden_dim)
 
         return dynamic_emb, top_3
+
+
+from models.combine import get_combinator
+class InputLayer(nn.Module):
+    def __init__(self,
+                 paddings,
+                 model_dim,
+                 use,
+                 word_emb,
+                 char_rnn,
+                 contextual_layer,
+                 combine_static,
+                 num_chars       = None,
+                 num_tokens      = None,
+                 initial_weights = None,
+                 **kwargs_forwarding):
+        super().__init__(model_dim, **kwargs_forwarding)
+        if use['word_emb']:
+            if isinstance(num_tokens, int):
+                self._word_emb = InputLeaves(model_dim, num_tokens, initial_weights, not paddings, **word_emb)
+                input_dim = self._word_emb.input_dim
+            else:
+                from utils.param_ops import get_sole_key
+                self._word_emb = nn.ModuleDict({k: InputLeaves(model_dim, v, initial_weights[k], not paddings[k], **word_emb) for k,v in num_tokens.items()})
+                input_dim = get_sole_key(n.input_dim for n in self._word_emb.values())
+        else:
+            self._word_emb = None
+            input_dim = model_dim
+        if use['char_rnn']:
+            embed_dim = char_rnn['embed_dim']
+            self._char_rnn = PadRNN(num_chars, None, None, fence_dim = model_dim, char_space_idx = 1, **char_rnn)
+            self._char_lin = nn.Linear(embed_dim, model_dim)
+            self._char_act = nn.Tanh()
+        else:
+            self._char_rnn = None
+
+        contextual_layer = Contextual(input_dim, model_dim, self.hidden_dim, **contextual_layer)
+        diff = model_dim - input_dim
+        self._combine_static = None
+        self._bias_only = False
+        if contextual_layer.is_useless:
+            self._contextual_layer = None
+            assert diff == 0, 'useless difference'
+        else:
+            self._contextual_layer = contextual_layer
+            if combine_static:
+                self._bias_only = combine_static in ('NS', 'NV')
+                self._combine_static = get_combinator(combine_static, input_dim)
+            assert diff >= 0, 'invalid difference'
+        self._half_dim_diff = diff >> 1
+
+    def forward(self, word_idx, tune_pre_trained, ingore_logits = False,
+                sub_idx = None, sub_fence = None, offset = None, key = None,
+                squeeze_existence = None, 
+                **kw_args):
+        assert isinstance(squeeze_existence, bool)
+        batch_size, batch_len = word_idx.shape
+        if self._word_emb:
+            emb = self._word_emb if key is None else self._word_emb[key]
+            static, bottom_existence = emb(word_idx, tune_pre_trained)
+            if self._char_rnn:
+                char_info = self._char_rnn(sub_idx, sub_fence, offset)
+                char_info = self._stem_dp(char_info)
+                char_info = self._char_lin(char_info)
+                char_info = self._char_act(char_info)
+                static = static + char_info * bottom_existence
+        else:
+            bottom_existence = word_idx > 0
+            bottom_existence.unsqueeze_(dim = 2)
+            static = self._char_rnn(sub_idx, sub_fence, offset) * bottom_existence
+        if self._contextual_layer is None:
+            base_inputs = static
+            top3_hidden = None
+        else:
+            dynamic, top3_hidden = self._contextual_layer(static)
+            if self._half_dim_diff:
+                zero_pads = torch.zeros(batch_size, batch_len, self._half_dim_diff, dtype = static.dtype, device = static.device)
+                static = torch.cat([zero_pads, static, zero_pads], dim = 2)
+            base_inputs  = dynamic * bottom_existence
+            if self._combine_static is not None:
+                base_inputs = self._combine_static.compose(static, base_inputs, None)
+        if squeeze_existence:
+            bottom_existence = bottom_existence.squeeze(dim = 2)
+        base_returns = super().forward(base_inputs, bottom_existence, ingore_logits, key, **kw_args)
+        top3_labels  = super().get_label(top3_hidden) if top3_hidden is not None else None
+        return (batch_size, batch_len, static, top3_labels) + base_returns
+
+    def get_static_pca(self, key = None):
+        if self._word_emb:
+            if isinstance(self._word_emb, InputLeaves):
+                word_emb = self._word_emb
+            else:
+                word_emb = self._word_emb[key]
+            if word_emb.has_static_pca:
+                return word_emb.pca
+        return None
+
+    def update_static_pca(self, key = None):
+        if self._word_emb:
+            if isinstance(self._word_emb, InputLeaves):
+                word_emb = self._word_emb
+            else:
+                word_emb = self._word_emb[key]
+            if word_emb.has_static_pca:
+                word_emb.flush_pc_if_emb_is_tuned()
+
+    def state_dict(self, *args, **kwargs):
+        odc = super().state_dict(*args, **kwargs)
+        emb = self._word_emb
+        prefix = '_word_emb.'
+        suffix = '_main_emb_layer.weight'
+        if isinstance(emb, InputLeaves) and not emb._main_emb_tuned:
+            odc.pop(prefix + suffix)
+        elif isinstance(emb, nn.ModuleDict):
+            for k, v in emb.items():
+                if not v._main_emb_tuned:
+                    odc.pop(prefix + k + '.' + suffix)
+        return odc
+
+    def tensorboard(self, recorder, global_step):
+        if self._bias_only:
+            ctx_ratio = self._combine_static.itp_rhs_bias().detach()
+            if ctx_ratio is not None:
+                params = dict(ContextualRatio = ctx_ratio.mean())
+                if ctx_ratio.nelement() > 1:
+                    params['RatioStdv'] = ctx_ratio.std()
+                recorder.tensorboard(global_step, 'Parameters/%s', **params)
+
+    @property
+    def message(self):
+        # bsb = self._subject_bias.bias
+        # msg = f'BlockySoftmax.bias: {bsb.mean()}'
+        # if bsb.nelement() > 1:
+        #     msg += f'±{bsb.std()}'
+        if self._bias_only:
+            ctx_ratio = self._combine_static.itp_rhs_bias().detach()
+            if ctx_ratio is not None:
+                ctx_ratio *= 100
+                msg = 'Contextual Rate:'
+                msg += f' {ctx_ratio.mean():.2f}'
+                if ctx_ratio.nelement() > 1:
+                    msg += f'±{ctx_ratio.std():.2f}%'
+                else:
+                    msg += '%'
+                return msg
+
+from models.utils import get_logit_layer
+from models.loss import get_decision, get_decision_with_value
+class OutputLayer(nn.Module):
+    def __init__(self,
+                 stem_fn,
+                 model_dim,
+                 num_tags,
+                 num_labels,
+                 stem_layer,
+                 tag_label_layer,
+                 **kwargs_forwarding):
+        super().__init__(**kwargs_forwarding)
+
+        self._stem_layer = stem_fn(model_dim, **stem_layer)
+
+        hidden_dim = tag_label_layer['hidden_dim']
+        if hidden_dim:
+            self._shared_layer = nn.Linear(model_dim, hidden_dim)
+            self._dp_layer = nn.Dropout(tag_label_layer['drop_out'])
+
+            Net, argmax, score_act = get_logit_layer(tag_label_layer['logit_type'])
+            self._tag_layer   = Net(hidden_dim, num_tags) if num_tags else None
+            self._label_layer = Net(hidden_dim, num_labels) if num_labels else None
+            self._logit_max = argmax
+            if argmax:
+                self._activation = tag_label_layer['activation']()
+            self._score_fn = score_act(dim = 2)
+        self._hidden_dim = hidden_dim
+        self._model_dim = model_dim
+
+    def forward(self,
+                base_inputs,
+                bottom_existence,
+                ingore_logits = False,
+                key = None,
+                small_endian_tags = None,
+                **kw_args):
+
+        assert isinstance(small_endian_tags, bool)
+        (layers_of_base, layers_of_existence,
+         stem_specs) = self._stem_layer(bottom_existence,
+                                        base_inputs, # dynamic can be none
+                                        **kw_args)
+
+        if self._hidden_dim:
+            layers_of_hidden = self._shared_layer(layers_of_base)
+            layers_of_hidden = self._dp_layer(layers_of_hidden)
+            if self._logit_max:
+                layers_of_hidden = self._activation(layers_of_hidden)
+
+            if self._tag_layer is None or ingore_logits:
+                tags = None
+            else:
+                _, batch_len, _ = base_inputs.shape
+                tag_fn = self._tag_layer if key is None else self._tag_layer[key]
+                if small_endian_tags:
+                    tags = layers_of_hidden[:, :batch_len]
+                else:
+                    tags = layers_of_hidden[:, -batch_len:]
+                tags = tag_fn(tags)
+            
+            if self._label_layer is None or ingore_logits:
+                labels = None
+            else:
+                label_fn = self._label_layer if key is None else self._label_layer[key]
+                labels = label_fn(layers_of_hidden)
+        else:
+            layers_of_hidden = tags = labels = None
+
+        return layers_of_base, layers_of_existence, layers_of_hidden, tags, labels, stem_specs
+        # return layers_of_base, layers_of_hidden, layers_of_existence, layers_of_orient, tags, labels, trapezoid_info
+        # return existence, embeddings, weight, fence, fence_idx, fence_vote, tags, labels, segment, seg_length
+
+    @property
+    def model_dim(self):
+        return self._model_dim
+
+    @property
+    def hidden_dim(self):
+        return self._hidden_dim
+        
+    @property
+    def stem(self):
+        return self._stem_layer
+        
+    def get_label(self, hidden, key = None):
+        label_fn = self._label_layer if key is None else self._label_layer[key]
+        return label_fn(hidden)
+
+    def get_decision(self, logits):
+        return get_decision(self._logit_max, logits)
+
+    def get_decision_with_value(self, logits):
+        return get_decision_with_value(self._score_fn, logits)
+
+    def get_multilingual(self, get_label):
+        layer = self._label_layer if get_label else self._tag_layer
+        assert isinstance(layer, nn.ModuleDict)
+        corps = list(layer.keys())
+        for eid, lhs in enumerate(corps):
+            for rhs in corps[eid:]:
+                d = reduce_matrix(layer[lhs].weight, layer[rhs].weight, distance)
+                c = reduce_matrix(layer[lhs].weight, layer[rhs].weight, cosine)
+                yield lhs, rhs, d, c
+
+    @property
+    def message(self):
+        messages = []
+        if hasattr(stem := self._stem_layer, 'message'):
+            messages.append(stem.message)
+        if hasattr(self, 'message'):
+            messages.append(self.message)
+        return '\n'.join(messages)
+
+def distance(lhs, rhs):
+    diff = lhs - rhs
+    diff = (diff ** 2).sum(2)
+    return diff.sqrt() / lhs.shape[1]
+
+def cosine(lhs, rhs):
+    lr = (lhs * rhs).sum(2)
+    l2 = (lhs * lhs).sum(2)
+    r2 = (rhs * rhs).sum(2)
+    return lr / (l2 * r2)
+
+def reduce_matrix(lhs, rhs, fn): # [num, dim]
+    return fn(lhs.unsqueeze(1).detach(), rhs.unsqueeze(0).detach()).cpu().numpy()
+
 
 char_rnn_config = dict(embed_dim    = hidden_dim,
                        drop_out     = frac_4,

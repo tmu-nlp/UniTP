@@ -1,4 +1,4 @@
-from utils.types import BaseType, device
+from utils.types import BaseType
 E_SUB = S_LFT, S_RGT, S_AVG, S_SGT = 'leftmost rightmost average selfgate'.split()
 subword_proc = BaseType(0, as_index = True, default_set = E_SUB)
 
@@ -192,6 +192,7 @@ class PreDatasetHelper(TextHelper):
         return word_idx, xlnt_starts
         
     def get(self):
+        from utils.types import device
         plm_idx, plm_start = [], []
         start, end, pad_token_id = self.start_end
         for wi, ws, len_diff in self.gen_from_buffer():

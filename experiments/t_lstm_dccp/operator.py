@@ -37,13 +37,20 @@ class DiscoOperator(Operator):
                 prompt += '\n  [WARNING] \'multiprocessing_decode\' supports only discodop.'
                 get_dm = None
             self._discodop_prm = None
-                
         print(byte_style(prompt, color)); recorder.log(prompt)
+        
         super().__init__(model, get_datasets, recorder, i2vs, get_dm)
-        self._mode_trees = [], []
+        self._init_mode_trees()
         self._train_config = train_config
         self._tune_pre_trained = False
         self._evalb_lcfrs_kwargs = read_param(evalb_lcfrs_prm)
+
+    def _init_mode_trees(self):
+        if self.multi_corp:
+            make = lambda v: {k: v for k in self.i2vs}
+            self._mode_trees = make([]), make([])
+        else:
+            self._mode_trees = [], []
 
     def _build_optimizer(self, start_epoch):
         self._schedule_lr = hp = WarmOptimHelper.adam(self._model, self._train_config.learning_rate)
@@ -68,26 +75,28 @@ class DiscoOperator(Operator):
         if mode == M_TRAIN:
             batch['supervised_right'] = gold_rights
             batch['supervised_joint'] = gold_joints
+        batch['key'] = corp = ds_name if self.multi_corp else None
         # layers_of_existence, layers_of_base, layers_of_hidden, layers_of_right_direc, layers_of_joint, tags, labels, segment, seg_length
+        #(right_direc, joint, shuffled_right_direc, shuffled_joint, segment, seg_length)
         batch_time = time()
         (batch_size, batch_len, static, top3_label_logits,
-         existences, embeddings, hiddens,
-         right_direc_logits, joint_logits,
-         shuffled_right_direc, shuffled_joint,
-         tag_logits, label_logits, segment,
-         seq_len) = self._model(batch['token'], self._tune_pre_trained, **batch)
+         embeddings, existences, _, tag_logits, label_logits,
+         (right_direc_logits, joint_logits,
+          shuffled_right_direc, shuffled_joint,
+          segment, seq_len)) = self._model(batch['token'], self._tune_pre_trained, **batch)
         batch_time = time() - batch_time
-
+         
         if mode == M_TRAIN:
-            tags    = self._model.get_decision(tag_logits  )
-            labels  = self._model.get_decision(label_logits)
-            rights, joints, direcs = self._model.get_stem_prediction(right_direc_logits, joint_logits)
+            tags   = self._model.get_decision(tag_logits  )
+            labels = self._model.get_decision(label_logits)
+            rights, joints, direcs = self._model.stem.get_stem_prediction(right_direc_logits, joint_logits)
             tag_weight  = gold_exists[:, :batch_len] # small endian
             tag_match   = (tags   == batch['tag']) & tag_weight
             label_match = (labels == batch['label']) & gold_exists
             right_match = (rights == gold_rights) & gold_direcs
             if tensorboard := self.recorder._writer is not None:
-                self.recorder.tensorboard(self.global_step, 'Accuracy/%s',
+                suffix = ds_name if self.multi_corp else None
+                self.recorder.tensorboard(self.global_step, 'Accuracy/%s', suffix,
                     Tag = fraction(tag_match,    tag_weight),
                     Label = fraction(label_match, gold_exists),
                     Right = fraction(right_match, gold_direcs),
@@ -96,16 +105,16 @@ class DiscoOperator(Operator):
 
             batch['existence'] = gold_exists
             tb_loss_kwargs = {}
-            tag_loss, label_loss = self._model.get_losses(batch, None, tag_logits, top3_label_logits, label_logits)
+            tag_loss, label_loss = self._model.get_losses(batch, None, tag_logits, top3_label_logits, label_logits, corp)
             total_loss = self._train_config.loss_weight.tag * tag_loss
             total_loss = self._train_config.loss_weight.label * label_loss + total_loss
-            card_losses = self._model.get_stem_loss(batch, right_direc_logits, joint_logits, self._train_config.loss_weight._udirec_strength)
+            card_losses = self._model.stem.get_stem_loss(batch, right_direc_logits, joint_logits, self._train_config.loss_weight._udirec_strength)
             if shuffled_right_direc is None:
                 assert shuffled_joint is None
                 shuffled_losses = None
             else:
-                shuffled_losses = self._model.get_stem_loss(batch, shuffled_right_direc, shuffled_joint, self._train_config.loss_weight.sudirec_strength)
-            if self._model.orient_bits == 3:
+                shuffled_losses = self._model.stem.get_stem_loss(batch, shuffled_right_direc, shuffled_joint, self._train_config.loss_weight.sudirec_strength)
+            if self._model.stem.orient_bits == 3:
                 orient_loss, joint_loss = card_losses
                 if shuffled_losses is not None:
                     shuffled_orient_loss, shuffled_joint_loss = shuffled_losses
@@ -133,10 +142,13 @@ class DiscoOperator(Operator):
             total_loss.backward()
             
             if tensorboard:
-                self.recorder.tensorboard(self.global_step, 'Loss/%s',
-                    Tag = tag_loss, Label = label_loss, Joint = joint_loss, Total = total_loss,
+                self.recorder.tensorboard(self.global_step, 'Loss/%s', suffix,
+                    Tag = tag_loss,
+                    Label = label_loss,
+                    Joint = joint_loss,
+                    Total = total_loss,
                     **tb_loss_kwargs)
-                self.recorder.tensorboard(self.global_step, 'Batch/%s',
+                self.recorder.tensorboard(self.global_step, 'Batch/%s', suffix,
                     SamplePerSec = batch_len / batch_time,
                     Length = batch_len,
                     Height = batch['segments'].shape[0])
@@ -153,13 +165,14 @@ class DiscoOperator(Operator):
 
                 tag_scores,     tags = self._model.get_decision_with_value(tag_logits)
                 label_scores, labels = self._model.get_decision_with_value(label_logits)
-                rights, joints, direcs, right_scores, joint_scores, direc_scores = self._model.get_stem_prediction(right_direc_logits, joint_logits, get_score = True)
+                (rights, joints, direcs, right_scores, joint_scores,
+                 direc_scores) = self._model.stem.get_stem_prediction(right_direc_logits, joint_logits, get_score = True)
                 if direc_scores is None: direc_scores = torch.ones_like(right_scores)
                 extra = mpc_token, mpc_label, tag_scores, label_scores, right_scores, joint_scores, direc_scores
             else:
                 tags    = self._model.get_decision(tag_logits  )
                 labels  = self._model.get_decision(label_logits)
-                rights, joints, direcs = self._model.get_stem_prediction(right_direc_logits, joint_logits)
+                rights, joints, direcs = self._model.stem.get_stem_prediction(right_direc_logits, joint_logits)
                 extra = None
             if direcs is None:
                 direcs = torch.ones_like(rights)
@@ -178,10 +191,10 @@ class DiscoOperator(Operator):
 
     def _before_validation(self, ds_name, epoch, use_test_set = False, final_test = False):
         # devel_bins, test_bins = self._mode_length_bins
-        devel_head_batchess, test_head_batchess = self._mode_trees
+        devel_head, test_head = self._mode_trees
         epoch_major, epoch_minor = epoch.split('.')
         if use_test_set:
-            head_trees = test_head_batchess
+            head_trees = test_head
             if final_test:
                 folder = ds_name + '_test'
                 save_tensors = True
@@ -189,45 +202,62 @@ class DiscoOperator(Operator):
                 folder = ds_name + '_test_with_devel'
                 save_tensors = is_bin_times(int(epoch_major)) and int(epoch_minor) == 0
         else:
-            head_trees = devel_head_batchess
+            head_trees = devel_head
             folder = ds_name + '_devel'
             save_tensors = is_bin_times(int(epoch_major)) and int(epoch_minor) == 0
         if self._optuna_mode:
             save_tensors = False
-        serial = save_tensors or not head_trees or self.dm is None
+        if self.multi_corp:
+            i2vs = self.i2vs[ds_name]
+            m_corp = ds_name
+            head_trees = head_trees[ds_name]
+        else:
+            i2vs = self.i2vs
+            m_corp = None
+        if hasattr(self._model, 'update_static_pca'):
+            self._model.update_static_pca(m_corp)
         work_dir = self.recorder.create_join(folder)
-        if serial:
+        if serial := (save_tensors or not head_trees or self.dm is None):
             async_ = True
             vis = DiscoVis(epoch,
                            work_dir,
-                           self.i2vs,
+                           i2vs,
                            head_trees,
                            self.recorder.log,
                            self._evalb_lcfrs_kwargs,
                            self._discodop_prm,
-                           self._model.threshold,
+                           self._model.stem.threshold,
                            save_tensors)
         else:
             async_ = False
-            vis = ParallelVis(epoch, work_dir, self.i2vs, self.recorder.log, self._evalb_lcfrs_kwargs, self._discodop_prm, self.dm)
+            vis = ParallelVis(epoch,
+                              work_dir,
+                              i2vs,
+                              self._evalb_lcfrs_kwargs,
+                              self._discodop_prm,
+                              self.dm, m_corp)
 
         pending_heads = vis._pending_heads
         vis = VisRunner(vis, async_ = async_) # wrapper
         vis.before()
         self._vis_mode = vis, use_test_set, final_test, pending_heads, serial
-        if hasattr(self._model, 'update_static_pca'):
-            self._model.update_static_pca()
 
     def _after_validation(self, ds_name, count, seconds):
         vis, use_test_set, final_test, pending_heads, serial = self._vis_mode
         if serial:
             scores, desc, logg, heads = vis.after()
             if pending_heads:
-                devel_head_batchess, test_head_batchess = self._mode_trees
-                if use_test_set:
-                    self._mode_trees = devel_head_batchess, heads
+                devel_head, test_head = self._mode_trees
+                if self.multi_corp:
+                    if use_test_set:
+                        test_head [ds_name] = heads
+                    else:
+                        devel_head[ds_name] = heads
                 else:
-                    self._mode_trees = heads, test_head_batchess
+                    if use_test_set:
+                        self._mode_trees = devel_head, heads
+                    else:
+                        self._mode_trees = heads, test_head
         else:
             scores, desc, logg = vis.after()
             
@@ -247,14 +277,19 @@ class DiscoOperator(Operator):
             rate = vis.proc_time / (seconds - vis.proc_time)
         logg += f' @{speed_outer}{speed_dm_str} sps. (sym:nn {rate:.2f}; {seconds:.3f}{dmt} sec.)'
         if not final_test:
-            self.recorder.tensorboard(self.global_step, 'TestSet/%s' if use_test_set else 'DevelSet/%s',
-                                      F1 = scores.get('TF', 0), DF = scores.get('DF', 0), 
+            prefix = 'TestSet' if use_test_set else 'DevelSet'
+            suffix = ds_name if self.multi_corp else None
+            self.recorder.tensorboard(self.global_step, prefix + '/%s', suffix,
+                                      F1 = scores.get('TF', 0), DF = scores.get('DF', 0),
                                       SamplePerSec = None if serial else speed_dm)
         self._vis_mode = None
         return scores, desc, logg
 
-    @staticmethod
-    def combine_scores_and_decide_key(epoch, ds_scores):
+    def combine_scores_and_decide_key(self, epoch, ds_scores):
+        if self.multi_corp:
+            key = [s.get('TF', 0) for s in ds_scores.values()]
+            ds_scores['key'] = sum(key) / len(key)
+            return ds_scores
         scores = ds_scores[get_sole_key(ds_scores)]
         scores['key'] = scores.get('TF', 0.0) #f_score(scores.get('TF', 0.0), scores.get('DF', 0.0))
         return scores
@@ -276,7 +311,7 @@ class DiscoOperator(Operator):
                 loss_weight['orient'] = o = trial.suggest_float('orient', 0.0, 1.0)
                 loss_str = f'L={height_ratio(t)}{height_ratio(l)}{height_ratio(j)}'
                 mute = []
-                if (orient_bits := self._model.orient_bits) == 3:
+                if (orient_bits := self._model.stem.orient_bits) == 3:
                     mute += '_direc', '_udirec_strength'
                     loss_weight['_direc'] = loss_weight['_udirec_strength'] = 0.0
                     loss_str += f'T{height_ratio(o)}'
@@ -310,11 +345,15 @@ class DiscoOperator(Operator):
                 if binarization[F_RAND_CON]:
                     beta_0 = trial.suggest_loguniform('beta_0', 1e-3, 1e3) # even around 1e0!
                     beta_1 = trial.suggest_loguniform('beta_1', 1e-3, 1e3)
-                    binarization[F_RAND_CON_SUB] = sub = trial.suggest_float('sub', 0.0, 1.0)
-                    binarization[F_RAND_CON_MSB] = msb = trial.suggest_float('msb', 0.0, 1.0)
+                    bin_str = f'bin=β{beta_0:.1e},{beta_1:.1e}'
                     binarization[F_RAND_CON] = f'{beta_0}, {beta_1}'
+                    if sub := binarization[F_RAND_CON_SUB]:
+                        binarization[F_RAND_CON_SUB] = sub = trial.suggest_float('sub', 0.0, 1.0)
+                        bin_str += height_ratio(sub)
+                    if msb := binarization[F_RAND_CON_MSB]:
+                        binarization[F_RAND_CON_MSB] = msb = trial.suggest_float('msb', 0.0, 1.0)
+                        bin_str += height_ratio(msb)
                     bz = {F_RAND_CON: (beta_0, beta_1), F_RAND_CON_SUB: sub, F_RAND_CON_MSB: msb}
-                    bin_str = f'bin=β{beta_0:.1e},{beta_1:.1e}' + height_ratio(sub) + height_ratio(msb)
                 else:
                     involve_head = binarization['head'] > 0
                     E_ORIF = E_ORIF5_HEAD if involve_head else E_ORIF5
@@ -330,7 +369,7 @@ class DiscoOperator(Operator):
                 self._train_materials = bz, self._train_materials[1] # for train/train_initials(max_epoch>0)
                 return bin_str + ';' + loss_str + f';lr={lr:.1e}'
 
-            self._mode_trees = [], [] # force init
+            self._init_mode_trees()
             self.setup_optuna_mode(spec_update_fn, trial)
             
             return train(optuna_params, self)['key']
@@ -511,27 +550,28 @@ class DiscoVis(BaseVis):
         #                 fw.write('|||\n|||\nAnswer Parsing:\nA>>  ' + '\nA>>  '.join(d_lines) + '\n\n\n\n')
 
 class ParallelVis(BaseVis):
-    def __init__(self, epoch, work_dir, i2vs, logger, evalb_lcfrs_kwargs, discodop_prm, dm):
+    def __init__(self, epoch, work_dir, i2vs, evalb_lcfrs_kwargs, discodop_prm, dm, corp_key):
         super().__init__(epoch)
         self._dtv = Dummy(work_dir, i2vs)
         self._pending_heads = False
         assert discodop_prm
         self._v_errors = {}
-        self._args = dm, discodop_prm, evalb_lcfrs_kwargs, logger
+        self._args = dm, discodop_prm, evalb_lcfrs_kwargs, corp_key
         self._bid_offset = 1
 
     def _before(self):
         self._args[0].timeit()
 
     def _process(self, batch_id, batch):
+        dm, _, _, corp_key = self._args
         (d_segment, d_seq_len, h_token, d_tag, d_label, d_right, d_joint, d_direc) = batch
-        self._args[0].batch(batch_id, self._bid_offset, d_segment, d_seq_len, h_token, d_tag, d_label, d_right, d_joint, d_direc)
+        dm.batch(batch_id, self._bid_offset, d_segment, d_seq_len, h_token, d_tag, d_label, d_right, d_joint, d_direc, key = corp_key)
         self._bid_offset += h_token.shape[0]
 
     def _after(self):
         fhead = self._dtv.join('head.export')
         fdata = self._dtv.join(f'data.{self.epoch}.export')
-        dm, discodop_prm, evalb_lcfrs_kwargs, logger = self._args
+        dm, discodop_prm = self._args[:2]
         
         tree_text = dm.batched()
         if tree_text: # 'None' means 'text concat' without a memory travel

@@ -123,7 +123,6 @@ class Recorder:
     def new_trial_recorder(self, specs_update_fn, trial, fpath):
         assert self._test_metrics, 'Current version does not allow direct optuna'
         specs = load_yaml(*self._sv_file_lock, wait = False)
-        # specs.pop('optuna', None)
         dev_results    = specs.pop('results')
         best_model     = max(dev_results, key = lambda x: dev_results[x]);
         best_score     = dev_results.pop(best_model)
@@ -259,67 +258,33 @@ class Recorder:
             self.log('Total:', total)
         else:
             checkpoint = torch.load(model_fname)
-            missing_keys, unexpected_keys = model.load_state_dict(checkpoint['model_state_dict'], strict = False)
-            if not all(x.startswith('_word_emb._main_emb_layer.') for x in missing_keys) or unexpected_keys: # TODO make a list and leave?
-                model_old_dict = checkpoint['model_state_dict']
-                model_new_dict = model.state_dict()
-                new_keys = tuple(model_new_dict)
-                for old_key in tuple(model_old_dict):
-                    if old_key in new_keys:
-                        continue
-                    new_candidates = {}
-                    old_segs = old_key.split('.')
-                    old_segs.reverse()
-                    for new_key in new_keys:
-                        new_segs = new_key.split('.')
-                        new_segs.reverse()
-                        if new_segs[0] != old_segs[0]:
-                            continue
-                        match_depth = 0
-                        for ns, os in zip(new_segs, old_segs):
-                            if ns == os:
-                                match_depth += 1
-                        if match_depth > 0 and model_new_dict[new_key].shape == model_old_dict[old_key]:
-                            new_candidates[new_key] = match_depth
-                    if any(v > 1 for v in new_candidates.values()):
-                        new_candidates = {k:v for k, v in new_candidates.items() if v > 1}
-                    new_candidates = sorted(new_candidates, key = new_candidates.get, reverse = True)
-                    if not new_candidates:
-                        print(byte_style('Delete', '1') + ' ' + old_key)
-                        model_old_dict.pop(old_key)
-                    else:
-                        if len(new_candidates) > 1:
-                            prompt = f'Change {old_key} into:\n'
-                            for i, k in enumerate(new_candidates):
-                                prompt += f'{i}) {k}\n'
-                            prompt += '-1) ' + byte_style('delete ', '1') + f'{old_key}?\n'
-                            new_key = input(prompt)
-                            if new_key == 'q':
+            model_state = checkpoint['model_state_dict']
+            missing_keys, unexpected_keys = model.load_state_dict(model_state, strict = False)
+            if not all(x.startswith('_word_emb.') and x.endswith('._main_emb_layer.weight') for x in missing_keys) or unexpected_keys:
+                for mk in missing_keys:
+                    mks = set(mk.split('.'))
+                    if unexpected_keys:
+                        uk_scores = {}
+                        for uk in unexpected_keys:
+                            uks = set(uk.split('.'))
+                            uk_scores[uk] = len(mks & uks)
+                        uk_list = sorted(uk_scores, key = uk_scores.get, reverse = True) # by shape
+                        prompt = 'Map ' + byte_style(mk, '2') + ' to:\n'
+                        prompt += byte_style('-1: delete\n', '1')
+                        prompt += '\n'.join(f' {eid}: ' + byte_style(uk, '3') for eid, uk in enumerate(uk_list))
+                        prompt += '\n Your choice: '
+                        choice = None
+                        while not choice or not (choice == '-1' or choice.isdigit() and (choice := int(choice)) < len(uk_list)):
+                            choice = input(prompt).strip()
+                            if choice == 'q':
+                                print('Exit. Please try again.', file = stderr)
                                 exit()
-                            new_key = int(new_key)
-                            if new_key != -1:
-                                assert new_key in range(len(new_candidates))
-                                new_key = new_candidates[new_key]
+                        if choice == '-1':
+                            model_state.pop(mk)
                         else:
-                            new_key = new_candidates[0]
-                            more = len(new_key) - len(old_key)
-                            prompt = byte_style('Rename ', '1') # red
-                            if more > 0:
-                                prompt += ' ' * more
-                                prompt += old_key
-                                prompt += byte_style('\n    as ', '2') # green
-                            else:
-                                more = 0 - more
-                                prompt += old_key
-                                prompt += byte_style('\n    as ', '2') # green
-                                prompt += ' ' * more
-                            prompt += new_key
-                            print(prompt)
-                        if isinstance(new_key, int) and new_key < 0:
-                            model_old_dict.pop(old_key)
-                        else:
-                            change_key(model_old_dict, old_key, new_key)
-                model.load_state_dict(model_old_dict)
+                            uk = unexpected_keys.pop(choice)
+                            change_key(model_state, uk, mk)
+                model.load_state_dict(model_state, strict = False)
                 decision = input(f'Save change to {model_fname}? [Y]')
                 if decision == 'Y':
                     torch.save(checkpoint, model_fname)
@@ -378,7 +343,12 @@ class Recorder:
         instance, _ = self._instance_dir
         rt = load_yaml(*self._rt_file_lock)
         rt[instance] = dict(scores)
-        save_yaml(rt, *self._rt_file_lock)
+        try:
+            save_yaml(rt, *self._rt_file_lock)
+        except Exception as e:
+            rt.pop(scores)
+            save_yaml(rt, *self._rt_file_lock)
+            raise e
 
     @staticmethod
     def experiments_status(task_path):

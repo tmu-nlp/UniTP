@@ -295,17 +295,6 @@ class NerVis(BaseVis):
                 for wd, h, d in zip(words, h_bio, d_bio):
                     fw.write(wd + '\t' + h + '\t' + d + '\n')
                 fw.write('\n')
-        # if self.length_bins is not None and self._scores_of_bins:
-        #     with open(self._ctvis.join(f'{self.epoch}.scores'), 'w') as fw:
-        #         fw.write('wbin,num,lp,lr,f1,ta\n')
-        #         for wbin in self.length_bins:
-        #             fhead = self._ctvis.join(f'head.bin_{wbin}.tree')
-        #             fdata = self._ctvis.join(f'data.bin_{wbin}.tree')
-        #             proc = parseval(self._evalb, fhead, fdata)
-        #             smy = rpt_summary(proc.stdout.decode(), False, True)
-        #             fw.write(f"{wbin},{smy['N']},{smy['LP']},{smy['LR']},{smy['F1']},{smy['TA']}\n")
-        #             remove(fhead)
-        #             remove(fdata)
 
         desc = f'Evalb({scores["LP"]:.2f}/{scores["LR"]:.2f}/'
         key_score = f'{scores["F1"]:.2f}'

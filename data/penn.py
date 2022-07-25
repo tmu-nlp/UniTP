@@ -62,9 +62,11 @@ class PennReader(WordBaseReader):
             from data.trapezoid.dataset import TrapezoidDataset
             tree_reader, get_fnames, _, data_splits, trapezoid_height, word_trace = trapezoid_specs
             len_sort_ds = TrapezoidDataset.from_penn(tree_reader, get_fnames, data_splits[mode], trapezoid_height, word_trace = word_trace, **common_args)
+        self.loaded_ds[mode] = len_sort_ds
         return post_batch(mode, len_sort_ds, sort_by_length, bucket_length, batch_size)
 
 
+from utils.file_io import basename
 from utils.shell_io import byte_style
 from sys import stderr
 
@@ -93,7 +95,7 @@ class MultiReader(WordBaseReader):
         oovs = {}
         labels = i2vs['label']
         if has_greedy_sub:
-            print(byte_style('+ Balancing subs', '2'), file = stderr)
+            print(byte_style(basename(vocab_dir).upper() + ' + balancing subs', '2'), file = stderr)
         if unify_sub:
             labels = [t for t in labels if t[0] not in '#_']
             oovs['label'] = len(labels)
@@ -113,10 +115,10 @@ class MultiReader(WordBaseReader):
               sort_by_length = True):
         from data.multib.dataset import MAryDataset
         samples, word_trace, extra_text_helper = self._load_options
-        len_sort_ds = MAryDataset(mode, samples[mode], self.v2is, balanced, min_len, max_len, word_trace, extra_text_helper)
-        return post_batch(mode, len_sort_ds, sort_by_length, bucket_length, batch_size)
+        self.loaded_ds[mode] = ds = MAryDataset(mode, samples[mode], self.v2is, balanced, min_len, max_len, word_trace, extra_text_helper)
+        return post_batch(mode, ds, sort_by_length, bucket_length, batch_size)
 
-from utils.types import false_type, true_type
+from utils.types import false_type
 from utils.types import train_batch_size, train_max_len, train_bucket_len
 tokenization_config = dict(lower_case       = false_type,
                            batch_size       = train_batch_size,

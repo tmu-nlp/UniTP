@@ -111,7 +111,28 @@ def add_char_from_word(i2vs):
         chars.update(word)
     i2vs['char'] = [NIL, PAD] + sorted(chars)
 
-from utils.param_ops import change_key
+def pre_word_base(model_config):
+    if use := model_config.get('use'):
+        if use.get('char_rnn'):
+            return CharTextHelper
+
+from utils.param_ops import change_key, get_sole_key
+def post_word_base(model_cls, model_config, data_config, readers):
+    task_params = ['num_tags', 'num_labels', 'paddings']
+    if use := model_config.get('use'):
+        if use.get('word_emb'):
+            task_params += ['initial_weights', 'num_tokens']
+        if use.get('char_rnn'):
+            task_params.append('num_chars')
+    i2vs = {c: r.i2vs for c, r in readers.items()}
+    if single_corpus := (len(data_config) == 1):
+        single_corpus = get_sole_key(data_config)
+        i2vs = i2vs[single_corpus]
+    for pname in task_params:
+        param = {c: r.get_to_model(pname) for c, r in readers.items()}
+        model_config[pname] = param[single_corpus] if single_corpus else param
+    return model_cls(**model_config), i2vs
+
 class WordBaseReader(_BaseReader):
     def __init__(self,
                  vocab_dir,
@@ -428,8 +449,12 @@ def post_batch(mode, len_sort_ds, sort_by_length, bucket_length, batch_size):
             len_sort_ds.plain_mode()
     else:
         len_sort_ds.bucketed_mode(bucket_length)
-    di = DataLoader(len_sort_ds, batch_size = batch_size, collate_fn = len_sort_ds.collate_fn, shuffle = mode == M_TRAIN)#, num_workers = 1) # no way to get more!
-    # RuntimeError: Cannot re-initialize CUDA in forked subprocess. To use CUDA with multiprocessing, you must use the 'spawn' start method 
+    di = DataLoader(len_sort_ds,
+                    batch_size = batch_size,
+                    collate_fn = len_sort_ds.collate_fn,
+                    shuffle = mode == M_TRAIN)
+                    # num_workers = 1) # no way to get more!
+    # RuntimeError: Cannot re-initialize CUDA in forked subprocess. To use CUDA with multiprocessing, you must use the 'spawn' start method
     return BatchSpec(len_sort_ds.size, di)
 
 

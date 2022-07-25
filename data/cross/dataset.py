@@ -7,7 +7,7 @@ from data.cross.binary import unzip_xlogit, targets, disco_tree, TreeKeeper
 from data.cross.binary import unzip_and_double_swaps_p1, double_swaps_p1
 from data.trapezoid import trapezoid_to_layers
 from itertools import zip_longest
-from utils.types import O_HEAD, S_EXH, F_RAND_CON, F_RAND_CON_SUB, F_RAND_CON_MSB, device
+from utils.types import O_HEAD, S_EXH, F_RAND_CON, F_RAND_CON_SUB, F_RAND_CON_MSB, device, binary_factors
 
 simple_fields = 'token', 'tag'
 
@@ -154,10 +154,7 @@ class BinaryDataset(LengthOrderedDataset):
                     sbar.update()
                     assert err is None
             columns = keepers
-            if 0 < sub_ratio < 1:
-                factors = {False: 1 - sub_ratio, True: sub_ratio}
-            else:
-                factors = sub_ratio == 1
+            factors = binary_factors(sub_ratio, sub_ratio == 1)
             self._swap = ply_shuffle
             self._beta = fully_randomize
         else:
@@ -180,10 +177,7 @@ class BinaryDataset(LengthOrderedDataset):
             self._beta = beta = factors[F_RAND_CON]
             sub_ratio = factors[F_RAND_CON_SUB]
             print(byte_style(beta_string(beta), 6), '|', byte_style(subs_string(sub_ratio, msb), 3))
-            if 0 < sub_ratio < 1:
-                factors = {False: 1 - sub_ratio, True: sub_ratio}
-            else:
-                factors = sub_ratio == 1
+            factors = binary_factors(sub_ratio, sub_ratio == 1)
         self._reset_factors(factors)
 
     def __cache_swap(self, *swap):

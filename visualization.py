@@ -217,7 +217,7 @@ class ContinuousTensorVis(TensorVis):
                     summary[(batch_id, epoch)] = smy
                     pickle_dump(fname, summary)
 
-                    key_score = smy['F1']
+                    key_score = smy.get('F1', 0)
 
                 fdata = self.join(f'data.{batch_id}_{epoch}.pkl')
                 data = self.IOData(offset, length, token, old_tag, label, right, trees,
@@ -458,8 +458,8 @@ if desktop:
                 summary = pickle_load(fpath.join('summary.pkl'))
                 summary_fscores = defaultdict(list)
                 for (batch_id, epoch), smy in summary.items():
-                    if not isnan(smy['F1']):
-                        summary_fscores[batch_id].append((smy['F1'], smy.get('DF', None)))
+                    if (f1 := smy.get('F1')) and not isnan(f1):
+                        summary_fscores[batch_id].append((f1, smy.get('DF', None)))
             else:
                 summary_fscores = {}
 

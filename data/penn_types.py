@@ -8,7 +8,7 @@ from utils.types import O_LFT, O_RGT
 multilingual_binarization = {
     C_PTB: {O_LFT: 0.15, O_RGT: 0.85},
     C_CTB: {O_LFT: 0.2, O_RGT: 0.8},
-    C_KTB: {O_LFT: 0.8, O_RGT: 0.2},
+    C_KTB: {O_LFT: 0.7, O_RGT: 0.3},
 }
 
 from utils.param_ops import change_key

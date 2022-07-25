@@ -93,6 +93,13 @@ class BaseType:
         #     idx = self._fallback[idx]
         return idx
 
+
+def binary_factors(positivity, otherwise = None):
+    if 0 < positivity < 1:
+        return {False: 1 - positivity, True: positivity}
+    return otherwise
+
+
 E_FT = (False, True)
 E_LY = (1, 2, 4, 8)
 E_MS = (2, 32, 64, 128)

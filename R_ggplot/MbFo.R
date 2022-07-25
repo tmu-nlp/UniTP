@@ -49,7 +49,7 @@ plot_corp <- function(corp, first_row) {
     fx <- element_text(margin = margin(b = 1.8, t = 0.7))
     fy <- element_text(margin = margin(l = 1.8, r = 0.7))
     if (first_row) {
-        sec.name <- 'Number of Gold Test Samples'
+        sec.name <- 'Number of Gold Test Trees'
         p <- p + theme(axis.text.x.bottom  = element_blank(),
                        axis.ticks.x.bottom = element_blank(),
                        legend.position = c(0.6, 0.2),

@@ -64,6 +64,8 @@ class DiscoReader(WordBaseReader):
         return post_batch(mode, ds, sort_by_length, bucket_length, batch_size)
 
 
+from sys import stderr
+from utils.file_io import basename
 class DiscoMultiReader(WordBaseReader):
     def __init__(self,
                  vocab_dir,
@@ -81,7 +83,7 @@ class DiscoMultiReader(WordBaseReader):
         labels = i2vs['label']
         if has_greedy_sub:
             from utils.shell_io import byte_style
-            print(byte_style('+ Balancing subs', '2'))
+            print(byte_style(basename(vocab_dir).upper() + ' + balancing subs', '2'), file = stderr)
         if unify_sub:
             labels = [t for t in labels if t[0] not in '#_']
             oovs['label'] = len(labels)

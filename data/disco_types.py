@@ -6,8 +6,14 @@ E_DISCONTINUOUS = C_TIGER, C_DPTB
 from utils.param_ops import change_key
 def select_corpus(data_config, corpus_name):
     assert C_ABSTRACT in data_config
-    assert corpus_name in E_DISCONTINUOUS
-    change_key(data_config, C_ABSTRACT, corpus_name)
+    if corpus_name is None:
+        config = change_key(data_config, C_ABSTRACT, *E_DISCONTINUOUS)
+        # if 'binarization' in config:
+        #     for corp_name, binarization in multilingual_binarization.items():
+        #         data_config[corp_name]['binarization'] = binarization
+    else:
+        assert corpus_name in E_DISCONTINUOUS
+        change_key(data_config, C_ABSTRACT, corpus_name)
 
 from data.io import make_call_fasttext, check_fasttext, check_vocab, split_dict
 build_params = {C_DPTB: split_dict(   '2-21',          '22',          '23'),

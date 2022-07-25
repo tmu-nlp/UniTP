@@ -43,14 +43,14 @@ beta_to_data <- function(parameters, n) {
         # y <- y[v]
         if (left > 1) {
             if (right > 1) {
-                t <- 'both'
+                t <- 'b'
             } else {
-                t <- 'left'
+                t <- 'l'
             }
         } else if (right > 1) {
-            t <- 'right'
+            t <- 'r'
         } else {
-            t <- 'neither'
+            t <- 'n'
         }
         gx <- c(gx, x)
         gy <- c(gy, y)
@@ -59,43 +59,66 @@ beta_to_data <- function(parameters, n) {
         gt <- c(gt, rep(t, length(x)))
     }
     gg <- factor(gg)
-    gt <- factor(gt)
+    gt <- factor(gt, levels = c('b', 'l', 'r', 'n'), labels = c('Both', 'Left', 'Right', 'None'))
     data.frame(x = gx, y = gy, g = gg, tf = gs, gt = gt)
 }
 
 load_db_con <- function(model_name, corp_name) {
-    levels <- c('tag', 'label', 'joint', 'orient', 'shuffled_joint', 'shuffled_orient', 'sub', 'msb')
-    labels <- c('Tag', 'Label', 'Joint\nDB Loss Weights    ', ' Orient ', 'Sff\nJoint', 'Sff\n Orient', '          Subtree\nNCCP', '\nDCCP')
+    levels <- c('tag', 'label', 'joint', 'orient', 'shuffled_joint', 'shuffled_orient', 'msb')
+    con <- c('left', 'right')
     data <- load_optuna(model_name, corp_name)
-    beta <- beta_to_data(data, 1000)
+    beta <- beta_to_data(data, 500)
     data <- melt(data = data,
                  id.vars = c('dev.tf', 'tf', 'df'),
-                 measure.vars = c(levels, 'lr'))
-    ns <- subset(data, variable != 'lr')
+                 measure.vars = c(levels, 'lr', con))
+    ns <- subset(data, variable %in% levels)
     ls <- subset(data, variable == 'lr')
-    ns$variable <- factor(ns$variable, levels = levels, labels = labels)
-    ls$variable <- factor(ls$variable, levels = c('lr'), labels = c('\nLearning Rate              '))
-    list(ns = ns, ls = ls, beta = beta)
+    bs <- subset(data, variable %in% con)
+    nl <- scale_x_discrete(labels = c(
+        'tag' = parse(text = TeX('$\\alpha_{tag}$')),
+        'label' = parse(text = TeX('$\\alpha_{label}$')),
+        'joint' = parse(text = TeX('$\\alpha_{jnt}$')),
+        'orient' = parse(text = TeX('$\\alpha_{ori}$')),
+        'shuffled_joint' = parse(text = TeX('$\\alpha^{sff}_{jnt}$')),
+        'shuffled_orient' = parse(text = TeX('$\\alpha^{sff}_{ori}$')),
+        'msb' =  expression(paste(rho, symbol("\306")))))
+    ll <- scale_x_discrete(labels = c('lr' = parse(text = TeX('$\\gamma$'))))
+    bl <- scale_x_discrete(labels = c(
+        'left' = parse(text = TeX('$\\alpha_{left}$')),
+        'right' = parse(text = TeX('$\\alpha_{right}$'))))
+    ns$variable <- factor(ns$variable, levels = levels)
+    ls$variable <- factor(ls$variable, levels = c('lr'))
+    bs$variable <- factor(bs$variable, levels = con)
+    list(ns = ns, ls = ls, nl = nl, ll = ll, bs = bs, bl = bl, beta = beta)
 }
 
 load_dm_ext <- function(model_name, corp_name) {
     data <- load_optuna(model_name, corp_name)
     data$max_inter_height <- data$max_inter_height / max(data$max_inter_height)
-    levels <- c('tag', 'label', 'fence', 'disco_1d', 'disco_2d', 'disco_2d_inter', 'disco_2d_intra', 'max_inter_height', 'sub', 'msb')
-    labels <- c('Tag', 'Label', 'Joint', 'Disc.\nDM Loss Weights', 'D', 'C', 'X', 'Xi\n| [0,9]', 'NCCP\n        Subtree', 'DCCP')
-    log.levels <- c('inter_rate', 'intra_rate', 'lr')
+    levels <- c('tag', 'label', 'fence', 'disco_1d', 'disco_2d', 'disco_2d_intra', 'disco_2d_inter', 'msb')
+    log.levels <- c('intra_rate', 'inter_rate', 'lr')
     data <- melt(data = data,
                  id.vars = c('dev.tf', 'tf', 'df'),
                  measure.vars = c(levels, log.levels))
     ls <- data$variable %in% log.levels
     ns <- subset(data, !ls)
     ls <- subset(data, ls)
-    ns$variable <- factor(ns$variable, levels = levels, labels = labels)
-    labels <- c('c\n|    Sampling Rates                         ',
-                'x',
-                '|\n                  | Learning Rate')
-    ls$variable <- factor(ls$variable, levels = log.levels, labels = labels)
-    list(ns = ns, ls = ls)
+    nl <- scale_x_discrete(labels = c(
+        'tag' = parse(text = TeX('$\\beta_{tag}$')),
+        'label' = parse(text = TeX('$\\beta_{label}$')),
+        'fence' = parse(text = TeX('$\\beta_{jnt}$')),
+        'disco_1d' = parse(text = TeX('$\\beta_{disc}$')),
+        'disco_2d' = parse(text = TeX('$\\beta_{D}$')),
+        'disco_2d_intra' = parse(text = TeX('$\\beta_{C}$')),
+        'disco_2d_inter' = parse(text = TeX('$\\beta_{X}$')),
+        'msb' =  expression(paste(rho, symbol("\306")))))
+    ll <- scale_x_discrete(labels = c(
+        'intra_rate' = parse(text = TeX('$\\beta_{c}$')),
+        'inter_rate' = parse(text = TeX('$\\beta_{x}$')),
+        'lr' = parse(text = TeX('$\\gamma$'))))
+    ns$variable <- factor(ns$variable, levels = levels)
+    ls$variable <- factor(ls$variable, levels = log.levels)
+    list(ns = ns, ls = ls, nl = nl, ll = ll)
 }
 
 break_fn <- function(x) {
@@ -137,32 +160,63 @@ hyperparameter_plot <- function(model_name, corp_name) {
     if (model_name == 'db') {
         data <- load_db_con(model_name, corp_name)
         beta <- data$beta
-        beta <- beta[order(beta$tf), ]
-        p <- ggplot(beta, aes(x, y, group = g, alpha = tf, color = gt))
-        p <- p + geom_line()
-        p <- p + theme(axis.title = element_blank())
-        p
-        ggsave(paste0(folder, paste('bin', model_name, corp_name, 'pdf', sep = '.')), height = 3, width = 5.5)
-        ws <- c(5, 1)
+        if (!is.null(beta)) {
+            beta <- beta[order(beta$tf), ]
+            p <- ggplot(beta, aes(x, y, group = g, alpha = tf, color = gt, size = tf))
+            p <- p + geom_line()
+            gf <- guide_legend(title = '\nDev F1', order = 1, reverse = TRUE)
+            gb <- guide_legend(title = unname(TeX('$\\alpha_l,\\,\\alpha_r\\,>\\,1$')), order = 2)
+            p <- p + guides(alpha = gf, size = gf, color = gb)
+            p <- p + scale_size_continuous(range = c(0.2, 1.2))
+            p <- p + coord_cartesian(ylim = c(0, 16.6))
+            p <- p + theme(
+                axis.title = element_blank(),
+                axis.text.y = element_blank(),
+                axis.ticks.y = element_blank(),
+                legend.spacing.y = unit(0.0, 'cm'))
+            if (corp_name == 'tiger') {
+                p <- p + annotate("text",
+                    label = "Probability density function (PDF)\n\nBest:   Beta(8.4, 10.9)",
+                    x = 0.5, y = 13, size = 4.5)
+                p <- p + annotate("segment",
+                    x = 0.5, y = 8,
+                    xend = 0.43, yend = 3.6,
+                    lineend = "round",
+                    linejoin = "round",
+                    arrow = arrow(length = unit(0.1, "inches")))
+            }
+            p
+            ggsave(paste0(folder, paste('bin', model_name, corp_name, 'pdf', sep = '.')), height = 2.3, width = 5.5)
+        }
+        ws <- c(3.5, 1.5, 1)
         legend.position <- 'left'
-        hc <- "tomato"
-        lc <- "cyan"
+        hc <- "#FFFF49"
+        lc <- "#268D7F"
     } else {
         data <- load_dm_ext(model_name, corp_name)
-        ws <- c(5.5, 2)
+        ws <- c(5.2, 2.3)
         legend.position <- 'right'
-        hc <- "yellow"
-        lc <- "purple"
+        hc <- "#5CCDFF"
+        lc <- "#FF68A1"
     }
+    yl <- scale_y_log10(
+        breaks = trans_breaks("log10", function(x) 10^x),
+        labels = trans_format("log10", math_format(10^.x)))
     gd <- guide_legend(title = paste0('Model ', toupper(model_name), '\nF1 | ', replace_corp_name(corp_name)), reverse = TRUE)
     np <- draw(data$ns, gd, lc, hc)
     np <- np + scale_y_continuous(breaks = seq(0, 1, 0.25), labels = c(0, '¼', '½', '¾', 1))
+    np <- np + data$nl
     lp <- draw(data$ls, gd, lc, hc)
-    lp <- lp + scale_y_log10(breaks = trans_breaks("log10", function(x) 10^x),
-              labels = trans_format("log10", math_format(10^.x)))
-    ggarrange(np, lp, ncol = 2, widths = ws, common.legend = TRUE, legend = legend.position)
+    lp <- lp + yl
+    lp <- lp + data$ll
+    if (is.null(data$bs)) {
+        ggarrange(np, lp, ncol = 2, widths = ws, common.legend = TRUE, legend = legend.position)
+    } else {
+        bp <- draw(data$bs, gd, lc, hc) + data$bl + yl
+        ggarrange(np, bp, lp, ncol = 3, widths = ws, common.legend = TRUE, legend = legend.position)
+    }
     fname <- paste('optuna', model_name, corp_name, 'pdf', sep = '.')
-    ggsave(paste0(folder, fname), height = 1.7, width = 5.5)
+    ggsave(paste0(folder, fname), height = 1.7, width = 5)
 }
 
 hyperparameter_plot('db', 'tiger')
@@ -216,10 +270,23 @@ get.bin <- function(threshold) {
     }
 }
 
-load_2d <- function(corp_name) {
-    data <- load_corp('stat.2d.dm', corp_name)
-    data$bin <- sapply(data$threshold, get.bin)
-    # print(nrow(data))
+load_2d <- function(sub) {
+    if (sub) {
+        data <- 'stat.2d.sub'
+    } else {
+        data <- 'stat.2d.nsb'
+    }
+    data <- rbind(load_corp(data, 'dptb'), load_corp(data, 'tiger'))
+    data$sub <- rep(sub, nrow(data))
+    # data$bin <- sapply(data$threshold, get.bin)
+    for (c in c('dptb', 'tiger')) {
+        d <- subset(data, corp == c & threshold != 0.5)
+        n <- nrow(d)
+        print(c)
+        print(sub)
+        print(sum(d$attempt) / n)
+        print(nrow(subset(d, size == comp)))
+    }
     # print(nrow(subset(data, threshold == 0.5)))
     # print(nrow(subset(data, threshold == -1 | threshold == 1)))
     # print(nrow(subset(data, size == comp)))
@@ -229,30 +296,61 @@ load_2d <- function(corp_name) {
     data
 }
 
-disco_2d_error_plot <- function() {
-    data <- rbind(load_2d('dptb'), load_2d('tiger'))
-    data$corp <- factor(data$corp, levels = c('dptb', 'tiger'), labels = c('DPTB - PLM DM', 'Tiger - PLM DM'))
+tries_label_fn <- function(x) {
+    y = c()
+    for (i in x) {
+        if (is.na(i) | i < 1.1) {
+            y <- c(y, i)
+        } else {
+            y <- c(y, 'FAIL')
+        }
+    }
+    y
+}
 
-    p <- ggplot(data, aes(bin, attempt))# %/% size / size))
-    p <- p + geom_count(aes(color = ..n..), alpha = I(0.618))
+disco_2d_error_plot <- function() {
+    data <- rbind(load_2d(F), load_2d(T))
+    data$corp <- factor(data$corp, levels = c('dptb', 'tiger'), labels = c('DPTB', 'Tiger'))
+    data$sub <- factor(data$sub)
+    levels(data$sub) <- c( # does not work: parse(text = TeX('$\\rho_{\\emptyset} = 0$'))
+        'FALSE' = expression(paste(rho, symbol("\306"), " = 0")), 
+        'TRUE'  = expression(paste(rho, symbol("\306"), ' > 0')))
+    data$error <- data$threshold < 0
+    data$threshold[data$error] <- 1.1
+    error <- subset(data, error)
+    lc <- '#141200'
+    hc <- "#5CCDFF"
+
+    p <- ggplot(data, aes(threshold, attempt, shape = error))# %/% size / size))
+    # https://ggplot2-book.org/annotations.html
+    # p <- p + geom_rect(aes(
+    #     xmin = 0.9, xmax = 1.0,
+    #     ymin = -Inf, ymax = Inf), fill = 'blue', alpha = 0.1)
+    p <- p + geom_hline(yintercept = 50, alpha = I(0.31), color = '#1B6CBF', linetype = "dashed")
+    p <- p + geom_count(aes(color = log(..n..)), alpha = I(0.8))
+    p <- p + geom_count(data = error, aes(threshold, attempt, shape = error), color = "#FF68A1")
     p <- p + scale_x_continuous(
-        breaks = seq(0, 7),
-        labels = c('<.5', '0.5', '<.6', '<.7', '<.8', '<.9', '<1', 'Err'))
-    # p <- p + scale_y_sqrt()
-    # p <- p + geom_rug(alpha = 0.05)
-    p <- p + labs(x = 'Threshold Bin', y = '# Tries')
+        breaks = c(-0.1, 0.1, 0.3, 0.5, 0.7, 0.9, 1.1),
+        labels = tries_label_fn)
+    p <- p + scale_color_continuous(low = lc, high = hc)
+    p <- p + labs(x = 'Threshold', y = '# Tries')
     # ggMarginal(p, type = "density")
     # p <- p + geom_xsidedensity(aes(y = after_stat(density)))
     # p <- p + geom_ysidedensity(aes(x = after_stat(density)))
     # p <- p + theme_ggside_void()
-    p <- p + theme(legend.position = "none")
-    p <- p + facet_wrap(.~corp, scale = 'free')
+    p <- p + theme(
+        legend.position = "none",
+        strip.text.x = element_text(margin = margin(b = 1.8, t = 0.7)),
+        strip.text.y = element_text(margin = margin(l = 1.8, r = 0.7)))
+    p <- p + facet_grid(sub~corp, scale = 'free', space = 'free', labeller = label_parsed)
+    # p <- p + geom_vline(xintercept = 1.05, alpha = I(0.2), color = 'red')
+    # p <- p + geom_vline(xintercept = 0.9, alpha = I(0.2), color = 'red')
     p
 
-    ggsave(paste0(folder, 'biaff.tries.pdf'), height = 1.7, width = 4.5)
+    ggsave(paste0(folder, 'biaff.tries.pdf'), height = 3, width = 4)
 }
 
-# disco_2d_error_plot()
+disco_2d_error_plot()
 
 # diff_dev_test <- function(data) {
 #     p <- ggplot(data, aes(dev.tf, test.tf))

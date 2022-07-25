@@ -4,7 +4,6 @@ from torch import nn, Tensor
 from models.types import activation_type, logit_type
 
 from utils.types import orient_dim, hidden_dim, num_ori_layer, true_type, frac_2, frac_4, frac_5, BaseWrapper, BaseType
-from utils.math_ops import inv_sigmoid
 from visualization import DiscoThresholds
 from random import random
 from sys import stderr
@@ -134,6 +133,7 @@ stem_config = dict(orient_dim    = orient_dim,
                    trainable_initials = true_type)
 from models.loss import cross_entropy, hinge_loss, binary_cross_entropy
 from models.utils import hinge_score as hinge_score_
+from models import StemOutput
 
 class DiscoStem(nn.Module):
     def __init__(self,
@@ -158,7 +158,6 @@ class DiscoStem(nn.Module):
             assert orient_type.keys() == set('jdr')
             orient_bits = 3
             self._orient_scores = convert32
-            # right_inv = direc_inv = inv_sigmoid
             self._loss_fns = joint_loss
         else:
             right_act, right_loss = (hinge_score, hinge_loss) if orient_type['r'] == 'hinge' else (nn.Sigmoid(), binary_cross_entropy)
@@ -283,8 +282,8 @@ class DiscoStem(nn.Module):
         return self._ori_dir(orient_hidden), orient_hidden
     
     def forward(self,
-                unit_emb,
                 existence,
+                unit_emb,
                 swap = None,
                 supervised_right = None,
                 supervised_joint = None,
@@ -384,7 +383,7 @@ class DiscoStem(nn.Module):
             # segment    = torch.stack(segment,    dim = 0)
             seg_length = torch.stack(seg_length, dim = 1)
 
-        return existence, embeddings, right_direc, joint, shuffled_right_direc, shuffled_joint, segment, seg_length
+        return StemOutput(embeddings, existence, (right_direc, joint, shuffled_right_direc, shuffled_joint, segment, seg_length))
 
     @property
     def orient_bits(self):
@@ -439,87 +438,22 @@ multi_class = dict(hidden_dim = hidden_dim,
 
 model_type = dict(orient_layer    = stem_config,
                   tag_label_layer = multi_class)
-from models.utils import get_logit_layer
-from models.loss import get_decision, get_decision_with_value, get_loss
 
-class BaseRnnParser(DiscoStem):
-    def __init__(self,
-                 model_dim,
-                 num_tags,
-                 num_labels,
-                 orient_layer,
-                 tag_label_layer,
-                 **kw_args):
-        # (**kw_args)self._stem_layer = 
+from models.loss import get_loss
+from models.backend import OutputLayer
+from utils.param_ops import change_key
+class BaseRnnParser(OutputLayer):
+    def __init__(self, *args, **kwargs):
+        change_key(kwargs, 'orient_layer', 'stem_layer')
+        super().__init__(DiscoStem, *args, **kwargs)
 
-        super().__init__(model_dim, **orient_layer)
-
-        hidden_dim = tag_label_layer['hidden_dim']
-        if hidden_dim:
-            self._shared_layer = nn.Linear(model_dim, hidden_dim)
-            self._dp_layer = nn.Dropout(tag_label_layer['drop_out'])
-
-            Net, argmax, score_act = get_logit_layer(tag_label_layer['logit_type'])
-            self._tag_layer   = Net(hidden_dim, num_tags) if num_tags else None
-            self._label_layer = Net(hidden_dim, num_labels) if num_labels else None
-            self._logit_max = argmax
-            if argmax:
-                self._activation = tag_label_layer['activation']()
-            self._score_fn = score_act(dim = 2)
-        self._hidden_dim = hidden_dim
-        self._model_dim = model_dim
-
-    def forward(self,
-                base_inputs,
-                bottom_existence,
-                ingore_logits = False,
-                **kw_args):
-        (layers_of_existence, layers_of_base, layers_of_right_direc, layers_of_joint, shuffled_right_direc, shuffled_joint, segment,
-         seg_length) = super().forward(base_inputs, bottom_existence, **kw_args)
-
-        if self._hidden_dim:
-            layers_of_hidden = self._shared_layer(layers_of_base)
-            layers_of_hidden = self._dp_layer(layers_of_hidden)
-            if self._logit_max:
-                layers_of_hidden = self._activation(layers_of_hidden)
-
-            if self._tag_layer is None or ingore_logits:
-                tags = None
-            else:
-                _, batch_len, _ = base_inputs.shape
-                tags = self._tag_layer(layers_of_hidden[:, :batch_len]) # diff small endian
-            
-            if self._label_layer is None or ingore_logits:
-                labels = None
-            else:
-                labels = self._label_layer(layers_of_hidden)
-        else:
-            layers_of_hidden = tags = labels = None
-
-        return layers_of_existence, layers_of_base, layers_of_hidden, layers_of_right_direc, layers_of_joint, shuffled_right_direc, shuffled_joint, tags, labels, segment, seg_length
-
-    @property
-    def model_dim(self):
-        return self._model_dim
-
-    @property
-    def hidden_dim(self):
-        return self._hidden_dim
-
-    def get_label(self, hidden):
-        return self._label_layer(hidden)
-
-    def get_decision(self, logits):
-        return get_decision(self._logit_max, logits)
-
-    def get_decision_with_value(self, logits):
-        return get_decision_with_value(self._score_fn, logits)
-
-    def get_losses(self, batch, weight_mask, tag_logits, top3_label_logits, label_logits):
+    def get_losses(self, batch, weight_mask, tag_logits, top3_label_logits, label_logits, key = None):
+        tag_fn = self._tag_layer if key is None else self._tag_layer[key]
+        label_fn = self._label_layer if key is None else self._label_layer[key]
         height_mask = batch['segments'][None] * (batch['seq_len'] > 0)
         height_mask = height_mask.sum(dim = 1)
-        tag_loss   = get_loss(self._tag_layer,   self._logit_max, tag_logits,   batch, 'tag')
-        label_loss = get_loss(self._label_layer, self._logit_max, label_logits, batch, False, height_mask, weight_mask, 'label')
+        tag_loss   = get_loss(tag_fn,   self._logit_max, tag_logits,   batch, 'tag')
+        label_loss = get_loss(label_fn, self._logit_max, label_logits, batch, False, height_mask, weight_mask, 'label')
         if top3_label_logits is not None:
-            tag_loss += get_loss(self._label_layer, self._logit_max, top3_label_logits, batch, 'top3_label')
+            label_loss += get_loss(label_fn, self._logit_max, top3_label_logits, batch, 'top3_label')
         return tag_loss, label_loss

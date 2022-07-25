@@ -54,5 +54,5 @@ def get_configs(recorder = None):
 
     model = DiscoPlmTree(Leaves, **model_config, **task_params)
     from data.cross.binary import BxDM
-    get_dm = lambda i2vs, num_threads: BxDM(disco.batch_size << 1, i2vs, num_threads)
+    get_dm = lambda num_threads: BxDM(disco.batch_size << 1, i2vs, num_threads)
     return DiscoOperator_lr(model, get_datasets, recorder, reader.i2vs, get_dm, train_config, recorder.evalb)

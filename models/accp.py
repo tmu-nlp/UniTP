@@ -1,14 +1,10 @@
 import torch
 from torch import nn
 
-from utils.types import chunk_dim, hidden_dim, half_hidden_dim, num_ori_layer
-from utils.types import frac_2, frac_4, frac_5, true_type, false_type
-from utils.param_ops import HParams
-from random import random
+from utils.types import chunk_dim, hidden_dim, half_hidden_dim, num_ori_layer, frac_2, frac_4, false_type
 from sys import stderr
 
 from models.types import rnn_module_type, continuous_attention_hint, activation_type, logit_type, fmin, fmax, fence_vote
-from models.combine import get_combinator, get_components, valid_trans_compound
 stem_config = dict(fence_dim      = chunk_dim,
                    fence_module   = rnn_module_type,
                    fence_vote     = fence_vote,
@@ -19,10 +15,9 @@ stem_config = dict(fence_dim      = chunk_dim,
                    drop_out       = frac_4,
                    rnn_drop_out   = frac_2,
                    trainable_initials = false_type)
-from models.loss import cross_entropy, hinge_loss, binary_cross_entropy
-from models.utils import hinge_score as hinge_score_
 from models.utils import blocky_max, blocky_softmax, condense_helper, condense_left
 from models.backend import PadRNN
+from models import StemOutput
 
 class MultiStem(PadRNN):
     def __init__(self,
@@ -51,7 +46,7 @@ class MultiStem(PadRNN):
                          activation)
         self._sigmoid = nn.Sigmoid()
 
-    def forward(self, unit_emb, existence,
+    def forward(self, existence, unit_emb,
                 supervised_fence = None,
                 keep_low_attention_rate = 1,
                 **kw_args):
@@ -154,8 +149,7 @@ class MultiStem(PadRNN):
             else:
                 fence_vote = torch.zeros(batch_size, 0, dtype = unit_emb.shape, device = unit_emb.device)
 
-        return existence, embeddings, weight, fence, fence_idx, fence_vote, segment, seg_length
-    
+        return StemOutput(embeddings, existence, (weight, fence, fence_idx, fence_vote, segment, seg_length))
 
 multi_class = dict(hidden_dim = hidden_dim,
                    activation = activation_type,
@@ -164,82 +158,14 @@ multi_class = dict(hidden_dim = hidden_dim,
 
 model_type = dict(fence_layer     = stem_config,
                   tag_label_layer = multi_class)
-from models.utils import get_logit_layer
-from models.loss import get_decision, get_decision_with_value, get_loss
 
-class BaseRnnParser(MultiStem):
-    def __init__(self,
-                 model_dim,
-                 num_tags,
-                 num_labels,
-                 fence_layer,
-                 tag_label_layer,
-                 **kw_args):
-        super().__init__(model_dim, **fence_layer)
-
-        hidden_dim = tag_label_layer['hidden_dim']
-        if hidden_dim:
-            self._shared_layer = nn.Linear(model_dim, hidden_dim)
-            self._dp_layer = nn.Dropout(tag_label_layer['drop_out'])
-
-            Net, argmax, score_act = get_logit_layer(tag_label_layer['logit_type'])
-            self._tag_layer   = Net(hidden_dim, num_tags) if num_tags else None
-            self._label_layer = Net(hidden_dim, num_labels) if num_labels else None
-            self._logit_max = argmax
-            if argmax:
-                self._activation = tag_label_layer['activation']()
-            self._score_fn = score_act(dim = 2)
-        self._hidden_dim = hidden_dim
-        self._model_dim = model_dim
-
-    def forward(self,
-                base_inputs,
-                bottom_existence,
-                ingore_logits = False,
-                key = None,
-                **kw_args):
-        (existence, embeddings, weight, fence, fence_idx, fence_vote, segment,
-         seg_length) = super().forward(base_inputs, bottom_existence, **kw_args)
-
-        if self._hidden_dim:
-            layers_of_hidden = self._shared_layer(embeddings)
-            layers_of_hidden = self._dp_layer(layers_of_hidden)
-            if self._logit_max:
-                layers_of_hidden = self._activation(layers_of_hidden)
-
-            if self._tag_layer is None or ingore_logits:
-                tags = None
-            else:
-                _, batch_len, _ = base_inputs.shape
-                tag_fn = self._tag_layer if key is None else self._tag_layer[key]
-                tags = tag_fn(layers_of_hidden[:, :batch_len]) # diff small endian
-            
-            if self._label_layer is None or ingore_logits:
-                labels = None
-            else:
-                label_fn = self._label_layer if key is None else self._label_layer[key]
-                labels = label_fn(layers_of_hidden)
-        else:
-            layers_of_hidden = tags = labels = None
-
-        return existence, embeddings, weight, fence, fence_idx, fence_vote, tags, labels, segment, seg_length
-
-    @property
-    def model_dim(self):
-        return self._model_dim
-
-    @property
-    def hidden_dim(self):
-        return self._hidden_dim
-
-    def get_label(self, hidden):
-        return self._label_layer(hidden)
-
-    def get_decision(self, logits):
-        return get_decision(self._logit_max, logits)
-
-    def get_decision_with_value(self, logits):
-        return get_decision_with_value(self._score_fn, logits)
+from models.loss import get_loss
+from models.backend import OutputLayer
+from utils.param_ops import change_key
+class BaseRnnParser(OutputLayer):
+    def __init__(self, *args, **kwargs):
+        change_key(kwargs, 'fence_layer', 'stem_layer')
+        super().__init__(MultiStem, *args, **kwargs)
 
     def get_losses(self, batch, weight_mask, tag_logits, label_logits, key = None):
         tag_fn = self._tag_layer if key is None else self._tag_layer[key]

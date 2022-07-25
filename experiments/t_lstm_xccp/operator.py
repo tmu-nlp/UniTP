@@ -26,6 +26,7 @@ class DiscoMultiOperator(DiscoOperator):
     def _step(self, mode, ds_name, batch, batch_id = None):
 
         supervised_signals = {}
+        supervised_signals['key'] = corp = ds_name if self.multi_corp else None
         has_disco_2d = 'dis_component' in batch
         if mode == M_TRAIN:
             all_space = batch['space']
@@ -42,18 +43,6 @@ class DiscoMultiOperator(DiscoOperator):
                 supervised_signals['disco_2d_intra_rate'] = self._train_config.disco_2d_intra_rate
             if self._train_config.disco_2d_inter_rate:
                 supervised_signals['disco_2d_inter_rate'] = self._train_config.disco_2d_inter_rate
-            # for con_seg in batch['split_segment']:
-            #     con_end = con_start + con_seg
-            #     print(con_split[:, con_start:con_end] * 1)
-            #     con_start = con_end
-            # dis_comp = batch['dis_component']
-            # dis_shape = batch['dis_shape']
-            # dis_slice = batch['dis_slice']
-            # print(dis_comp.shape)
-            # for start, end, shape in zip(dis_slice, dis_slice[1:], dis_shape):
-            #     if start < end:
-            #         comp = dis_comp[start:end].reshape(shape)
-            #         print(comp * 1)
             supervised_signals['supervision'] = space_layers, disco_layers, batch.get('inter_disco')
         if 'sub_idx' in batch:
             supervised_signals['sub_idx'] = batch['sub_idx']
@@ -65,9 +54,10 @@ class DiscoMultiOperator(DiscoOperator):
 
         batch_time = time()
         (batch_size, batch_len, static, top3_label_logits,
-         existences, embeddings, weights, disco_1d_logits, fence_logits, disco_2d_logits,
-         disco_2d_positive, disco_2d_negative, inter_2d_negative, space, tag_logits, label_logits,
-         segment, seg_length) = self._model(batch['token'], self._tune_pre_trained, **supervised_signals)
+         embeddings, existences, _, tag_logits, label_logits,
+         (weights, disco_1d_logits, fence_logits, disco_2d_logits,
+          disco_2d_positive, disco_2d_negative, inter_2d_negative, space,
+          segment, seg_length)) = self._model(batch['token'], self._tune_pre_trained, **supervised_signals)
         batch_time = time() - batch_time
 
         if mode == M_TRAIN:
@@ -87,7 +77,7 @@ class DiscoMultiOperator(DiscoOperator):
             else:
                 assert disco_2d_logits is None
             if not self._train_config.binary_hinge_loss:
-                _sigmoid = self._model._sigmoid
+                _sigmoid = self._model.stem._sigmoid
                 fence_logits = _sigmoid(fence_logits)
                 disco_1d_logits = _sigmoid(disco_1d_logits)
                 if has_disco_2d:
@@ -108,7 +98,7 @@ class DiscoMultiOperator(DiscoOperator):
                 if not self._train_config.binary_hinge_loss:
                     inter_2d_negative = _sigmoid(inter_2d_negative)
                     
-            tag_loss, label_loss = self._model.get_losses(batch, tag_logits, label_logits)
+            tag_loss, label_loss = self._model.get_losses(batch, tag_logits, label_logits, corp)
             if self._train_config.binary_hinge_loss:
                 fence_loss = hinge_loss(fence_logits, gold_fences, None)
                 disco_1d_loss = hinge_loss(disco_1d_logits, batch['dis_disco'], None)
@@ -147,7 +137,8 @@ class DiscoMultiOperator(DiscoOperator):
             total_loss.backward()
             
             if self.recorder._writer is not None:
-                self.recorder.tensorboard(self.global_step, 'Accuracy/%s',
+                suffix = ds_name if self.multi_corp else None
+                self.recorder.tensorboard(self.global_step, 'Accuracy/%s', suffix,
                     Tag   = 1 - fraction(tag_mis,     tag_weight),
                     Label = 1 - fraction(label_mis, label_weight),
                     Fence = fraction(fences == gold_fences),
@@ -156,7 +147,7 @@ class DiscoMultiOperator(DiscoOperator):
                     Disco_2D_Intra_P = fraction(disco_2d_positive_accuracy) if has_disco_2d_positive else None,
                     Disco_2D_Intra_N = fraction(disco_2d_negative_accuracy) if has_disco_2d_negative else None,
                     Disco_2D_Inter_N = fraction(inter_2d_negative_accuracy) if has_inter_2d_negative else None)
-                self.recorder.tensorboard(self.global_step, 'Loss/%s',
+                self.recorder.tensorboard(self.global_step, 'Loss/%s', suffix,
                     Tag   = tag_loss,
                     Label = label_loss,
                     Fence = fence_loss,
@@ -175,7 +166,7 @@ class DiscoMultiOperator(DiscoOperator):
                     batch_kwargs['Disco_2D_Intra_N'] = disco_2d_negative_accuracy.shape[0]
                 if has_inter_2d_negative:
                     batch_kwargs['Disco_2D_Inter_N'] = inter_2d_negative_accuracy.shape[0]
-                self.recorder.tensorboard(self.global_step, 'Batch/%s', **batch_kwargs)
+                self.recorder.tensorboard(self.global_step, 'Batch/%s', suffix, **batch_kwargs)
                 if hasattr(self._model, 'tensorboard'):
                     self._model.tensorboard(self.recorder, self.global_step)
         else:
@@ -187,13 +178,13 @@ class DiscoMultiOperator(DiscoOperator):
             spaces = (space - 1).type(torch.int16).cpu().numpy() # internal diff: data/model
 
             if vis._draw_trees:
-                _sigmoid = self._model._sigmoid
+                # _sigmoid = self._model.stem._sigmoid
                 # fence    = _sigmoid(fence_logits)
-                disco_1d = _sigmoid(disco_1d_logits)
-                weight   = mean_stdev(weights).type(torch.float16).cpu().numpy()
-                disco_2d = None if disco_2d_logits is None else disco_2d_logits
+                # disco_1d = _sigmoid(disco_1d_logits)
+                # disco_2d = None if disco_2d_logits is None else disco_2d_logits
+                weight = mean_stdev(weights).type(torch.float16).cpu().numpy()
             else:
-                weight = fence = disco_1d = disco_2d = None
+                weight = None # = fence = disco_1d = disco_2d
 
             if pending_heads:
                 b_size = (batch_len,)
@@ -219,10 +210,10 @@ class DiscoMultiOperator(DiscoOperator):
 
     def _before_validation(self, ds_name, epoch, use_test_set = False, final_test = False):
         # devel_bins, test_bins = self._mode_length_bins
-        devel_head_batchess, test_head_batchess = self._mode_trees
+        devel_head, test_head = self._mode_trees
         epoch_major, epoch_minor = epoch.split('.')
         if use_test_set:
-            head_trees = test_head_batchess
+            head_trees = test_head
             if final_test:
                 folder = ds_name + '_test'
                 draw_trees = True
@@ -230,18 +221,25 @@ class DiscoMultiOperator(DiscoOperator):
                 folder = ds_name + '_test_with_devel'
                 draw_trees = is_bin_times(int(epoch_major)) if int(epoch_minor) == 0 else False
         else:
-            head_trees = devel_head_batchess
+            head_trees = devel_head
             folder = ds_name + '_devel'
             draw_trees = is_bin_times(int(epoch_major)) if int(epoch_minor) == 0 else False
         if self._optuna_mode:
             draw_trees = False
+        if self.multi_corp:
+            i2vs = self.i2vs[ds_name]
+            m_corp = ds_name
+            head_trees = head_trees[ds_name]
+        else:
+            i2vs = self.i2vs
+            m_corp = None
         work_dir = self.recorder.create_join(folder)
         serial = draw_trees or not head_trees or self.dm is None
         if serial:
             async_ = True
             vis = DiscoMultiVis(epoch,
                                 work_dir,
-                                self.i2vs,
+                                i2vs,
                                 head_trees,
                                 self.recorder.log,
                                 self._evalb_lcfrs_kwargs,
@@ -249,7 +247,12 @@ class DiscoMultiOperator(DiscoOperator):
                                 draw_trees)
         else:
             async_ = False
-            vis = ParallelVis(epoch, work_dir, self.i2vs, self.recorder.log, self._evalb_lcfrs_kwargs, self._discodop_prm, self.dm)
+            vis = ParallelVis(epoch,
+                              work_dir, 
+                              i2vs,
+                              self._evalb_lcfrs_kwargs,
+                              self._discodop_prm,
+                              self.dm, m_corp)
         vis = VisRunner(vis, async_ = async_) # wrapper
         vis.before()
         self._vis_mode = vis, use_test_set, final_test, vis._pending_heads, serial
@@ -320,7 +323,7 @@ class DiscoMultiOperator(DiscoOperator):
                 rate_str.append(f'lr={lr:.1e}')
                 return med_str + f'h{mih};' + loss_str + ';' + ','.join(rate_str)
 
-            self._mode_trees = [], [] # force init
+            self._init_mode_trees()
             self.setup_optuna_mode(spec_update_fn, trial)
 
             return train(optuna_params, self)['key']
@@ -515,6 +518,7 @@ class ParallelVis(BinaryParallelVis):
     _draw_trees = False
     
     def _process(self, batch_id, batch):
+        dm, _, _, corp_key = self._args
         (_, h_token, d_tag, d_label, d_space, d_weight, d_disco_2d, d_segment, d_seg_length) = batch
-        self._args[0].batch(batch_id, self._bid_offset, d_segment, d_seg_length, h_token, d_tag, d_label, d_space)
+        dm.batch(batch_id, self._bid_offset, d_segment, d_seg_length, h_token, d_tag, d_label, d_space, key = corp_key)
         self._bid_offset += h_token.shape[0]

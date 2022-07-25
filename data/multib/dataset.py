@@ -3,7 +3,7 @@ from data.backend import LengthOrderedDataset, np, torch
 from data.io import distribute_jobs, sorting_order, sort_by_order
 from utils.file_io import DelayedKeyboardInterrupt
 from utils.shell_io import byte_style
-from utils.types import device
+from utils.types import device, binary_factors
 from tqdm import tqdm
 from itertools import zip_longest
 from multiprocessing import Process, Queue
@@ -66,7 +66,11 @@ class MAryDataset(LengthOrderedDataset):
         signals = []
         lack_fences = 0
         oov_errors = []
-        with tqdm(desc = 'Load ' + byte_style(mode.title().ljust(5, '-') + 'Set', '2') + f' from {num_threads} threads', total = len(samples)) as qbar:
+        desc = mode.title()
+        if balanced:
+            desc += f' sub({balanced * 100:.0f}%)'
+        desc = byte_style(desc, '2') + f' with {num_threads} threads'
+        with tqdm(desc = desc, total = len(samples)) as qbar:
             try:
                 while any(x.is_alive() for x in works):
                     if q.empty():
@@ -123,11 +127,11 @@ class MAryDataset(LengthOrderedDataset):
         if extra_text_helper:
             c2i = field_v2is['char'][1] if 'char' in field_v2is else None
             extra_text_helper = extra_text_helper(text, c2i)
-        if 0 < balanced < 1:
-            factors = {0: 1 - balanced, 1: balanced}
-        else:
-            factors = None
-        super().__init__(heads, lengths, factors, min_len, max_len, extra_text_helper)
+        super().__init__(heads, lengths, binary_factors(balanced), min_len, max_len, extra_text_helper)
+
+    def reset_factors(self, balanced):
+        print(byte_style(f'balancing sub({balanced * 100:.0f}%)', '2'))
+        self._reset_factors(binary_factors(balanced))
 
     def at_idx(self, idx, factor, length, helper_outputs):
         signals, heads = self._signals_heads

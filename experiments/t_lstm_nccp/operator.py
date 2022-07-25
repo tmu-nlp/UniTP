@@ -22,17 +22,20 @@ train_type = dict(loss_weight = dict(tag    = BaseType(0.2, validator = frac_ope
 class PennOperator(Operator):
     def __init__(self, model, get_datasets, recorder, i2vs, get_dm, evalb, train_config):
         super().__init__(model, get_datasets, recorder, i2vs, get_dm)
+        self._init_mode_trees()
         self._evalb = evalb
         self._sigmoid = nn.Sigmoid()
+        self._train_config = train_config
+        self._tune_pre_trained = False
+
+    def _init_mode_trees(self):
         if self.multi_corp:
-            make = lambda v: {k: v for k in i2vs}
+            make = lambda v: {k: v for k in self.i2vs}
             self._mode_length_bins = make(None), make(None)
             self._initial_run      = make(True), make(True)
         else:
             self._mode_length_bins = None, None
             self._initial_run      = True, True
-        self._train_config = train_config
-        self._tune_pre_trained = False
 
     def _build_optimizer(self, start_epoch):
         # self._loss_weights_of_tag_label_orient = 0.3, 0.1, 0.6 betas = (0.9, 0.98), weight_decay = 0.01, eps = 1e-6
@@ -61,8 +64,8 @@ class PennOperator(Operator):
 
         batch_time = time()
         (batch_size, batch_len, static, top3_label_logits,
-         layers_of_base, _, existences, orient_logits, tag_logits, label_logits,
-         trapezoid_info) = self._model(batch['token'], self._tune_pre_trained, **batch)
+         layers_of_base, existences, _, tag_logits, label_logits,
+         (orient_logits, trapezoid_info)) = self._model(batch['token'], self._tune_pre_trained, **batch)
         batch_time = time() - batch_time
 
         orient_logits.squeeze_(dim = 2)
@@ -223,8 +226,7 @@ class PennOperator(Operator):
             self._model.update_static_pca(m_corp)
 
         work_dir = self.recorder.create_join(folder)
-        serial = save_tensors or flush_heads or self.dm is None
-        if serial:
+        if serial := (save_tensors or flush_heads or self.dm is None):
             async_ = True
             vis = SerialVis(epoch,
                             work_dir,
@@ -285,7 +287,8 @@ class PennOperator(Operator):
             prefix = 'TestSet' if use_test_set else 'DevelSet'
             suffix = ds_name if self.multi_corp else None
             self.recorder.tensorboard(self.global_step, prefix + '/%s', suffix,
-                                      F1 = scores.get('F1', 0), SamplePerSec = speed_outer)
+                                      F1 = scores.get('F1', 0),
+                                      SamplePerSec = None if serial else speed_dm)
         self._vis_mode = None
         if c_vis is not None:
             c_vis.after()
@@ -319,9 +322,6 @@ class PennOperator(Operator):
                 else:
                     content = f'{len(removed)} files'
                 Operator.msg(f' [{start_epoch:.2f}:] {content} removed in folder penn_test_with_devel.')
-
-    def optuna_model(self):
-        pass
 
 
 from utils.vis import BaseVis, VisRunner
@@ -434,7 +434,7 @@ class SerialVis(BaseVis):
                     fdata = self._ctvis.join(f'data.bin_{wbin}.tree')
                     proc = parseval(self._evalb, fhead, fdata)
                     smy = rpt_summary(proc.stdout.decode(), False, True)
-                    fw.write(f"{wbin},{smy['N']},{smy['LP']},{smy['LR']},{smy['F1']},{smy['TA']}\n")
+                    fw.write(f"{wbin},{','.join(str(smy.get(x, 0)) for x in ('N', 'LP', 'LR', 'F1', 'TA'))}\n")
                     remove(fhead)
                     remove(fdata)
 
