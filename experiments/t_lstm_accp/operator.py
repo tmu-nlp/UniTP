@@ -57,10 +57,11 @@ def unpack_fence_vote(fence_vote, batch_size, segment):
         start = end
     return layers
 
-def upper_triangle(m, skip):
+def serialize_matrix(m, skip = None):
     for rid, row in enumerate(m):
-        for cid, val in enumerate(row[rid + skip:]):
-            yield rid, rid + skip + cid, float(val)
+        offset = 0 if skip is None else (rid + skip)
+        for cid, val in enumerate(row[offset:]):
+            yield rid, offset + cid, float(val)
 
 def sort_matrix(m, lhs, rhs, higher_better):
     lines = []
@@ -71,6 +72,20 @@ def sort_matrix(m, lhs, rhs, higher_better):
             line.append(rhs[cid])
         lines.append(lhs[rid].ljust(n) + ': ' + ' '.join(line))
     return '\n'.join(lines)
+
+def save_txt(fname, append, lhv, rhv, dst, cos):
+    with open(fname, ('w', 'a+')[append]) as fw:
+        if append:
+            fw.write('\n\n')
+            lhv, rhv = lhv.label, rhv.label
+            n = 'Label'
+        else:
+            lhv, rhv = lhv.tag, rhv.tag
+            n = 'Tag'
+        fw.write(f'Distance\n  {n}:\n')
+        fw.write(sort_matrix(dst, lhv, rhv, False))
+        fw.write(f'\nCosine\n  {n}:\n')
+        fw.write(sort_matrix(cos, lhv, rhv, True))
 
 class MultiOperator(PennOperator):
     def __init__(self, model, get_datasets, recorder, i2vs, get_dm, evalb, train_config):
@@ -228,32 +243,37 @@ class MultiOperator(PennOperator):
 
         if final_test and hasattr(self._model, 'get_multilingual'):
             work_dir = self._recorder.create_join('multilingual')
+            # save vocabulary
             for corp, i2vs in self.i2vs.items():
                 with open(join(work_dir, 'tag.' + corp), 'w') as fw:
                     fw.write('\n'.join(i2vs.tag))
                 with open(join(work_dir, 'label.' + corp), 'w') as fw:
                     fw.write('\n'.join(i2vs.label))
+            # save Tag/Label
             for get_label in (False, True):
-                fname = ('tag', 'label')[get_label] + '.'
+                prefix = ('tag', 'label')[get_label] + '.'
                 for lhs, rhs, dst, cos in self._model.get_multilingual(get_label):
-                    with open(join(work_dir, fname + lhs + '.' + rhs + '.csv'), 'w') as fw:
+                    # save matrix
+                    #  # 'a+' if get_label else 'w' lhv, rhv = self.i2vs[lhs], self.i2vs[rhs]
+                    if lhs == rhs:
+                        fname = lhs
+                        save_txt(join(work_dir, lhs + '.txt'), get_label, self.i2vs[lhs], self.i2vs[lhs], dst, cos)
+                    else:
+                        fname = lhs + '.' + rhs
+                        save_txt(join(work_dir, lhs + '.' + rhs + '.txt'), get_label, self.i2vs[lhs], self.i2vs[rhs], dst, cos)
+                        save_txt(join(work_dir, rhs + '.' + lhs + '.txt'), get_label, self.i2vs[rhs], self.i2vs[lhs], dst.T, cos.T)
+                    with open(join(work_dir, prefix + fname + '.csv'), 'w') as fw:
                         fw.write('type,row,col,value\n')
-                        for r, c, v in upper_triangle(dst, 1):
-                            fw.write(f'd,{r},{c},{v}\n')
-                        for r, c, v in upper_triangle(cos, 1):
-                            fw.write(f'c,{c},{r},{v}\n')
-                    with open(join(work_dir, lhs + '.' + rhs + '.txt'), 'a+' if get_label else 'w') as fw:
-                        lhv, rhv = self.i2vs[lhs], self.i2vs[rhs]
-                        if get_label:
-                            fw.write('\nDistance\n  Label:\n')
-                            fw.write(sort_matrix(dst, lhv.label, rhv.label, False))
-                            fw.write('\nCosine\n  Label:\n')
-                            fw.write(sort_matrix(cos, lhv.label, rhv.label, True))
+                        if lhs == rhs:
+                            for r, c, v in serialize_matrix(dst, 1):
+                                fw.write(f'd,{r},{c},{v}\n')
+                            for r, c, v in serialize_matrix(cos, 1):
+                                fw.write(f'c,{c},{r},{v}\n')
                         else:
-                            fw.write('Distance\n  Tag:\n')
-                            fw.write(sort_matrix(dst, lhv.tag, rhv.tag, False))
-                            fw.write('\nCosine\n  Tag:\n')
-                            fw.write(sort_matrix(cos, lhv.tag, rhv.tag, True))
+                            for r, c, v in serialize_matrix(dst):
+                                fw.write(f'd,{r},{c},{v}\n')
+                            for r, c, v in serialize_matrix(cos):
+                                fw.write(f'c,{r},{c},{v}\n')
 
 
     def _after_validation(self, ds_name, count, seconds):

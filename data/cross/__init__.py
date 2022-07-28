@@ -14,7 +14,8 @@ def validate(bottom_info, top_down,
         for nid in nids:
             if nid > 0:
                 assert nid in existing_bids, f'Refering to non-existing bid({nid})'
-                assert nid not in bid_refs, f'Repeating bid({nid})'
+                if single_attachment:
+                    assert nid not in bid_refs, f'Repeating bid({nid})'
                 bid_refs.add(nid)
             else:
                 assert nid in top_down, f'Lacking nid({nid}) in top_down.keys'
@@ -347,30 +348,6 @@ def leaves(bottom, top_down, nid):
     else:
         yield bottom[nid - 1]
 
-from data.cross.art import label_only, sort_by_arity, sort_by_lhs_arity, sort_by_rhs_arity
-from data.cross.art import style_1, style_2, draw_bottom, make_spans, draw_line, sbrkt_ftag
-def draw_str_lines(bottom, top_down, *,
-                   style_fn = style_2,
-                   reverse = True,
-                   sort_fn = None,
-                   ftag_fn = None,
-                   label_fn = label_only,
-                   wrap_len = 2):
-    symbols, stroke_fn = style_fn(reverse)
-    word_line, tag_line, bottom_up, jobs, cursors = draw_bottom(bottom, top_down, wrap_len)
-    has_ma = any(len(p) > 1 for p in bottom_up.values())
-    if sort_fn is None:
-        sort_fn = sort_by_lhs_arity if has_ma else sort_by_arity
-    pic_width = len(tag_line)
-    str_lines = [word_line, tag_line]
-    while jobs:
-        old_bars = cursors.copy() if callable(ftag_fn) else None
-        spans, bars, jobs = make_spans(bottom_up, top_down, jobs, cursors, label_fn, sort_fn, stroke_fn, has_ma)
-        str_lines.extend(draw_line(spans, pic_width, symbols, bars, old_bars, ftag_fn))
-    if reverse:
-        str_lines.reverse()
-    return str_lines
-
 def remove_repeated_unary(top_down, nid = 0):
     if nid in top_down:
         children = top_down[nid].children
@@ -484,3 +461,28 @@ class BaseTreeKeeper:
     def word_tag(self):
         return self._word_tag
     
+
+from data.cross.art import label_only, sort_by_arity, sort_by_lhs_arity, sort_by_rhs_arity
+from data.cross.art import style_1, style_2, draw_bottom, make_spans, draw_line, sbrkt_ftag
+def draw_str_lines(bottom, top_down, *,
+                   style_fn = style_2,
+                   reverse = True,
+                   sort_fn = None,
+                   ftag_fn = None,
+                   label_fn = label_only,
+                   wrap_len = 2):
+    symbols, stroke_fn = style_fn(reverse)
+    word_line, tag_line, bottom_up, jobs, cursors = draw_bottom(bottom, top_down, wrap_len)
+    has_ma = any(len(p) > 1 for p in bottom_up.values())
+    flabel = lambda pid: label_fn(pid, top_down)
+    if sort_fn is None:
+        sort_fn = sort_by_lhs_arity if has_ma else sort_by_arity
+    pic_width = len(tag_line)
+    str_lines = [word_line, tag_line]
+    while jobs:
+        old_bars = cursors.copy() if callable(ftag_fn) else None
+        spans, bars, jobs = make_spans(bottom_up, top_down, jobs, cursors, flabel, sort_fn, stroke_fn, has_ma, pic_width)
+        str_lines.extend(draw_line(spans, pic_width, symbols, bars, old_bars, ftag_fn))
+    if reverse:
+        str_lines.reverse()
+    return str_lines

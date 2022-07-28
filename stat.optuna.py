@@ -10,7 +10,6 @@ _sv_file = 'settings_and_validation.yaml'
 _, trial_dir = argv
 instance_dir = dirname(trial_dir)
 is_dccp = '_dccp/' in instance_dir
-assert is_dccp or '_xccp/' in instance_dir
 inst_id = basename(instance_dir).split('.')[0]
 base_rt = join(dirname(instance_dir), _rt_file)
 rt_file = join(trial_dir, _rt_file)
@@ -19,6 +18,8 @@ assert isfile(base_rt)
 assert isdir(trial_dir) and isfile(rt_file) and isfile(sv_file)
 
 summary_trials(trial_dir, 'rank.txt')
+if not (is_dccp or '_xccp/' in instance_dir):
+    exit()
 
 base_rt = load_yaml(base_rt, None, wait = False)[inst_id]
 rt = load_yaml(rt_file, None, wait = False)
