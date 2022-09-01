@@ -4,8 +4,8 @@ import numpy as np
 from collections import namedtuple, Counter, defaultdict
 from itertools import count
 from os.path import getsize, expanduser
-from os import listdir, remove
-import sys, pdb
+from os import listdir
+import sys
 from nltk.tree import Tree
 from utils.file_io import join, isfile, parpath
 from utils.pickle_io import pickle_load, pickle_dump
@@ -98,10 +98,10 @@ def tee_trees(join_fn, mode, lengths, trees, batch_id, bin_width):
                 print(tree, file = fw)
     return ftrees.keys()
 
-from data.triangle import head_to_tree as tri_h2t
-from data.triangle import data_to_tree as tri_d2t
-from data.trapezoid import head_to_tree as tra_h2t
-from data.trapezoid import data_to_tree as tra_d2t
+from data.continuous.binary.triangle import head_to_tree as tri_h2t
+from data.continuous.binary.triangle import data_to_tree as tri_d2t
+from data.continuous.binary.trapezoid import head_to_tree as tra_h2t
+from data.continuous.binary.trapezoid import data_to_tree as tra_d2t
 from utils.shell_io import parseval, rpt_summary
 class ContinuousTensorVis(TensorVis):
     def __init__(self, fpath, vocabs):
@@ -297,7 +297,7 @@ if desktop:
     from utils.math_ops import uneven_split, itp
     from math import exp, sqrt, pi
     from functools import partial
-    from data.delta import warning_level, NIL
+    from data.binary import warning_level, NIL
     from utils.param_ops import more_kwargs
     from utils.file_io import path_folder
     from concurrent.futures import ProcessPoolExecutor
@@ -667,7 +667,6 @@ if desktop:
                                         stat = SentenceEnergy(num_word, sample.mpc_word, sample.mpc_phrase,
                                                               1, None, sample.segment, sample.seg_length, False)
                                         data_.append((sample, stat))
-                                        # import pdb; pdb.set_trace()
                                     self._sent_cache[fname_time] = data_, data[-1]
                     self._selected = bid, num_word, head_
 
@@ -772,7 +771,6 @@ if desktop:
                 return
 
             bid, num_word, head, sid = self._selected
-            # import pdb; pdb.set_trace()
             prefix = f"data.{bid}_"
             suffix = '.pkl'
             timeline = []

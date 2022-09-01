@@ -5,9 +5,10 @@ Span = namedtuple('Span', 'label, strokes, cur, mai')
 Element = namedtuple('Element', 'bits, cur, mai')
 Stroke = namedtuple('Stroke', 'cur, mai, ftag')
 draw_stroke = lambda s_char, length, e_char: (s_char * length, e_char)
-Symbol = namedtuple('Symbol', 'hbar, vbar, left, middle, right, combine, cross')
+Symbol = namedtuple('Symbol', 'vbar, left, middle, right, combine, cross')
 
 BAR = '─'
+H_BAR = '~'
 SPACE = ' '
 mai = lambda mai, n: (len(n)>1)+1 if mai else 0
 def dynamic_stroke(parents, elem, cursors, pid, nid, jobs, future_jobs, bottom_up):
@@ -30,7 +31,6 @@ def dynamic_stroke(parents, elem, cursors, pid, nid, jobs, future_jobs, bottom_u
         return Stroke(elem.cur, elem.mai, ftag)
 
 def style_1(reverse):
-    H_BAR = '━'
     V_BAR = '│┃'
     if reverse:
         T_LEFT   = '┌┟┠'
@@ -43,7 +43,7 @@ def style_1(reverse):
         T_RIGHT  = '┘┦┨'
         D_COMB   = '┬┰'
     S_CROSS  = '┼' # avoid '╋' by cur
-    return Symbol(H_BAR, V_BAR, T_LEFT, T_MIDDLE, T_RIGHT, D_COMB, S_CROSS), dynamic_stroke
+    return Symbol(V_BAR, T_LEFT, T_MIDDLE, T_RIGHT, D_COMB, S_CROSS), dynamic_stroke
 
 def static_stroke(parents, elem, cursors, pid, *_):
     ftag = parents.pop(pid)
@@ -55,7 +55,6 @@ def static_stroke(parents, elem, cursors, pid, *_):
         return Stroke(elem.cur, elem.mai, ftag)
     
 def style_2(reverse):
-    H_BAR = '═'
     V_BAR = '│║'
     if reverse:
         T_LEFT   = '┌╓╟'
@@ -68,7 +67,7 @@ def style_2(reverse):
         T_RIGHT  = '┘╜╢'
         D_COMB   = '┬╥'
     S_CROSS  = '┼'
-    return Symbol(H_BAR, V_BAR, T_LEFT, T_MIDDLE, T_RIGHT, D_COMB, S_CROSS), static_stroke
+    return Symbol(V_BAR, T_LEFT, T_MIDDLE, T_RIGHT, D_COMB, S_CROSS), static_stroke
 
 def lcenter(text, num):
     if num - len(text) < 2:
@@ -90,7 +89,7 @@ def draw_bottom(bottom, top_down, wrap_len):
         word_line += lcenter(word, unit_len - num_wide_chars)
         tag_line  += lcenter(tag,  unit_len)
         bit    = 1 << eid
-        cursor = len(tag_line) - round(unit_len // 2)
+        cursor = len(tag_line) - round(unit_len // 2) - 1 # tag_line counts wide_chars
         cursors[cursor] = is_ma = len(parents := bottom_up[bid]) > 1
         for parent in parents:
             jobs[parent][bid] = Element(bit, cursor, is_ma)
@@ -124,7 +123,7 @@ def dodge_cursor(span_curs, cursors):
                 distance = dist
     return max_cursor
 
-def replace_char(line, bars, cursors, targets = ' ─━═'):
+def replace_char(line, bars, cursors, targets = SPACE + BAR + H_BAR):
     new_line = []
     last_cur = 0
     for cur, is_ma in sorted(cursors.items()):
@@ -136,13 +135,22 @@ def replace_char(line, bars, cursors, targets = ' ─━═'):
         new_line.append(line[last_cur:])
     return ''.join(new_line)
 
-def dag(right, parents, cur, bottom_up, new_cursors, future_jobs, bits, label_fn, inc = 1):
-    for parent in parents:
+def dag(right, parents, cur, bottom_up, cursors, new_cursors, future_jobs, bits, last_half, label_fn, ftag_fn, inc = 1):
+    for parent, ftag in parents.items():
         lab = label_fn(parent)
+        tag = ftag_fn(ftag) if ftag and callable(ftag_fn) else ''
+        hlf = (len(lab) + len(tag)) >> 1
         if right:
-            cur += len(lab) + inc
+            cur += last_half + hlf + inc
+            while cur in cursors:
+                cur += 1
+            lab = lab + tag
         else:
-            cur -= len(lab) - inc
+            cur -= last_half + hlf + inc
+            while cur in cursors:
+                cur -= 1
+            lab = tag + lab
+        last_half = hlf
         unary_parents = bottom_up[parent]
         unary_is_ma = len(unary_parents) > 1
         new_cursors[cur] = unary_is_ma
@@ -150,18 +158,24 @@ def dag(right, parents, cur, bottom_up, new_cursors, future_jobs, bits, label_fn
         for up in unary_parents:
             future_jobs[up][parent] = Element(bits, cur, unary_is_ma)
 
+def has_ma_dependency(pid, bottom_up, top_down):
+    for up in bottom_up[get_sole_key(top_down[pid].children)]: # include other parent
+        if up != pid and len(top_down[up].children) > 1:
+            return True
+
 label_only = lambda n, td: td[n].label
 brace_ftag = lambda t: '{' + t + '}'
 sbrkt_ftag = lambda t: '[' + t + ']'
 __get_cur = lambda elem_or_span: elem_or_span.cur
 from utils.param_ops import get_sole_key
-def make_spans(bottom_up, top_down, jobs, cursors, label_fn, sort_jobs, stroke_fn, has_ma, pic_width):
+def make_spans(bottom_up, top_down, jobs, cursors, label_fn, sort_jobs, stroke_fn, has_ma, ftag_fn):
     spans = []
     span_ranges = set() if has_ma else 0
     new_cursors = {}
     future_jobs = defaultdict(dict)
     for pid, elements in sort_jobs(jobs):
-        if (n := len(elements)) < len(top_down[pid].children):
+        if (n := len(elements)) < (cn := len(top_down[pid].children)) or \
+            cn == 1 and has_ma_dependency(pid, bottom_up, top_down):
             future_jobs[pid].update(elements)
             continue
 
@@ -223,13 +237,16 @@ def make_spans(bottom_up, top_down, jobs, cursors, label_fn, sort_jobs, stroke_f
                 elif min(curs) > cursor:
                     right[parent] = span_parents.pop(parent)
                 else:
-                    raise ValueError('Need further support')
+                    either = left if len(left) < len(right) else right
+                    either[parent] = span_parents.pop(parent)
             span_is_ma = len(span_parents) > 1
             segments = []
-            for cur, lab in dag(False, left, cursor, bottom_up, new_cursors, future_jobs, bits, label_fn):
+            half_len = len(label) >> 1
+            dag_args = cursor, bottom_up, cursors, new_cursors, future_jobs, bits, half_len, label_fn, ftag_fn
+            for cur, lab in dag(False, left, *dag_args):
                 segments.append((cur, lab))
             segments.append((cursor, label))
-            for cur, lab in dag(True, right, cursor, bottom_up, new_cursors, future_jobs, bits, label_fn):
+            for cur, lab in dag(True, right, *dag_args):
                 segments.append((cur, lab))
             label = segments
 
@@ -257,9 +274,9 @@ def draw_label(cursor, cur, label, filler = None):
         cursor += n
     return segments, increase
 
-def label_filler(label, hbar):
+def label_filler(label):
     if isinstance(label, list):
-        return label, hbar
+        return label, H_BAR
     return label, None
 
 def draw_line(l2r_non_overlapping_spans, width, symbol, add_bar, add_bar_for_ftag, ftag_fn):
@@ -296,7 +313,7 @@ def draw_line(l2r_non_overlapping_spans, width, symbol, add_bar, add_bar_for_fta
                     line_line.extend(draw_stroke(BAR, num_char, sign))
                 cursor_line += num_char + 1
 
-        cons, num_char = draw_label(cursor_cons, span.cur, *label_filler(span.label, symbol.hbar))
+        cons, num_char = draw_label(cursor_cons, span.cur, *label_filler(span.label))
         line_cons.extend(cons)
         cursor_cons += num_char
 

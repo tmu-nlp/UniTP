@@ -6,6 +6,9 @@ def isqrt(n):
         y = (x + n // x) >> 1
     return x
 
+frac_eq = lambda a, b, n, o = 0: int(a * n) == int(b * n + o)
+frac_neq = lambda a, b, n, o = 0: not frac_eq(a, b, n, o)
+
 def is_bin_times(n):
     return 0 == (n & (n-1))
 

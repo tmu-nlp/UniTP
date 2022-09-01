@@ -1,14 +1,16 @@
 C_PTB = 'ptb'
 C_CTB = 'ctb'
 C_KTB = 'ktb'
+C_NPCMJ = 'npcmj'
 C_ABSTRACT = 'continuous'
-E_CONTINUE = C_PTB, C_CTB, C_KTB
+E_CONTINUE = C_PTB, C_CTB, C_KTB, C_NPCMJ
 
 from utils.types import O_LFT, O_RGT
 multilingual_binarization = {
     C_PTB: {O_LFT: 0.15, O_RGT: 0.85},
     C_CTB: {O_LFT: 0.2, O_RGT: 0.8},
     C_KTB: {O_LFT: 0.7, O_RGT: 0.3},
+    C_NPCMJ: {O_LFT: 0.7, O_RGT: 0.3},
 }
 
 from utils.param_ops import change_key
@@ -26,12 +28,13 @@ def select_corpus(data_config, corpus_name):
 from data.io import make_call_fasttext, check_fasttext, check_vocab, split_dict
 build_params = {C_PTB: split_dict('2-21',             '22',      '23'    ),
                 C_CTB: split_dict('001-270,440-1151', '301-325', '271-300'),
-                C_KTB: split_dict('300', '0-9', '10-20')}
+                C_KTB: split_dict('300',              '0-14',    '15-29'),
+                C_NPCMJ: split_dict('300',            '0-14',    '15-29')}
                 # C_KTB: dict(train_set = 'non_numeric_naming') }
-ft_bin = {C_PTB: 'en', C_CTB: 'zh', C_KTB: 'ja'}
+ft_bin = {C_PTB: 'en', C_CTB: 'zh', C_KTB: 'ja', C_NPCMJ: 'ja'}
 call_fasttext = make_call_fasttext(ft_bin)
 
-from utils.types import none_type, false_type, true_type, binarization, NIL, frac_close_0
+from utils.types import false_type, true_type, binarization, frac_close_0
 from utils.types import train_batch_size, train_max_len, train_bucket_len, vocab_size, trapezoid_height
 nccp_data_config = dict(vocab_size       = vocab_size,
                         binarization     = binarization,
@@ -52,39 +55,96 @@ accp_data_config = dict(vocab_size       = vocab_size,
                         unify_sub        = true_type,
                         sort_by_length   = false_type)
 
-from utils.str_ops import histo_count, str_percentage, strange_to
-from utils.pickle_io import pickle_load, pickle_dump
+from utils.str_ops import StringProgressBar, cat_lines
 from sys import stderr
-from os.path import join, isfile, dirname
+from os.path import join, dirname
 from os import listdir
 from contextlib import ExitStack
-from tqdm import tqdm
-from collections import Counter, defaultdict
+from collections import Counter, defaultdict, namedtuple
 
 from nltk.tree import Tree
-from tempfile import TemporaryDirectory
-from data.io import SourcePool, distribute_jobs
+from data.io import SourcePool, distribute_jobs, post_build, get_corpus
 from random import seed
+
+def gen_trees(fpath, keep_str):
+    def wrap_tree():
+        if keep_str:
+            return cumu_string
+        tree = Tree.fromstring(cumu_string)
+        if tree.label() == '':
+            tree = tree[0]
+        return tree
+
+    with open(fpath) as fr:
+        cumu_string = None
+        for line in fr:
+            if not keep_str:
+                line = line.rstrip()
+            if not line: continue
+            if line[0] == '(': # end
+                if cumu_string is not None:
+                    if ')' not in line: continue
+                    yield wrap_tree()
+                cumu_string = line # cumu_starte = eid
+            elif line[0] == '<' or len(line) <= 1: # start or end
+                if cumu_string is None:
+                    continue # not start yet
+                yield wrap_tree()
+                cumu_string = None # cumu_starte = eid
+            elif cumu_string is not None:
+                cumu_string += line
+    if cumu_string is not None:
+        if keep_str:
+            cumu_string += '\n'
+        yield wrap_tree()
 
 class CorpusReader:
     def __init__(self, path):
         self._path = path
 
-    def break_corpus(self, shuffle_size = 100, rand_seed = 31415926):
-        fpath = TemporaryDirectory()
-        with ExitStack() as stack:
-            files = []
-            for i in range(shuffle_size):
-                fw = open(join(fpath.name, f'{i:04}'), 'w')
-                fw = stack.enter_context(fw)
-                files.append(fw)
+    def break_corpus(self, n_frag = 300, rand_seed = 31415926, n_samples = 3):
+        from tempfile import TemporaryDirectory
+        from utils.shell_io import byte_style
+        src_files = self.fileids()
+        src_files.sort() # ensure file order
+        fpath = TemporaryDirectory() # persists til pid ends
+        prefix = 'Shuffle corpus ('
+        suffix = ') ' + byte_style(f'{len(src_files)}', '2')
+        suffix += ' into '
+        suffix += byte_style(f'{n_frag} fragments', '2')
+        suffix += ' with seed ('
+        suffix += byte_style(f'{rand_seed}', '2') + ').'
+        first = []
+        count = 0
+        with ExitStack() as stack, StringProgressBar(self._path, prefix = prefix, suffix = suffix) as bar:
+            dst_files = [
+                stack.enter_context(open(join(fpath.name, f'temp_{i:04}.az'), 'w'))
+                for i in range(n_frag)
+            ]
             seed(rand_seed)
-            pool = SourcePool(files, True)
-            for ori_file in tqdm(self.fileids(), desc = f'break ktb into {shuffle_size} files in {fpath.name}'):
-                for string in self.parsed_sents(ori_file, True):
-                    fw = pool()
-                    fw.write(string)
+            pool = SourcePool(dst_files, True)
+            bar.update(total = len(src_files))
+            for src_file in src_files:
+                bar.update()
+                for string in self.parsed_sents(src_file, True):
+                    if len(first) < n_samples and len(string) < 300:
+                        first.append(Tree.fromstring(string))
+                    pool().write(string)
+                    count += 1
             seed(None)
+        from data.cross.dptb import direct_read
+        from data.cross import draw_str_lines
+        if n_samples:
+            print(f'\nFor example, the first {n_samples} small sample(s):', file = stderr)
+            for eid, tree in enumerate(first):
+                lines = [f'{eid + 1}.']
+                lines.extend(draw_str_lines(*direct_read(tree)))
+                if eid:
+                    first = cat_lines(first, lines)
+                else:
+                    first = lines
+            print('\n'.join(first), file = stderr)
+            print(f' ... {count} samples.')
         self._path = fpath
 
     def fileids(self):
@@ -96,95 +156,38 @@ class CorpusReader:
         if fileids is None:
             fileids = self.fileids()
         fpath = self._path if isinstance(self._path, str) else self._path.name
-        if isinstance(fileids, (list, tuple, set)):
-            for fn in fileids:
-                yield from CorpusReader.gen_trees(join(fpath, fn), keep_str)
-        else:
-            yield from CorpusReader.gen_trees(join(fpath, fileids), keep_str)
+        if isinstance(fileids, str):
+            fileids = [fileids]
+        trees = []
+        for fn in fileids:
+            for tree in gen_trees(join(fpath, fn), keep_str):
+                if not keep_str and not tree.label():
+                    tree = tree[0]
+                trees.append(tree)
+        return trees
 
-    @staticmethod
-    def wrap_tree(cumu_string, keep_str):
-        if keep_str:
-            return cumu_string
-        tree = Tree.fromstring(cumu_string)
-        if tree.label() == '':
-            tree = tree[0]
-        return tree
-
-    @staticmethod
-    def gen_trees(fpath, keep_str):
-        with open(fpath) as fr:
-            cumu_string = None
-            for line in fr:
-                if not keep_str:
-                    line = line.rstrip()
-                if line == '':
-                    continue
-                if line[0] == '(': # end
-                    if cumu_string is not None:
-                        yield CorpusReader.wrap_tree(cumu_string, keep_str)
-                    cumu_string = line
-                elif line[0] == '<' or len(line) <= 1: # start or end
-                    if cumu_string is None: # not start yet
-                        continue
-                    yield CorpusReader.wrap_tree(cumu_string, keep_str)
-                    cumu_string = None
-                elif cumu_string is not None:
-                    cumu_string += line
-        if cumu_string is not None:
-            if keep_str:
-                cumu_string += '\n'
-            yield CorpusReader.wrap_tree(cumu_string, keep_str)
-
-def positional_iadd(a, b, op = None):
-    for ai, bi in zip(a, b):
-        for j, bij in enumerate(bi):
-            if op: bij = op(bij)
-            ai[j] += bij
-
-def reduce_sum(xs):
-    res = Counter()
-    for i in xs:
-        res += i
-    return res
-
+from utils.types import M_TRAIN
 def select_and_split_corpus(corp_name, corp_path,
                             train_set, devel_set, test_set):
-    from nltk.corpus import BracketParseCorpusReader
     if corp_name == C_PTB:
-        folder_pattern = lambda x: f'{x:02}'
+        folder_pattern = lambda x: f'{x:02}' # 23/wsj_0000.mrg
+        from nltk.corpus import BracketParseCorpusReader
         reader = BracketParseCorpusReader(corp_path, r".*/wsj_.*\.mrg")
-        def get_id(fpath):
-            bar = fpath.index('/') # 23/xxx_0000.xxx
-            fid = fpath[:bar]
-            sid = fpath[bar+7:-4]
-            return fid, sid
-        get_fnames = lambda data_split: [fn for fn in reader.fileids() if dirname(fn) in data_split]
-    elif corp_name == C_CTB:
-        folder_pattern = lambda x: f'{x:04}'
-        reader = CorpusReader(corp_path)
-        get_id = lambda fpath: (fpath[5:-3], '-')
-        get_fnames = lambda data_split: [fn for fn in reader.fileids() if fn[5:-3] in data_split]
-    elif corp_name == C_KTB:
-        folder_pattern = lambda x: f'{x:04}'
-        reader = CorpusReader(corp_path)
-        reader.break_corpus(int(train_set))
-        train_set = '__rest__'
-        get_id = lambda fpath: (fpath, '-')
-        get_fnames = lambda data_split: [fn for fn in reader.fileids() if fn in data_split]
-
-    devel_set = strange_to(devel_set, folder_pattern)
-    test_set  = strange_to(test_set,  folder_pattern)
-    if train_set == '__rest__':
-        corpus = reader.fileids()
-        non_train_set = set(devel_set + test_set)
-        if corp_name == C_CTB:
-            train_set = [fid[5:-3] for fid in corpus if fid not in non_train_set]
-        else:
-            train_set = [fid for fid in corpus if fid not in non_train_set]
+        get_fileid = dirname
     else:
-        train_set = strange_to(train_set, folder_pattern)
-    return reader, get_fnames, get_id, (train_set, devel_set, test_set)
+        folder_pattern = lambda x: f'{x:04}' # /xxxx_0000.xx
+        reader = CorpusReader(corp_path)
+        if corp_name in (C_KTB, C_NPCMJ):
+            reader.break_corpus(int(train_set)); train_set = '__rest__'
+        get_fileid = lambda fn: fn[5:-3]
+
+    get_fileids = lambda ds: (fn for fn in reader.fileids() if get_fileid(fn) in ds)
+    if train_set == '__rest__':
+        train_set = set(get_fileid(fn) for fn in reader.fileids())
+    return reader, get_corpus(train_set, devel_set, test_set, folder_pattern, get_fileids)
+
+VocabCounters = namedtuple('VocabCounters', 'length, word, tag, label, xtype')
+build_counters = lambda: VocabCounters(Counter(), Counter(), Counter(), Counter(), Counter())
 
 def build(save_to_dir,
           corp_path,
@@ -193,271 +196,284 @@ def build(save_to_dir,
           devel_set,
           test_set,
           **kwargs):
-    from multiprocessing import Process, Queue # seamless with threading.Thread
-    from data.delta import DeltaX, bottom_up_ftags, xtype_to_logits, lnr_order, OriFct
-    from utils.types import E_ORIF4, O_LFT, O_RGT, M_TRAIN, M_DEVEL, M_TEST, num_threads
-    from itertools import count
+
+    (reader, corpus) = select_and_split_corpus(corp_name, corp_path, train_set, devel_set, test_set)
+
     from time import sleep
-
-    reader, get_fnames, get_id, (train_set, devel_set, test_set) = select_and_split_corpus(corp_name, corp_path, train_set, devel_set, test_set)
-
-    assert any(t not in devel_set for t in train_set)
-    assert any(tv not in test_set for tv in train_set + devel_set)
-    corpus = set(train_set + devel_set + test_set)
-    corpus = get_fnames(corpus)
-
-    x2l = lambda xl: tuple(xtype_to_logits(x) for x in xl)
+    from utils import do_nothing
+    from utils.types import F_RAND_CON, num_threads
+    from utils.str_ops import StringProgressBar
+    from utils.shell_io import byte_style
+    from multiprocessing import Process, Queue # seamless with threading.Thread
     class WorkerX(Process):
         def __init__(self, *args):
             Process.__init__(self)
             self._args = args
 
         def run(self):
-            q, reader, fns, get_id = self._args
-            inst_cnt   = 0
-            unary_cnt  = defaultdict(list)
-            train_length_cnt = defaultdict(int)
-            valid_length_cnt = defaultdict(int)
-            test_length_cnt  = defaultdict(int)
-            non_train_set = devel_set + test_set
-            lrcs = [[0, 0] for _ in E_ORIF4]
-            word_trace = corp_name == C_KTB
+            from data.continuous import Signal
+            from data.continuous.multib import get_tree_from_signals as multib_tree
+            from data.continuous.binary import get_tree_from_signals as binary_tree, X_RGT
+            Signal.set_binary()
+            Signal.set_multib()
+            i, q, reader, fileids = self._args
+            inst_cnt = n_proceed = l_estimate = 0
+            n_fileid = len(fileids)
+            counters = defaultdict(build_counters)
+            err_cnf, err_conversion = [], []
+            dx_fn = {
+                C_PTB: Signal.from_ptb,
+                C_CTB: Signal.from_ctb,
+                C_KTB: Signal.from_ktb,
+                C_NPCMJ: Signal.from_ktb}[corp_name]
 
-            def stat_is_unary(sent_len, fid, sid):
-                if sent_len < 2:
-                    unary_cnt[fid].append(sid)
-                    return True
-                elif fid in devel_set:
-                    valid_length_cnt[sent_len] += 1
-                elif fid in test_set:
-                    test_length_cnt [sent_len] += 1
-                else:
-                    train_length_cnt[sent_len] += 1
-                return False
+            for eid, (ds, fn) in enumerate(fileids):
+                trees = reader.parsed_sents(fn)
+                n_proceed += len(trees)
+                n_estimate = int(n_proceed * n_fileid / (eid + 1))
+                counter = counters[ds]
 
-            for fn in fns:
-                fid, sid = get_id(fn)
-
-                for tree in reader.parsed_sents(fn):
-                    if len(tree.leaves()) < 2:
-                        unary_cnt[fid].append(sid)
+                for tree in trees:
+                    br = []
+                    q.put((i, n_estimate) if n_estimate != l_estimate else i)
+                    try:
+                        dx = dx_fn(tree)
+                        bl, bx = dx.binary(F_RAND_CON)
+                        ml, ms = dx.multib()
+                        for xtype in bx:
+                            br.append([x & X_RGT for x in xtype])
+                    except:
+                        err_cnf.append((fn, eid))
                         continue
+                    safe_conversion = True
+                    wd = dx.word
+                    tg = dx.tag
+                    try:
+                        btree, warning = binary_tree(wd, tg, bl, br, word_fn = do_nothing)
+                        if btree != tree or warning:
+                            err_conversion.append((fn, eid, warning)); safe_conversion = False
+                        if multib_tree(wd, tg, ml, ms, word_fn = do_nothing) != tree:
+                            err_conversion.append((fn, eid, None)); safe_conversion = False
+                    except:
+                        err_conversion.append((fn, eid, None))
+                        safe_conversion = False
+                    if safe_conversion:
+                        counter.word.update(wd)
+                        counter.tag .update(tg)
+                        for label, xtype in zip(bl, bx):
+                            counter.label.update(label)
+                            counter.xtype.update(xtype)
+                        inst_cnt += 1
+                        counter.length[dx.max_height] += 1
 
-                    if any(len(b) > 2 for b in tree.subtrees()):
-                        dxs, lrs = DeltaX.from_penn_quad(tree, word_trace = word_trace)
-                        if stat_is_unary(len(tree.leaves()), fid, sid):
-                            continue
-                        ws, ps = dxs[0].word_tag()
-                        ss, xs, fs, xs_ = [], [], [], []
-                        for dx in dxs:
-                            s, x, f = dx.to_triangles()
-                            ss.append(s); xs.append(x); fs.append(f); xs_.append(x2l(x));
-                        ss = OriFct(*ss); xs = OriFct(*xs); fs = OriFct(*fs); xs_ = OriFct(*xs_);
-                        assert all(f == fs[0] for f in fs[1:])
-                        assert all(sum(lrs[0]) == sum(c) for c in lrs[1:])
-                        t = fid, 2, ws, ps, ss, xs, bottom_up_ftags(fs[0]), xs_
-                    else:
-                        dx, lr = DeltaX.from_penn(tree, 'left', word_trace = word_trace)
-                        if stat_is_unary(len(tree.leaves()), fid, sid):
-                            continue
-                        ws, ps     = dx.word_tag()
-                        ss, xs, fs = dx.to_triangles()
-                        t = fid, 1, ws, ps, ss, xs, bottom_up_ftags(fs), x2l(xs)
-                        lrs = OriFct(lr, lr, lr, lr)
-
-                    positional_iadd(lrcs, lrs)
-                    q.put(t)
-                    inst_cnt += 1
-
-            q.put((inst_cnt, unary_cnt, train_length_cnt, valid_length_cnt, test_length_cnt, lrcs))
+            q.put((inst_cnt, dict(counters), err_cnf, err_conversion))
 
     num_threads = min(num_threads, len(corpus))
     workers = distribute_jobs(corpus, num_threads)
     q = Queue()
     for i in range(num_threads):
-        w = WorkerX(q, reader, workers[i], get_id)
+        w = WorkerX(i, q, reader, workers[i])
         w.start()
         workers[i] = w
 
-    from utils.file_io import create_join
-    from data.io import save_vocab, sort_count
-    tok_cnt, pos_cnt, ftag_cnt  = Counter(), Counter(), Counter()
-    xty_cnts = [Counter() for _ in E_ORIF4]
-    syn_cnts = [Counter() for _ in E_ORIF4]
-    lrcs = [[0, 0] for _ in E_ORIF4]
-    train_word_cnt = Counter()
-    unary_counters = []
-    train_length_cnt, valid_length_cnt, test_length_cnt = Counter(), Counter(), Counter()
-    cnf_diff = [0, 0, 0]
-    thread_join_cnt = 0
-    with ExitStack() as stack, tqdm(desc = f'  Receiving samples from {num_threads} threads') as qbar:
-        ftw  = stack.enter_context(open(join(save_to_dir, M_TRAIN + '.word'), 'w'))
-        ftp  = stack.enter_context(open(join(save_to_dir, M_TRAIN + '.tag'),  'w'))
-        ftf  = stack.enter_context(open(join(save_to_dir, M_TRAIN + '.ftag'), 'w'))
-        fts  = stack.enter_context(open(join(save_to_dir, M_TRAIN + '.finc'), 'w'))
-        fvw  = stack.enter_context(open(join(save_to_dir, M_DEVEL + '.word'), 'w'))
-        fvp  = stack.enter_context(open(join(save_to_dir, M_DEVEL + '.tag'),  'w'))
-        fvf  = stack.enter_context(open(join(save_to_dir, M_DEVEL + '.ftag'), 'w'))
-        fvs  = stack.enter_context(open(join(save_to_dir, M_DEVEL + '.finc'), 'w'))
-        f_w  = stack.enter_context(open(join(save_to_dir, M_TEST  + '.word'), 'w'))
-        f_p  = stack.enter_context(open(join(save_to_dir, M_TEST  + '.tag'),  'w'))
-        f_f  = stack.enter_context(open(join(save_to_dir, M_TEST  + '.ftag'), 'w'))
-        f_s  = stack.enter_context(open(join(save_to_dir, M_TEST  + '.finc'), 'w'))
-        ftxs = [stack.enter_context(open(join(save_to_dir, f'{M_TRAIN}.xtype.{o}'), 'w')) for o in E_ORIF4]
-        ftls = [stack.enter_context(open(join(save_to_dir, f'{M_TRAIN}.label.{o}'), 'w')) for o in E_ORIF4]
-        fvxs = [stack.enter_context(open(join(save_to_dir, f'{M_DEVEL}.xtype.{o}'), 'w')) for o in E_ORIF4]
-        fvls = [stack.enter_context(open(join(save_to_dir, f'{M_DEVEL}.label.{o}'), 'w')) for o in E_ORIF4]
-        f_xs = [stack.enter_context(open(join(save_to_dir, f'{M_TEST}.xtype.{o}' ), 'w')) for o in E_ORIF4]
-        f_ls = [stack.enter_context(open(join(save_to_dir, f'{M_TEST}.label.{o}' ), 'w')) for o in E_ORIF4]
-
-        for instance_cnt in count(): # Yes! this edition works fine!
+    err_cnf, err_conversion = [], []
+    tree_cnt = thread_join_cnt = 0
+    counters = defaultdict(build_counters)
+    desc = f'Collecting vocabulary from {num_threads} threads ['
+    with StringProgressBar.segs(num_threads, prefix = desc, suffix = ']') as qbar:
+        while True:
             if q.empty():
                 sleep(0.01)
             else:
-                t = q.get()
-                if len(t) == 8:
-                    fid, num_directions, ws, ps, ss, dr, ft, xs = t
-                    if fid in devel_set:
-                        fw, fp, ff, fs, fxs, fls = fvw, fvp, fvf, fvs, fvxs, fvls
-                        ftag_p = 1
-                    elif fid in test_set:
-                        fw, fp, ff, fs, fxs, fls = f_w, f_p, f_f, f_s, f_xs, f_ls
-                        ftag_p = 2
+                if isinstance(t := q.get(), tuple):
+                    if len(t) == 2:
+                        tid, n_estimate = t
+                        qbar.update(tid, total = n_estimate)
+                        qbar.update(tid)
                     else:
-                        fw, fp, ff, fs, fxs, fls = ftw, ftp, ftf, fts, ftxs, ftls
-                        ftag_p = 0
-                        train_word_cnt += Counter(ws)
-                    # for vocabulary, get all the tokens for fasttext
-                    tok_cnt += Counter(ws) # why? namespace::
-                    pos_cnt += Counter(ps) # because w/r namespaces are different
-                    fw.write(' '.join(ws) + '\n')
-                    fp.write(' '.join(ps) + '\n')
-                    if num_directions == 1:
-                        ftag_cnt += Counter(ft[0])
-                        ff.write(' '.join(ft[0]) + '\n')
-                        fs.write(' '.join(ft[1]) + '\n')
-                        for dc, sc, fx, fl in zip(xty_cnts, syn_cnts, fxs, fls):
-                            dc += Counter(dr)
-                            sc += Counter(ss)
-                            fx.write(' '.join(xs) + '\n')
-                            fl.write(' '.join(ss) + '\n')
-                    else:
-                        cnf_diff[ftag_p] += 1
-                        ftag_cnt += Counter(ft[0])
-                        ff.write(' '.join(ft[0]) + '\n')
-                        fs.write(' '.join(ft[1]) + '\n')
-
-                        for fx, x, fl, l, dc, di, sc, si in zip(fxs, xs, fls, ss, xty_cnts, dr, syn_cnts, ss):
-                            fx.write(' '.join(x) + '\n')
-                            fl.write(' '.join(l) + '\n')
-                            dc += Counter(di)
-                            sc += Counter(si)
-                    qbar.update(1)
-                elif len(t) == 6:
-                    thread_join_cnt += 1
-                    ic, uc, tlc, vlc, _lc, lrbc = t
-                    if qbar.total:
-                        qbar.total += ic
-                    else:
-                        qbar.total = ic
-                    qbar.desc = f'  {thread_join_cnt} of {num_threads} threads ended with {qbar.total} samples, receiving'
-
-                    unary_counters.append(uc)
-                    train_length_cnt.update(tlc)
-                    valid_length_cnt.update(vlc)
-                    test_length_cnt .update(_lc)
-                    positional_iadd(lrcs, lrbc)
-                    if thread_join_cnt == num_threads:
-                        break
+                        thread_join_cnt += 1
+                        tc, vc, erc, erv = t
+                        for ds, ss in vc.items():
+                            ds = counters[ds]
+                            for dst, src in zip(ds, ss):
+                                dst.update(src)
+                        tree_cnt += tc
+                        err_cnf.extend(erc)
+                        err_conversion.extend(erv)
+                        suffix = f'] {thread_join_cnt} ended.'
+                        qbar.desc = desc, suffix
+                        if thread_join_cnt == num_threads:
+                            break
                 else:
-                    raise ValueError('Unknown data: %r' % t)
+                    qbar.update(t)
         for w in workers:
             w.join()
+        suffix = '] ' + byte_style(f'✔ {tree_cnt} trees.', '2')
+        qbar.desc = desc, suffix
+    if err_cnf:
+        desc = byte_style(f'✗ {len(err_cnf)}', '1')
+        desc += ' errors during CNF (KTB/NPCMJ has 3 sentences, e.g., \'* *** * ***\', in ver. 202202).'
+        print(desc, file = stderr)
+    if err_conversion:
+        desc = byte_style(f'✗ {len(err_conversion)}', '1')
+        desc += ' errors during checking conversion.'
+        print(desc, file = stderr)
 
-    totals = [sum(c.values()) for c in (train_length_cnt, valid_length_cnt, test_length_cnt)]
-    cnf_diff[0] /= totals[0]
-    cnf_diff[1] /= totals[1]
-    cnf_diff[2] /= totals[2]
+    def field_fn(all_counts, field, fw_rpt):
+        cnt = getattr(all_counts, field)
+        if field == 'tag':
+            fw_rpt.write('PoS has more: ')
+            fw_rpt.write(' '.join(cnt.keys() - part_of_speech[corp_name]) + '\n')
+            fw_rpt.write('PoS has less: ')
+            fw_rpt.write(' '.join(part_of_speech[corp_name] - cnt.keys()) + '\n')
+        if field not in ('xtype', 'length') and (more := cnt.keys() - getattr(counters[M_TRAIN], field)):
+            if field == 'word':
+                count = sum(cnt[w] for w in more)
+                fw_rpt.write(f'Word vocabulary has {len(more):,} types ({count:,}/{sum(cnt.values()):,} counts) not in train-set.\n')
+            else:
+                fw_rpt.write(f'{field.title()} has ')
+                fw_rpt.write(' '.join(more) + ' not in train-set.\n')
 
-    print(f'Length distribution in [ Train set ] ({totals[0]}, cnf_diff = {str_percentage(cnf_diff[0])})', file = stderr)
-    print(histo_count(train_length_cnt, bin_size = 10), file = stderr)
-    print(f'Length distribution in [ Dev set ]   ({totals[1]}, cnf_diff = {str_percentage(cnf_diff[1])})', file = stderr)
-    print(histo_count(valid_length_cnt, bin_size = 10), file = stderr)
-    print(f'Length distribution in [ Test set ]  ({totals[2]}, cnf_diff = {str_percentage(cnf_diff[2])})', file = stderr)
-    print(histo_count(test_length_cnt, bin_size = 10), file = stderr)
+    return post_build(save_to_dir, build_counters, VocabCounters, counters, field_fn)
 
-    unary_info = ''
-    if unary_counters:
-        unary_bose_logger = defaultdict(list)
-        for uc in unary_counters:
-            for fid, ulist in uc.items():
-                unary_bose_logger[fid].extend(ulist)
-        for fid, ROX in sorted(unary_bose_logger.items(), key = lambda x:x[0]):
-            ROX = Counter(ROX)
-            ROX = (f'{k}:{v}' if v > 1 else k for k,v in ROX.items())
-            unary_info += fid + f"({','.join(ROX)});"
-        print("Unary:", unary_info, file = stderr)
-    pickle_dump(join(save_to_dir, 'info.pkl'), dict(tlc = train_length_cnt, vlc = valid_length_cnt, _lc = test_length_cnt, unary = unary_info, cnf = cnf_diff))
-
-    left, right = E_ORIF4.index(O_LFT), E_ORIF4.index(O_RGT)
-    syn_left_cnt  = syn_cnts[left]
-    syn_right_cnt = syn_cnts[right]
-    if syn_left_cnt.keys() != syn_right_cnt.keys():
-        raise ValueError(f'Invalid penn_treebank data: left CNF label set != right CNF label set, please use full data!')
-    # assert '<js' not in xty_left_cnt and '>js' not in xty_right_cnt, 'CNF processing is dirty, please check'
-    xty_left_cnt  = xty_cnts[left]
-    xty_right_cnt = xty_cnts[right]
-    assert xty_left_cnt ['<js'] < xty_left_cnt ['>js'] # weaker assertion: bottom layer has attach the 'j' xtype as default.
-    assert xty_right_cnt['<js'] > xty_right_cnt['>js'] # high probability
-    xty_cnt = reduce_sum(xty_cnts)
-    syn_cnt = reduce_sum(syn_cnts)
-    if corp_name != C_KTB: # ktb contains a great amount of labels in tags!!!
-        assert all(p not in syn_cnt for p in pos_cnt) and any(s[1:] in pos_cnt for s in syn_cnt), 'check # option in preproc'
-    xty_op = lambda x: {f'{k}({xtype_to_logits(k)})':v for k,v in x.items()}
-    xty_cnt       = xty_op(xty_cnt)
-    xty_left_cnt  = xty_op(xty_left_cnt)
-    xty_right_cnt = xty_op(xty_right_cnt)
-
-    tok_file = join(save_to_dir, 'vocab.word')
-    pos_file = join(save_to_dir, 'vocab.tag' )
-    xty_file = join(save_to_dir, 'vocab.xtype')
-    syn_file  = join(save_to_dir, 'vocab.label')
-    ftag_file = join(save_to_dir, 'vocab.ftag')
-    ts, vs = save_vocab(tok_file, tok_cnt, [NIL] + sort_count(train_word_cnt))
-    _,  ps = save_vocab(pos_file, pos_cnt, [NIL])
-    _,  ss = save_vocab(syn_file, syn_cnt, [NIL])
-    _,  fs = save_vocab(ftag_file, ftag_cnt)
-    _,  xs = save_vocab(xty_file, xty_cnt, lnr_order(xty_cnt)[0])
-    for o, xcs, scs, lbc in zip(E_ORIF4, xty_cnts, syn_cnts, lrcs):
-        xcs['ling-lb'] = lbc[0]
-        xcs['ling-rb'] = lbc[1]
-        save_vocab(join(save_to_dir, f'stat.xtype.{o}'), xcs, lnr_order(xcs)[0])
-        save_vocab(join(save_to_dir, f'stat.label.{o}'), scs, lnr_order(scs)[0])
-    return (ts, vs, ps, xs, ss, fs)
 
 def check_data(save_dir, valid_sizes):
     try:
-        # 44386 47074 47 8 99 20
-        ts, vs, ps, xs, ss, fs = valid_sizes
-        if ts > vs:
-            raise ValueError(f'Train vocab({ts}) should be less than corpus vocab({vs})')
+        ls, tts, ats, ts, ss, xs = valid_sizes
+        if tts > ats:
+            raise ValueError(f'Train vocab({tts}) should be less than corpus vocab({ats})')
     except Exception as e:
         print(e, file = stderr)
         return False
-    valid_sizes = vs, ps, xs, ss, fs
-    vocab_files = 'vocab.word vocab.tag vocab.xtype vocab.label vocab.ftag'.split()
-    x = all(check_vocab(join(save_dir, vf), vs) for vf, vs in zip(vocab_files, valid_sizes))
+    valid_sizes = ls, ats, ts, ss, xs
+    vocab_files = ('vocab.' + x for x in 'length word tag label xtype'.split())
+    return all(check_vocab(join(save_dir, vf), vs) for vf, vs in zip(vocab_files, valid_sizes))
 
-    fname = join(save_dir, 'info.pkl')
-    if isfile(fname):
-        info = pickle_load(fname)
-        totals = (sum(info['tlc'].values()), sum(info['vlc'].values()), sum(info['_lc'].values()))
-        print('Total:', sum(totals), file = stderr)
-        print(f'Length distribution in [ Train set ] ({totals[0]})', file = stderr)
-        print(histo_count(info['tlc'], bin_size = 10), file = stderr)
-        print(f'Length distribution in [ Dev set ]   ({totals[1]})', file = stderr)
-        print(histo_count(info['vlc'], bin_size = 10), file = stderr)
-        print(f'Length distribution in [ Test set ]  ({totals[2]})', file = stderr)
-        print(histo_count(info['_lc'], bin_size = 10), file = stderr)
+def get_tags(string):
+    tags = set()
+    for line in string.split('\n')[1:]:
+        _, tag, _ = line.split('\t')
+        assert ' ' not in tag
+        tags.add(tag)
+    return tags
 
-    return x
+part_of_speech = {
+    C_PTB: get_tags('''
+        1.	CC	Coordinating conjunction
+        2.	CD	Cardinal number
+        3.	DT	Determiner
+        4.	EX	Existential there
+        5.	FW	Foreign word
+        6.	IN	Preposition or subordinating conjunction
+        7.	JJ	Adjective
+        8.	JJR	Adjective, comparative
+        9.	JJS	Adjective, superlative
+        10.	LS	List item marker
+        11.	MD	Modal
+        12.	NN	Noun, singular or mass
+        13.	NNS	Noun, plural
+        14.	NNP	Proper noun, singular
+        15.	NNPS	Proper noun, plural
+        16.	PDT	Predeterminer
+        17.	POS	Possessive ending
+        18.	PRP	Personal pronoun
+        19.	PRP$	Possessive pronoun
+        20.	RB	Adverb
+        21.	RBR	Adverb, comparative
+        22.	RBS	Adverb, superlative
+        23.	RP	Particle
+        24.	SYM	Symbol
+        25.	TO	to
+        26.	UH	Interjection
+        27.	VB	Verb, base form
+        28.	VBD	Verb, past tense
+        29.	VBG	Verb, gerund or present participle
+        30.	VBN	Verb, past participle
+        31.	VBP	Verb, non-3rd person singular present
+        32.	VBZ	Verb, 3rd person singular present
+        33.	WDT	Wh-determiner
+        34.	WP	Wh-pronoun
+        35.	WP$	Possessive wh-pronoun
+        36.	WRB	Wh-adverb'''), # https://www.ling.upenn.edu/courses/Fall_2003/ling001/penn_treebank_pos.html
+    C_CTB: get_tags('''
+        1.	AD	adverb
+        2.	AS	aspect marker
+        3.	BA	把, 将 in ba-construction
+        4.	CC	coordinating conjunction
+        5.	CD	cardinal number
+        6.	CS	subordinating conjunction
+        7.	DEC	的 in a relative-clause
+        8.	DEG	associative 的
+        9.	DER	得 in V-de const. and V-de-R
+        10.	DEV	地 before VP
+        11.	DT	determiner
+        12.	ETC	for words 等, 等等
+        13.	FW	foreign words
+        14.	IJ	interjection
+        15.	JJ	other noun-modifier
+        16.	LB	被 in long bei-const
+        17.	LC	localizer
+        18.	M	measure word
+        19.	MSP	other particle
+        20.	NN	common noun
+        21.	NR	proper noun
+        22.	NT	temporal noun
+        23.	OD	ordinal number
+        24.	ON	onomatopoeia , 
+        25.	P	preposition excl. 被 and 把
+        26.	PN	pronoun
+        27.	PU	punctuation
+        28.	SB	被 in short bei-const
+        29.	SP	sentence-final particle
+        30.	VA	predicative adjective
+        31.	VC	是
+        32.	VE	有 as the main verb
+        33.	VV	other verb'''), # https://catalog.ldc.upenn.edu/docs/LDC2009T24/treebank/chinese-treebank-postags.pdf
+    C_KTB: get_tags('''
+        1.	PUQ	quote, offically claimed as QUOT
+        2.	PUL	left bracket, offically claimed as -LRB-
+        3.	PUR	right bracket, offically claimed as -RRB-
+        4.	PU	punctuation
+        5.	ADJI	い-adjective
+        6.	ADJN	な-adjective
+        7.	ADV	adverb
+        8.	AX	auxiliary verb (including copula)
+        9.	AXD	auxiliary verb, past tense
+        10.	CL	classifier
+        11.	CONJ	coordinating conjunction
+        12.	D	determiner
+        13.	FN	formal noun
+        14.	FW	foreign word
+        15.	INTJ	interjection
+        16.	MD	modal element
+        17.	N	noun
+        18.	NEG	negation
+        19.	NPR	proper noun
+        20.	NUM	numeral
+        21.	P	particle
+        22.	P-COMP	complementizer
+        23.	P-CONN	conjunctional particle
+        24.	P-FINAL	final particle
+        25.	P-OPTR	operator
+        26.	P-ROLE	role particle
+        27.	PASS	passive - and there are PASS2
+        28.	PNL	prenominal
+        29.	PRO	pronoun
+        30.	Q	quantifier
+        31.	QN	noun with quantifier
+        32.	SYM	symbol
+        33.	VB	verb (or verb stem)
+        34.	VB0	light verb
+        35.	VB2	secondary verb
+        36.	WADV	indeterminate adverb
+        37.	WD	indeterminate determiner
+        38.	WNUM	indeterminate numeral
+        39.	WPRO	indeterminate pronoun
+        40.	LS	List item marker (not officially claimed)'''), # https://npcmj.ninjal.ac.jp/wp-content/uploads/2019/05/npcmj_annotation_manual_en_201904.pdf
+}
+
+part_of_speech[C_NPCMJ] = part_of_speech[C_KTB]
+
+# for corp, tags in part_of_speech.items():
+#     print(corp)
+#     print(' '.join(tags))

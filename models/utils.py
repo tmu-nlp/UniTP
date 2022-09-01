@@ -1,12 +1,13 @@
 import torch
 class PCA:
     def __init__(self, emb, k = 9):
+        emb = emb.detach()
         emb_mean = torch.mean(emb, dim = 0)
         emb_shifted = emb - emb_mean
         emb_cov = torch.matmul(emb_shifted.T, emb_shifted)
-        val, vec = torch.eig(emb_cov, True)
-        _, idx = val[:, 0].topk(k) # ignore value & image part
-        self._bases = vec[:, idx] # both tensorflow and torch use dim = 1
+        val, vec = torch.linalg.eig(emb_cov)
+        _, idx = val.real.topk(k) # ignore value & image part
+        self._bases = vec.real[:, idx] # both tensorflow and torch use dim = 1
 
     def __call__(self, emb):
         m_ = (emb * emb).mean(-1, keepdim = True)

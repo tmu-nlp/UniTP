@@ -1,6 +1,6 @@
-from data.cross import TopDown, BaseTreeKeeper, new_more_sub
-from data.cross import defaultdict, gap_degree, height_gen, add_efficient_subs
-from data.cross import _new_dep, _dep_on, _dep_combine
+from data.cross import TopDown
+from data.cross import defaultdict, gap_degree, height_gen
+from data.cross import _dep_on, _dep_combine
 from random import random
 from utils.types import F_RANDOM, F_LEFT, F_RIGHT, F_DEP, F_CON
 
@@ -426,25 +426,6 @@ def disco_tree(word, bottom_tag,
     if add_weight_base:
         return terminals, top_down, error_layer_id, weight_nodes, headedness_stat
     return terminals, top_down, error_layer_id
-
-class TreeKeeper(BaseTreeKeeper):
-    def stratify(self, factor = F_LEFT, balancing_sub = False, more_sub = 0):
-        bottom, node2tag, bottom_unary, top_down, l2i, dep, vf = self._materials
-        if balancing_sub:
-            if self._balanced_top_down is None:
-                self._balanced_top_down = add_efficient_subs(top_down, bottom_unary)
-            top_down = self._balanced_top_down
-        if factor == F_DEP:
-            assert isinstance(dep, dict)
-        elif isinstance(factor, dict):
-            dep = factor # check static for cache?
-            factor = F_DEP
-        if factor == F_DEP:
-            # if self._dep_signals is None TODO 
-            return cross_signals(bottom, node2tag, bottom_unary, top_down, factor, l2i, _new_dep(dep), vf)
-        if 0 < more_sub < 1 and factor != F_CON:
-            top_down = new_more_sub(top_down, bottom_unary, more_sub)
-        return cross_signals(bottom, node2tag, bottom_unary, top_down, factor, l2i)
 
 def continuous_fence(space_layer, disco_set):
     count = 0

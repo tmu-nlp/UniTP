@@ -4,7 +4,7 @@ from time import time, sleep
 
 from sys import stderr
 
-from data.delta import before_to_seq
+from data import before_to_seq
 from os.path import join, dirname
 from utils.shell_io import concatenate, byte_style
 

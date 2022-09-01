@@ -124,7 +124,7 @@ class Stem(nn.Module):
                 start = s_index(length - 1)
                 end   = s_index(length)
                 right = supervised_orient[:, start:end, None]
-            elif modification:
+            elif modification: # emprically not necessary, not more such in trapezoids
                 right = orient > 0
                 starts = torch.where(offsets < length, offsets, torch.zeros_like(offsets))
                 _ends_ = ends - (num_layers - length)

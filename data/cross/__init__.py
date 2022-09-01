@@ -2,7 +2,6 @@ from collections import namedtuple, defaultdict, Counter
 from utils.param_ops import get_sole_key
 TopDown = namedtuple('TopDown', 'label, children')
 C_VROOT = 'VROOT'
-do_nothing = lambda x: x
 
 def validate(bottom_info, top_down,
              single_attachment = True,
@@ -32,59 +31,113 @@ def validate(bottom_info, top_down,
         redundancy = top_down.keys() - nid_refs
         assert not redundancy, 'Redundant nid(s): ' + ', '.join(str(x) for x in redundancy)
 
-def all_paths(top_down, nid = 0):
-    end_prefix = {nid: {(nid,)}}
-    descendants = dict(dump_path(end_prefix, top_down, nid, nid))
-    return descendants, end_prefix
+from random import random
+from utils.types import F_CON, F_DEP, F_RANDOM, F_LEFT
+from copy import deepcopy
+class Signal:
+    @classmethod
+    def set_binary(cls):
+        from data.cross.binary import cross_signals
+        def func(factor, more_sub, bottom, node2tag, bottom_unary, top_down, l2i, dep):
+            if factor != F_DEP:
+                if factor == F_RANDOM:
+                    factor = random()
+                dep = None
+            top_down = deepcopy(top_down)
+            if more_sub:
+                top_down = add_subs(top_down, bottom_unary, more_sub)
+            return cross_signals(bottom, node2tag, bottom_unary, top_down, factor, dep, l2i = l2i)
+        cls.__binary = func
 
-def dump_path(end_prefix, top_down, nid, anti_loop):
-    if nid in top_down:
-        descendants = set()
-        for cid in top_down[nid].children:
-            if cid == anti_loop:
-                continue
-            cp = set(p + (cid,) for p in end_prefix[nid])
-            if cid in end_prefix:
-                end_prefix[cid].update(cp)
-            else:
-                end_prefix[cid] = cp
-            for k, d in dump_path(end_prefix, top_down, cid, anti_loop):
-                yield k, d
-                descendants.update(d)
-            descendants.add(cid)
-        yield nid, descendants
+    @classmethod
+    def set_multib(cls):
+        from data.cross.multib import cross_signals
+        def func(factor, more_sub, bottom, node2tag, bottom_unary, top_down, l2i, dep):
+            if factor == F_DEP:
+                assert isinstance(dep, dict)
+            elif isinstance(factor, dict):
+                dep = factor # check static for cache?
+                factor = F_DEP
+            if factor == F_DEP:
+                # if self._dep_signals is None TODO 
+                return cross_signals(bottom, node2tag, bottom_unary, top_down, factor, l2i, _new_dep(dep))
+            if 0 < more_sub < 1 and factor != F_CON:
+                top_down = add_subs(top_down, bottom_unary, more_sub)
+            return cross_signals(bottom, node2tag, bottom_unary, top_down, factor, l2i)
+        cls.__multib = func
 
-class PathFinder:
-    def __init__(self, top_down, root_id = 0):
-        self._top_down = top_down
-        self._from, self._paths = all_paths(top_down, root_id)
+    @classmethod
+    def from_tiger_graph(cls, graph, *args, **kw_args):
+        from data.cross.tiger import read_tree
+        return cls(*read_tree(graph), *args, **kw_args)
 
-    def gen_from(self, pid):
-        for end in self._from[pid]:
-            for path in self._paths[end]:
-                if pid in path:
-                    yield path[path.index(pid):]
+    @classmethod
+    def from_disco_penn(cls, tree, *args, **kw_args):
+        from data.cross.dptb import read_tree
+        # args = replace_args_kwargs(_dep_n_prefix, 1, args, 'dep', kw_args)
+        return cls(*read_tree(tree), *args, **kw_args)
 
-    def gen_from_to(self, pid, cid):
-        for path in self._paths[cid]:
-            if pid in path:
-                yield path[path.index(pid):]
+    def __init__(self, bottom, top_down, v2is = None, dep = None):
+        self._tree = bottom, deepcopy(top_down)
+        word, bottom_nodes, node2tag, bottom_unary = _pre_proc(bottom, top_down, dep = dep)
+        self._word = word
+        self._gaps = None
+        if v2is is None:
+            bottom_tag = [node2tag[t] for t in bottom_nodes]
+            l2i = None
+        else:
+            w2i, t2i, l2i = v2is
+            bottom_tag = [t2i(node2tag[t]) for t in bottom_nodes]
+            word = [w2i(w) for w in word]
+        if dep is not None:
+            _pre_dep(dep, node2tag)
 
-    def find_labeled_on_path(self, label, child_id, low = True):
-        for path in self._paths[child_id]:
-            if low: path = path[::-1] # necessary to match 1 DPTB sample with two PRN
-            for pid, nid in zip(path[1:], path):
-                if self._top_down[nid].label == label:
-                    return pid, nid
-        raise KeyError(f'Label \'{label}\' not found!')
+        self._word_tag = word, bottom_tag
+        self._materials = bottom_nodes, top_down, bottom_unary, node2tag, l2i, dep
+        self._balanced_top_down = None
 
-    def __getitem__(self, cid):
-        return self._paths[cid]
+    @property
+    def has_signals(self):
+        return any(self._materials[1:3])
 
+    @property
+    def gap(self):
+        return max(self.gaps.values())
+
+    @property
+    def gaps(self):
+        if self._gaps is None:
+            bottom_nodes, top_down = self._materials[:2]
+            self._gaps = gap_degree(bottom_nodes, top_down, None, True)
+        return self._gaps
+
+    @property
+    def text(self):
+        return self._word
+
+    @property
+    def word_tag(self):
+        return self._word_tag
+        
+    def binary(self, factor = F_RANDOM, balancing_sub = False, more_sub = 0):
+        bottom_nodes, top_down, bottom_unary, node2tag, l2i, dep = self._stratify(balancing_sub)
+        return Signal.__binary(factor, more_sub, bottom_nodes, node2tag, bottom_unary, top_down, l2i, dep)
+
+    def multib(self, factor = F_LEFT, balancing_sub = False, more_sub = 0):
+        bottom_nodes, top_down, bottom_unary, node2tag, l2i, dep = self._stratify(balancing_sub)
+        return Signal.__multib(factor, more_sub, bottom_nodes, node2tag, bottom_unary, top_down, l2i, dep)
+
+    def _stratify(self, balancing_sub = False):
+        bottom_nodes, top_down, bottom_unary, node2tag, l2i, dep = self._materials
+        if balancing_sub:
+            if self._balanced_top_down is None:
+                self._balanced_top_down = add_efficient_subs(top_down, bottom_unary)
+            top_down = self._balanced_top_down
+        return bottom_nodes, top_down, bottom_unary, node2tag, l2i, dep
 
 def height_gen(top_down, root_id):
     max_height = -1
-    if root_id in top_down:
+    if root_id in top_down: # pre-terminals at 0
         for node in top_down[root_id].children:
             for cid, height in height_gen(top_down, node):
                 yield cid, height
@@ -194,7 +247,7 @@ from utils.math_ops import bit_fanout
 def gap_degree(bottom, top_down, reduce_for_nid = 0, bottom_is_bid = False):
     if not_reduce := reduce_for_nid is None:
         reduce_for_nid = 0
-    if not top_down:
+    if len(top_down) < 2:
         return {reduce_for_nid: 0} if not_reduce else 0
     bottom = prepare_bit(bottom, bottom_is_bid)
 
@@ -216,6 +269,7 @@ def bracketing(bottom, top_down, bottom_is_bid = False, excluded_labels = None):
     assert bit + ~bit == -1, 'Discontinuous root'
     return bracket_cnt, bracket_mul
 
+from data.cross.dag import PathFinder
 def filter_words(bottom, top_down, excluded_words, excluded_tags = None):
     remove = []
     path_finder = PathFinder(top_down, 0)
@@ -228,6 +282,7 @@ def filter_words(bottom, top_down, excluded_words, excluded_tags = None):
     for eid in remove:
         assert bottom.pop(eid)[1] in excluded_words
 
+from utils import do_nothing
 def new_word_label(bottom, top_down, *, word_fn = do_nothing, tag_fn = do_nothing, label_fn = do_nothing):
     new_bottom = [(bid, word_fn(wd), tag_fn(tg)) for bid, wd, tg in bottom]
     new_top_down = {nid: TopDown(label_fn(td.label), td.children) for nid, td in top_down.items()}
@@ -245,7 +300,6 @@ def new_word_label(bottom, top_down, *, word_fn = do_nothing, tag_fn = do_nothin
             
 #             last_right = right
 #             last_nid = nid
-        
 
 def _pre_proc(bottom_info, top_down, unary_join_mark = '+', dep = None):
     bu_nodes = [p_node for p_node, (_, children) in top_down.items() if len(children) == 1]
@@ -287,6 +341,29 @@ def _pre_proc(bottom_info, top_down, unary_join_mark = '+', dep = None):
                 dep[n] = _dep[h]
 
     return word, new_bottom, node2tag, bottom_unary
+
+def _pre_dep(dep, node2tag):
+    extra = []
+    for node, bt_head in dep.items():
+        if bt_head not in node2tag and bt_head:
+            extra.append(node)
+    media = set()
+    for node in extra:
+        bt_head = dep.pop(node)
+        while bt_head and bt_head not in node2tag:
+            media.add(bt_head)
+            bt_head = dep[bt_head]
+        dep[node] = bt_head
+    for bt_head in media:
+        dep.pop(bt_head)
+            # if details:
+            #     print('  '.join(n.split('_')[1]+'->'+(h.split('_')[1] if h else '*') for n, h in dep.items()))
+                # if details and not bt_head:
+                #     print('!:', node,' misses attachment.')
+            # if details:
+            #     print('  '.join(n.split('_')[1]+'->'+(h.split('_')[1] if h else '*') for n, h in dep.items()))
+            #     if media:
+            #         print('Removed media nodes: ' + ', '.join(media))
 
 
 def _combine(parent_node, child_node, non_terminals, top_down, perserve_sub):
@@ -383,83 +460,13 @@ def _more_sub(nid, td, rate, new_top_down, sub_prefix, nts):
         new_top_down[nid] = td
     return nts
 
-def new_more_sub(top_down, bottom_unary, rate, sub_prefix = '_'):
+def add_subs(top_down, bottom_unary, rate, sub_prefix = '_'):
     new_top_down = {}
     if nts := top_down.keys() | bottom_unary.keys():
         nts = min(nts)
     for nid, td in top_down.items():
         nts = _more_sub(nid, td, rate, new_top_down, sub_prefix, nts)
     return new_top_down
-
-
-class BaseTreeKeeper:
-    @classmethod
-    def from_tiger_graph(cls, graph, *args, **kw_args):
-        from data.cross.tiger import read_tree
-        return cls(*read_tree(graph), *args, **kw_args)
-
-    @classmethod
-    def from_disco_penn(cls, tree, *args, **kw_args):
-        from data.cross.dptb import read_tree
-        # args = replace_args_kwargs(_dep_n_prefix, 1, args, 'dep', kw_args)
-        return cls(*read_tree(tree), *args, **kw_args)
-
-    def __init__(self, bottom_info, top_down, v2is = None, dep = None, details = False, verbose_file = None):
-        if details: print('\n'.join(draw_str_lines(bottom_info, top_down)))
-        if verbose_file: verbose_file = verbose_file + ('\n'.join(draw_str_lines(bottom_info, top_down)),)
-        word, bottom, node2tag, bottom_unary = _pre_proc(bottom_info, top_down, dep = dep)
-        self._gaps = gap_degree(bottom, top_down, None, True) # if details else None
-        self._word = word
-        if v2is is None:
-            bottom_tag = [node2tag[t] for t in bottom]
-            l2i = None
-        else:
-            w2i, t2i, l2i = v2is
-            bottom_tag = [t2i(node2tag[t]) for t in bottom]
-            # self._dbg = [(word[tid], node2tag[bottom[tid]]) for tid, t in enumerate(bottom_tag) if t is None]
-            word = [w2i(w) for w in word]
-        if dep is not None:
-            if details:
-                print('  '.join(n.split('_')[1]+'->'+(h.split('_')[1] if h else '*') for n, h in dep.items()))
-            extra = []
-            for node, bt_head in dep.items():
-                if bt_head not in node2tag and bt_head:
-                    extra.append(node)
-            media = set()
-            for node in extra:
-                bt_head = dep.pop(node)
-                while bt_head and bt_head not in node2tag:
-                    media.add(bt_head)
-                    bt_head = dep[bt_head]
-                dep[node] = bt_head
-                if details and not bt_head:
-                    print('!:', node,' misses attachment.')
-            for bt_head in media:
-                dep.pop(bt_head)
-            if details:
-                print('  '.join(n.split('_')[1]+'->'+(h.split('_')[1] if h else '*') for n, h in dep.items()))
-                if media:
-                    print('Removed media nodes: ' + ', '.join(media))
-
-        self._word_tag = word, bottom_tag
-        self._materials = bottom, node2tag, bottom_unary, top_down, l2i, dep, verbose_file
-        self._balanced_top_down = None
-
-    @property
-    def has_signals(self):
-        return any(self._materials[2:4])
-
-    @property
-    def gaps(self):
-        return max(self._gaps.values())
-
-    @property
-    def text(self):
-        return self._word
-
-    @property
-    def word_tag(self):
-        return self._word_tag
     
 
 from data.cross.art import label_only, sort_by_arity, sort_by_lhs_arity, sort_by_rhs_arity
@@ -481,7 +488,7 @@ def draw_str_lines(bottom, top_down, *,
     str_lines = [word_line, tag_line]
     while jobs:
         old_bars = cursors.copy() if callable(ftag_fn) else None
-        spans, bars, jobs = make_spans(bottom_up, top_down, jobs, cursors, flabel, sort_fn, stroke_fn, has_ma, pic_width)
+        spans, bars, jobs = make_spans(bottom_up, top_down, jobs, cursors, flabel, sort_fn, stroke_fn, has_ma, ftag_fn)
         str_lines.extend(draw_line(spans, pic_width, symbols, bars, old_bars, ftag_fn))
     if reverse:
         str_lines.reverse()

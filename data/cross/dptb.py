@@ -55,6 +55,10 @@ delete_node = {
 
 add_s_and_shift_trace = {"This calamity is `` far from over , '' he says 0 *T*-1 .": ((0,), 2, (), (0,))}
 
+change_eq = {
+    "Elements of the left are also reflexively opposed *-1 ; they see service as a cover for the draft , or fear the regimentation of youth , or want *-2 to see rights enlarged *-3 , not obligations *?* *-4 .": ((2, 1, 6, 1, 1, 1, 1, 3), (0,), (1, 1), '=3')
+}
+
 short_circuits = {
     "Mr. Kasparov 's continuation was slower but , in the end , just as deadly .",
     "It 's a world leader in semiconductors , but behind the U.S. in * making the computers that *T*-1 use those chips .",
@@ -63,9 +67,10 @@ short_circuits = {
     "In the Grand Boulevard Plaza developed * by Matanky Realty Group in Chicago 's Third Ward , opposite the Robert Taylor Homes , 29 % of the stores to date have been leased *-1 to blacks and 14 % to members of other minority groups .",
     "The spy network would serve two clients *NOT* : the Panamanian government , by * monitoring political opponents in the region , and the U.S. , by * tracking the growing Communist influence in the unions organized * at United Fruit Co. 's banana plantations in Bocas del Toros and Puerto Armuelles ."
 }
-short_circuits.update(adjust_exp.keys())
+short_circuits.update(adjust_exp.keys() | change_eq.keys())
 
 from nltk.tree import Tree
+from data import remove_eq, XRB2brackets
 
 def wrap_with_label_fn(tree, path, num, label):
     last = path[-1]
@@ -90,6 +95,7 @@ def del_node_fn(tree, path):
         tree[path].insert(last, child)
 
 def shift_node_fn(tree, s_path, d_path):
+    # print(d_path[:-1], d_path[-1])
     tree[d_path[:-1]].insert(d_path[-1], tree[s_path[:-1]].pop(s_path[-1]))
 
 def rename_node_fn(tree, path, label):
@@ -122,7 +128,6 @@ def remove_irrelevant_trace(tree, traces):
                 syn_path = syn_path[:-1]
         del tree[syn_path]
 
-from data.delta import remove_eq, XRB2brackets
 def fix_for_ptb(tree, short_circuits):
     sent = ' '.join(tree.leaves()).strip()
     if sent in short_circuits: return
@@ -138,13 +143,13 @@ def fix_for_ptb(tree, short_circuits):
             wrap_with_label_fn(tree, path, num, label)
     elif sent in add_trace:
         path, tid = add_trace[sent]
-        tree[path].set_label(tree[path].label() + tid)
+        rename_node_fn(tree, path, tree[path].label() + tid)
         if tid.isdigit():
             tree[path[:-1] + (1, 0, 0, 0)] += tid
     elif sent in remove_trace:
         path = remove_trace[sent]
         label, _ = tree[path].label().rsplit('-', 1)
-        tree[path].set_label(label)
+        rename_node_fn(tree, path, label)
     elif sent in add_s_and_shift_trace:
         path, num, s_path, d_path = add_s_and_shift_trace[sent]
         wrap_with_label_fn(tree, path, num, 'S')
@@ -157,12 +162,26 @@ def fix_for_ptb(tree, short_circuits):
     elif sent in adjust_exp:
         for fn in adjust_exp[sent]:
             fn(tree)
+    elif sent in change_eq:
+        path, tp, im, eq = change_eq[sent]
+        temp = tree[path + tp]
+        label, _ = temp.label().rsplit('-', 1)
+        temp.set_label(label + eq)
+        del tree[path + im]
+    # elif sent in change_eq_cn:
+    #     breakpoint()
+    #     eq, t3 = change_eq_cn[sent]
+    #     for path in eq:
+    #         label, tr = tree[path].label().split('=')
+    #         tree[path].set_label(label + '-' + tr)
+    #     for r_path, t_path, tr in t3:
+    #         label, rid = tree[r_path].label().rsplit('-', 1)
+    #         tree[r_path].set_label(label + '-' + tr)
+    #         t_path = r_path[:-1] + t_path + (0,)
+    #         label, tid = tree[t_path].rsplit('-', 1)
+    #         assert tid == rid
+    #         tree[t_path] = label + '-' + tr
 
-
-def fix_for_dptb(tree):
-    fix_for_ptb(tree, short_circuits)
-    remove_irrelevant_trace(tree, E_DTREE)
-    return dict(w_fn = XRB2brackets, nt_fn = remove_eq)
 
 def direct_read(tree, *, cid = 1, nid = 0):
     this_nid = nid
@@ -187,7 +206,8 @@ def direct_read(tree, *, cid = 1, nid = 0):
 _CMD_TAG = 0
 _CMD_BOL = 1
 _CMD_EOL = 2
-from data.cross import TopDown, C_VROOT, do_nothing, PathFinder, boundary, height_gen
+from utils import do_nothing
+from data.cross import TopDown, C_VROOT, PathFinder, boundary, height_gen
 def _preorder(tree, w_fn = do_nothing, t_fn = do_nothing, nt_fn = do_nothing):
     if tree.height() < 3:
         assert len(tree) == 1
@@ -397,15 +417,15 @@ def remove_empty_node(top_down, bottom_up, cid):
             top_down.pop(pid)
             remove_empty_node(top_down, bottom_up, pid)
 
-def read_tree(tree, *,
-              adjust_fn = fix_for_dptb,
-              return_type_count = False):
-    wtnt_fns = {}
-    if callable(adjust_fn):
-        wtnt_fns.update(adjust_fn(tree))
+def read_tree(tree, **kwargs):
+    fix_for_ptb(tree, short_circuits)
+    return _read_tree(tree, **kwargs)
+
+def _read_tree(tree, *, return_type_count = False):
+    remove_irrelevant_trace(tree, E_DTREE)
 
     (bottom, top_down, root_id, nt_start, get_inode, trace_refs, trace_ids, _,
-     catch_nodes) = read_materials(tree, E_DTREE, 'PRN', **wtnt_fns)
+     catch_nodes) = read_materials(tree, E_DTREE, 'PRN', w_fn = XRB2brackets, nt_fn = remove_eq)
     remaining_PRN_nodes = catch_nodes.pop('PRN')
 
     # cross trace along the bottom (ordered and reversed for bottom.pop(i) stability)
@@ -442,11 +462,6 @@ def raise_eq(label):
     assert '=' not in label
     return label
 
-def fix_for_gptb(tree):
-    fix_for_ptb(tree, set())
-    remove_irrelevant_trace(tree, E_GRAPH)
-    return dict(w_fn = XRB2brackets, nt_fn = do_nothing)
-
 def graph_trace_gen(trace_refs, trace_ids):
     priority, loops = trace_priority(trace_refs, trace_ids)
     assert not loops
@@ -463,17 +478,24 @@ def graph_trace_gen(trace_refs, trace_ids):
         # print(tid)
         yield trace_refs.pop(tid), trace_ids.pop(tid)
 
-def read_graph(tree, *,
-               trace_types = E_GRAPH,
-               adjust_fn = fix_for_gptb,
-               return_type_count = False):
-    wtnt_fns = {}
-    if callable(adjust_fn):
-        wtnt_fns.update(adjust_fn(tree))
+def read_graph(tree, return_type_count = False):
+    fix_for_ptb(tree, set())
+    return _read_graph(tree, False, return_type_count)
+
+def _read_graph(tree, ctb_annotation, return_type_count):
+    remove_irrelevant_trace(tree, E_GRAPH)
 
     (bottom, top_down, root_id, nt_start, get_inode, trace_refs, trace_ids, trace_eqs,
-     catch_nodes) = read_materials(tree, trace_types, 'PRN', **wtnt_fns)
+     catch_nodes) = read_materials(tree, E_GRAPH, 'PRN', w_fn = XRB2brackets, nt_fn = do_nothing)
     remaining_PRN_nodes = catch_nodes.pop('PRN')
+    
+    if ctb_annotation and (overlap_eqs := trace_ids.keys() & (eq_ids := set(trace_eqs.values()))):
+        eq_shift = {}
+        for k, v in enumerate(overlap_eqs, max(int(v) for v in trace_ids.keys() | eq_ids) + 1):
+            eq_shift[v] = str(k)
+        for k, v in trace_eqs.items():
+            if v in overlap_eqs:
+                trace_eqs[k] = eq_shift[v]
 
     c2p_history = {}
     c2ps_history = {}
@@ -539,7 +561,7 @@ def read_graph(tree, *,
                 for i_pid, typ in flatten.items():
                     type_count[r_cid][i_pid] = (typ + '0') if i_pid == r_pid else typ
         else:
-            ref_children.pop(r_cid)
+            ref_children.pop(r_cid) # in question
         if tid in eq_tids:
             eq_template_refs[r_cid] = tid
         
@@ -566,19 +588,21 @@ def read_graph(tree, *,
             while nid in eq_template_maps:
                 nid = eq_template_maps[nid]
             for path in path_finder[nid]:
-                paths[(True, path)] = tid
+                paths[path if ctb_annotation else (True, path)] = tid
             if tid in trace_refs:
                 eq_template_refs[trace_refs.pop(tid).cid] = tid
         for nid, tid in eq_template_refs.items():
             while nid in eq_template_maps:
                 nid = eq_template_maps[nid]
             for path in path_finder[nid]:
-                paths[(False, path)] = tid
-
-        try:
-            eq, template_parent = common_coordination(top_down, paths)
-        except ValueError:
-            eq, template_parent = special_coordination(top_down, paths)
+                paths[path if ctb_annotation else (False, path)] = tid
+        if ctb_annotation:
+            eq, template_parent = ctb_common_coordination(top_down, paths)
+        else:
+            try:
+                eq, template_parent = ptb_common_coordination(top_down, paths)
+            except ValueError:
+                eq, template_parent = special_coordination(top_down, paths)
         template_cids = set()
         template_paths = []
         imitator_paths = {}
@@ -682,7 +706,7 @@ def get_common_path(i_paths):
                 common_path.append(x_main)
     return tuple(common_path)
 
-def common_coordination(top_down, paths):
+def ptb_common_coordination(top_down, paths):
     i_paths = {path: eq for (eq, path) in paths if (not eq, path) not in paths}
     common_path = get_common_path(i_paths)
 
@@ -704,6 +728,7 @@ def common_coordination(top_down, paths):
                     if pid in top_down and pid not in coord_pids and test_label(top_down[pid].label):
                         assert not template, f'Multiple templates {template} & {pid}'
                         template = pid
+                assert template, 'Template not found'
             irrelevant = set()
             coord_paths = {}
             for (eq, path), tid in paths.items():
@@ -717,6 +742,24 @@ def common_coordination(top_down, paths):
             return coord_paths, template
         test_depth -= 1
     raise ValueError(f'Coordination not found with {len(top_down)} td and {len(paths)} eq.paths')
+
+def ctb_common_coordination(top_down, paths):
+    common_path = get_common_path(paths)
+    test_depth = len(common_path)
+    while test_depth > 0:
+        coord_nids = set(p[test_depth] for p in paths)
+        coord_labels = set(top_down[n].label for n in coord_nids)
+        if len(coord_labels) == 1:
+            coord_cids = set(p[test_depth + 1] for p in paths)
+            template = max(coord_nids, key = lambda n: len(top_down[n].children.keys() - coord_cids))
+            coord_paths = {}
+            for path in set(paths):
+                tid = paths.pop(path)
+                if common_path[:test_depth] == path[:test_depth]:
+                    coord_paths[path[test_depth:]] = tid
+                    paths[(path[test_depth] != template, path)] = tid
+            return coord_paths, template
+        test_depth -= 1
 
 def special_coordination(top_down, paths):
     coord_paths = {}

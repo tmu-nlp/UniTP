@@ -1,8 +1,5 @@
 from random import random, randint
-from data.cross import TopDown, draw_str_lines, _pre_proc, gap_degree, _new_dep, _dep_combine, _dep_on
-from data.cross import BaseTreeKeeper, new_more_sub
-from data.cross.tiger import read_tree as read_tiger
-from data.cross.dptb import read_tree as read_dptb
+from data.cross import TopDown, _dep_combine, _dep_on
 
 def has_multiple(gen):
     count = 0
@@ -308,89 +305,6 @@ def cross_signals(bottom, node2tag, bottom_unary, top_down, factor,
         layers_of_label.append([l2i(root) if l2i else root])
     return layers_of_label, layers_of_right, layers_of_joint, layers_of_direc, layers_of_swaps
 
-from utils.types import E_ORIF5, O_RGT, O_HEAD, F_DEP, F_RANDOM
-from copy import deepcopy
-from data.cross import add_efficient_subs
-def read_disco_penn(tree, dep_head = None, add_subs = False):
-    bottom_info, top_down = read_dptb(tree)
-    return read_disco(bottom_info, top_down, dep_head, add_subs)
-
-def read_tiger_graph(graph, dep_head = None, add_subs = False):
-    bottom_info, top_down = read_tiger(graph)
-    return read_disco(bottom_info, top_down, dep_head, add_subs)
-
-def read_disco(bottom_info, top_down, dep_head, add_subs):
-    lines = draw_str_lines(bottom_info, top_down)
-    word, bottom, node2tag, bottom_unary = _pre_proc(bottom_info, top_down, dep = dep_head)
-    bottom_tag = [node2tag[t] for t in bottom]
-    gap = gap_degree(bottom, top_down, None, True)
-    if add_subs:
-        top_down = add_efficient_subs(top_down, bottom_unary)
-    cnf_layers = {}
-    if dep_head is not None:
-        cnf_layers[O_HEAD] = (lls, lrs, ljs, lds, _) = cross_signals(bottom, node2tag, bottom_unary, deepcopy(top_down), 0.5, _new_dep(dep_head))
-        btm, td, _ = disco_tree(word, bottom_tag, lls, lrs, ljs, lds, perserve_sub = True)
-        lines.append('\nDep:')
-        lines.extend(draw_str_lines(btm, td))
-    for oid, cnf_factor in enumerate(E_ORIF5):
-        new_top_down = deepcopy(top_down) if cnf_factor != O_RGT else top_down
-        cnf_layers[cnf_factor] = cross_signals(bottom, node2tag, bottom_unary, new_top_down, (oid + 0.5) / 5)
-    return word, bottom_tag, cnf_layers, gap, lines#, bottom_info, ret_top_down
-
-def validate_disco(word, tag, cnf_layers, lines):
-    for cnf_factor, (layers_of_label, layers_of_right, layers_of_joint, layers_of_direc, _) in cnf_layers.items():
-        btm, td, er = disco_tree(word, tag, layers_of_label, layers_of_right, layers_of_joint, layers_of_direc)
-        cnf_lines = draw_str_lines(btm, td)
-        assert not er
-        if lines != cnf_lines:
-            print(cnf_factor)
-            print('\n'.join(lines))
-            print()
-            print('\n'.join(cnf_lines))
-            breakpoint()
-
-
-class TreeKeeper(BaseTreeKeeper):
-    def stratify(self, factor = F_RANDOM, balancing_sub = False, more_sub = 0):
-        bottom, node2tag, bottom_unary, top_down, l2i, dep, vf = self._materials
-        if factor != F_DEP:
-            dep = None
-            if factor == F_RANDOM:
-                factor = random()
-        if balancing_sub:
-            if self._balanced_top_down is None:
-                self._balanced_top_down = add_efficient_subs(top_down, bottom_unary)
-            top_down = self._balanced_top_down
-        top_down = deepcopy(top_down)
-        if more_sub:
-            top_down = new_more_sub(top_down, bottom_unary, more_sub)
-        return cross_signals(bottom, node2tag, bottom_unary, top_down, factor, dep, l2i = l2i)
-
-    def __str__(self):
-        lines = ''
-        # evalb, g_tags, g_brackets = self._evalb
-        # from data.cross import bracketing
-        for i in range(self._max_sub - 1):
-            factor = (i + 1) / self._max_sub
-            args = cross_signals(*self._args, deepcopy(self._top_down), factor)[:4]
-            evalb_args = disco_tree(self._word, self._bottom_tags, *args)[:3]
-            args = disco_tree(self._word, self._bottom_tags, *args, perserve_sub = True)[:2]
-            lines += f'factor = {factor}\n  '
-            lines += '\n  '.join(draw_str_lines(*args))
-            lines += '\n'
-            # p_tags = set(evalb_args[0])
-            # p_brackets = bracketing(*evalb_args)
-            # evalb.add(p_brackets, p_tags, g_brackets, g_tags)
-        if self._dep:
-            args = cross_signals(*self._args, deepcopy(self._top_down), 0.5, self._dep)
-            # evalb_args = disco_tree(self._word, self._bottom_tags, *args)[:3]
-            args = disco_tree(self._word, self._bottom_tags, *args, perserve_sub = True)[:2]
-            lines += f'factor = dependency\n  '
-            lines += '\n  '.join(draw_str_lines(*args))
-            lines += '\n'
-        # lines += str(evalb.summary())
-        # assert sum(evalb.summary()[:3]) == 300, evalb.summary()
-        return lines
 
 def targets(right_layer, joint_layer):
     targets = [1 for _ in right_layer]
@@ -490,7 +404,6 @@ def disco_tree(word, bottom_tag,
 
     return terminals, top_down, error_layer_id
 
-from data.delta import get_logits
 def xlogit_gen(label_layer, right_layer, direc_layer, joint_layer, current_joints, next_joints):
     for nid, (label, right, direc) in enumerate(zip(label_layer, right_layer, direc_layer)):
         is_phrase = label[0] not in '#_'
@@ -554,13 +467,14 @@ def double_layer(layer):
 def double_swaps_p1(layers):
     return tuple(double_layer(layer) for layer in layers)
 
-from data.trapezoid import trapezoid_to_layers
-from data.delta import get_rgt, get_jnt, get_dir
+from data.continuous.binary.trapezoid import trapezoid_to_layers
+from data.continuous.binary import X_RGT, X_NEW, X_DIR
+# from data.delta import get_rgt, get_jnt, get_dir
 def unzip_xlogit(cindex, xtypes): #, the_joints, the_labels):
     xtypes = asarray(xtypes)
-    rights = get_rgt(xtypes)
-    joints = get_jnt(xtypes)
-    direcs = get_dir(xtypes)
+    rights = X_RGT & xtypes
+    joints = X_NEW & xtypes
+    direcs = X_DIR & xtypes
     joints = trapezoid_to_layers(joints, cindex, cindex, big_endian = False)
     layers_of_direc = trapezoid_to_layers(direcs, cindex, cindex, big_endian = False)
     layers_of_right = trapezoid_to_layers(rights, cindex, cindex, big_endian = False)

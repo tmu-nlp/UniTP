@@ -82,11 +82,13 @@ def incomplete_sent_line(disc_mark, sent_cnt, g_num_brackets, g_disc_num_bracket
         sent_line += f'╎          {g_tag_count:3d}     ╎'
     return sent_line
 
-from data.cross.dptb import read_tree, Tree
+from data.cross.dptb import _read_tree, Tree
 def conti_matches(p_tree, g_tree):
-    g_bt, g_td = read_tree(g_tree, adjust_fn = None)
-    p_bt, p_td = read_tree(p_tree, adjust_fn = None)
-    bracket_match, _, p_num_brackets, _, _, g_num_brackets, _, _ = disco_matches(bracketing(p_bt, p_td), bracketing(g_bt, g_td))
+    g_bt, g_td = _read_tree(g_tree)
+    p_bt, p_td = _read_tree(p_tree)
+    (bracket_match, _,
+    p_num_brackets, _, _,
+    g_num_brackets, _, _) = disco_matches(bracketing(p_bt, p_td), bracketing(g_bt, g_td))
     return bracket_match, p_num_brackets, g_num_brackets
 
 def ndd(brackets):
@@ -114,7 +116,16 @@ def mul_fan_ndd(brackets, multibs):
         fan_uni[f][key] = ct
     return mul_num, mul_uni, fan_num, fan_uni
 
+def disco_exact_match(pb, pt, gb, gt):
+    (bracket_match, _,
+    p_num_brackets, _, _,
+    g_num_brackets, _, _) = disco_matches(bracketing(pb, pt), bracketing(gb, gt))
+    return bracket_match == p_num_brackets == g_num_brackets
+    
+
 def disco_matches(p_brackets, g_brackets):
+    p_brackets, _ = p_brackets
+    g_brackets, _ = g_brackets
     g_num_brackets, g_disc_num_brackets, g_disc_brackets = ndd(g_brackets)
     p_num_brackets, p_disc_num_brackets, p_disc_brackets = ndd(p_brackets)
     bracket_match = sum((g_brackets & p_brackets).values())

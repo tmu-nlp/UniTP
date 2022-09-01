@@ -371,7 +371,6 @@ class OutputLayer(nn.Module):
                 small_endian_tags = None,
                 **kw_args):
 
-        assert isinstance(small_endian_tags, bool)
         (layers_of_base, layers_of_existence,
          stem_specs) = self._stem_layer(bottom_existence,
                                         base_inputs, # dynamic can be none
@@ -388,7 +387,11 @@ class OutputLayer(nn.Module):
             else:
                 _, batch_len, _ = base_inputs.shape
                 tag_fn = self._tag_layer if key is None else self._tag_layer[key]
-                if small_endian_tags:
+                if isinstance(small_endian_tags, torch.Tensor): # training
+                    tags = layers_of_hidden[small_endian_tags]
+                elif small_endian_tags is None: # inference
+                    tags = layers_of_hidden
+                elif small_endian_tags:
                     tags = layers_of_hidden[:, :batch_len]
                 else:
                     tags = layers_of_hidden[:, -batch_len:]

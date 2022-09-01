@@ -98,23 +98,25 @@ def strange_to(string, unit_op = lambda x:x, include_end_to_range = True):
             final.append(unit_op(g))
     return final
 
-def hex_ratio(x):
-    assert 0 <= x <= 1
-    return '0123456789abcdef'[int(16 * x - 1e-8)]
+def ratio(x2c):
+    m = len(x2c)
+    def func(x, zero = '-', one = None):
+        assert 0 <= x <= 1
+        assert len(zero) == 1
+        assert one is None or len(one) == 1
+        if zero and x == 0: return zero
+        if x == 1: return x2c[m-1] if one is None else one
+        return x2c[int(m * x)]
+    return func
 
-def width_ratio(x):
-    assert 0 <= x <= 1
-    if x == 0: return '-'
-    return '▏▎▍▌▋▊▉'[int(7 * x - 1e-8)]
-
-def height_ratio(x):
-    assert 0 <= x <= 1
-    if x == 0: return '-'
-    return '▁▂▃▄▅▆▇▉'[int(8 * x - 1e-8)]
-
-def space_height_ratio(x):
-    assert 0 <= x <= 1
-    return ' ▁▂▃▄▅▆▇▉'[int(9 * x - 1e-8)]
+SPACE = ' '
+FULL_BLOCK = '█'
+H_BLOCKS = '▁▂▃▄▅▆▇' + FULL_BLOCK
+W_BLOCKS = '▏▎▍▌▋▊▉' + FULL_BLOCK
+height_ratio = ratio(H_BLOCKS)
+space_height_ratio = ratio(SPACE + H_BLOCKS)
+width_ratio = ratio(W_BLOCKS)
+hex_ratio = ratio('0123456789abcdef')
 
 def str_ruler(length, upper = True, append_length = True):
     unit = '┃╵╵╵╵╿╵╵╵╵' if upper else '┃╷╷╷╷╽╷╷╷╷'
@@ -132,14 +134,14 @@ def cat_lines(lhs_lines, rhs_lines, offset = 0, from_top = False):
     lines = []
     lhs_span = max(len(x) for x in lhs_lines)
     rhs_span = max(len(x) for x in rhs_lines)
-    lhs_space = ' ' * lhs_span
-    rhs_space = ' ' * rhs_span
+    lhs_space = SPACE * lhs_span
+    rhs_space = SPACE * rhs_span
     assert offset >= 0
     if not from_top:
         lhs_lines = lhs_lines[::-1]
         rhs_lines = rhs_lines[::-1]
     for lid, lhs_line in enumerate(lhs_lines):
-        line = lhs_line + ' ' * (lhs_span - len(lhs_line))
+        line = lhs_line + SPACE * (lhs_span - len(lhs_line))
         if 0 <= lid - offset < rhs_len:
             line += rhs_lines[lid - offset]
         # else:
@@ -171,48 +173,82 @@ def unzip_from_str(x, *fns):
     sep, fn = fns[:2]
     return fn(unzip_from_str(i, *fns[2:]) for i in x.split(sep))
 
-class StringProgressBar:
-    __active_lines__ = -1
-    @classmethod
-    def line(cls, desc, total, length = 30, char = '─', **kwargs):
-        return cls((desc, length * char), **kwargs).update(total = total)
+def linebar(has_len, desc = ' '):
+    with StringProgressBar.line(len(has_len), prefix = desc) as bar:
+        for unit in has_len:
+            yield unit
+            bar.update()
 
-    def __init__(self, texts, sep = ' ', color = '5', finish_color = '2', error_color = '1'):
+from utils.math_ops import frac_neq
+class StringProgressBar:
+    __active_lines__ = -1 # for 'with' statement
+
+    @classmethod
+    def line(cls, total, length = 30, char = '─', **kwargs):
+        return cls(length * char, **kwargs).update(total = total)
+
+    @classmethod
+    def segs(cls, total, char = '-', sep = '', **kwargs):
+        assert len(char) == 1
+        return cls((char,) * total, sep = sep, **kwargs)
+
+    @property
+    def desc(self):
+        return self._sep[-2:]
+
+    @desc.setter
+    def desc(self, desc):
+        assert len(desc) == 2, 'Please provide both prefix and suffix (as a tuple, list, or generator).'
+        self._sep = self._sep[:-2] + desc
+        self.__update()
+        self.__draw()
+
+    @property
+    def finished(self):
+        return all(p == g for p, g in zip(self._progress[1:3]))
+
+    def __init__(self,
+                 texts, *,
+                 prefix = '', sep = SPACE, suffix = '',
+                 color = '5', finish_color = '2', error_color = '1'):
         if isinstance(texts, str):
             texts = texts,
         else:
             assert isinstance(texts, (list, tuple))
-        self._sep = sep, texts, color, finish_color, error_color
+        self._sep = sep, color, finish_color, error_color, prefix, suffix
         p, g, c, t = [], [], [], []
         for text in texts:
             p.append(0)
             c.append(0)
             t.append(None)
             g.append(len(text))
-        self._progress = p, tuple(g), c, t
+        self._progress = texts, p, tuple(g), c, t
         self._cache = None
         self._file = None
 
     def update(self, idx = -1, num = None, *, total = None):
-        p, g, c, t = self._progress
-        if isinstance(idx, str):
-            idx = self._sep[1].index(idx)
+        tt, p, g, c, t = self._progress
         if num is None:
-            if isinstance(total, int):
-                t[idx] = float(total)
+            if isinstance(total, int): # set total to t[idx]
+                t[idx] = total
                 return self
-            if t[idx] is None:
+            if t[idx] is None: # error?
                 num = -1
-            else:
+            else: # float = c / t
                 c[idx] += 1
-                num = c[idx] / t[idx]
-        elif isinstance(num, int) and num == 0:
-            c[idx] = 0
-        if isinstance(num, float):
+                num = float(c[idx] / t[idx])
+        elif isinstance(num, int):
+            if num == 0: # reset c[idx]
+                c[idx] = 0
+            else:
+                c[idx] += num
+                num = float(c[idx] / t[idx])
+        seg_mode = len(tt[idx]) == 1
+        if isinstance(num, float) and not seg_mode: # use 0<=float<=1 to update p
             num = int(num * g[idx])
-        if p[idx] != num:
+        if frac_neq(p[idx], num, 24) if seg_mode else (p[idx] != num):
             p[idx] = num
-            self._cache = None
+            self._cache = None # let it refresh
         if self._file:
             self.__update()
             self.__draw()
@@ -220,17 +256,20 @@ class StringProgressBar:
 
     def __update(self):
         line = []
-        sep, texts, color, fc, ec = self._sep
-        for text, p, g in zip(texts, *self._progress[:2]):
+        sep, color, fc, ec, pf, sf = self._sep
+        for text, p, g in zip(*self._progress[:3]):
             if p < 0 or p > g:
                 c = ec
             elif p == g:
                 c = fc
             else:
                 c = color
-            seg = f'\033[3{c}m' + text[:p] + '\033[m' + text[p:]
-            line.append(seg)
-        self._cache = sep.join(line)
+            if len(text) == 1:
+                seg = space_height_ratio(p / g, text) + '\033[m'
+            else:
+                seg = text[:p] + '\033[m' + text[p:]
+            line.append(f'\033[3{c}m' + seg)
+        self._cache = pf + sep.join(line) + sf
 
     def __draw(self):
         if offset := (StringProgressBar.__active_lines__ - self._line_id):
@@ -259,3 +298,7 @@ class StringProgressBar:
         if StringProgressBar.__active_lines__ == 0:
             print(file = self._file)
         StringProgressBar.__active_lines__ -= 1
+
+    def __iter__(self):
+        with StringProgressBar.line as bar:
+            pass

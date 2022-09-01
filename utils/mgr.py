@@ -36,15 +36,15 @@ def check_train(train_str):
     assert ' ' not in train_str
     for group in train_str.split(','):
         if group.startswith('fine='):
-            group = [int(x) if x else 0 for x in group[5:].split(':')]
+            group = [int(x) if x else None for x in group[5:].split(':')]
             assert 1 <= len(group) <= 3
-            if group[0]:
+            if group[0] is not None:
                 train['fine_validation_at_nth_wander'] = n = group[0]
                 assert n >= 0, 'fine_validation_at_nth_wander < 0'
-            if len(group) > 1 and group[1]:
+            if len(group) > 1 and group[1] is not None:
                 train['stop_at_nth_wander'] = n = group[1]
                 assert n >= 0, 'stop_at_nth_wander < 0'
-            if len(group) > 2 and group[2]:
+            if len(group) > 2 and group[2] is not None:
                 train['fine_validation_each_nth_epoch'] = n = group[2]
                 assert n >= 0, 'fine_validation_each_nth_epoch < 0'
 

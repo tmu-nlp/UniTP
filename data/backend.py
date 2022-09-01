@@ -1,7 +1,6 @@
 from os.path import join
 from utils.pickle_io import pickle_load
-from data.io import get_fasttext, encapsulate_vocabs, load_freq
-from data.delta import xtype_to_logits, logits_to_xtype
+from data.io import get_fasttext, encapsulate_vocabs
 from collections import defaultdict, namedtuple
 from utils.param_ops import HParams
 from utils.file_io import parpath
@@ -75,35 +74,6 @@ class _BaseReader:
 
     def get_to_model(self, name):
         return self._to_model[name]
-
-    def __str__(self):
-        s = 'BaseReader Specs:\n'
-        for f, v in self._i2vs._nested.items():
-            s += f'  vocab of {f}: {len(v)} tokens with'
-            if f in self._paddings:
-                bos, eos = self._paddings[f]
-                s += f' {v[bos]}({bos}) & {v[eos]}({eos})'
-                if f == 'label':
-                    bos, eos = self._paddings['xtype']
-                    rox = logits_to_xtype(bos)
-                    lox = logits_to_xtype(eos)
-                    s += f' | {rox}({bos}) & {lox}({eos})\n'
-                else:
-                    s += '\n'
-            else:
-                s += f' {v[0]}(0)\n'
-        return s
-
-    def frequency(self, key, oov_id = -1, log_inv = False):
-        tok_list = self._i2vs._nested[key]
-        sum_cnt = [0 for _ in tok_list]
-        for tok, cnt in load_freq(join(self._vocab_dir, 'vocab.' + key)).items():
-            tid = tok_list.index(tok) if tok in tok_list else oov_id
-            sum_cnt[tid] += cnt
-        if log_inv:
-            sum_cnt = torch.tensor(sum_cnt, dtype = torch.get_default_dtype(), device = device)
-            sum_cnt = 1 / sum_cnt.log()
-        return sum_cnt
 
 def add_char_from_word(i2vs):
     chars = set()

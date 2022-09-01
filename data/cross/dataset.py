@@ -2,10 +2,10 @@ from data.backend import LengthOrderedDataset, np, torch, token_first
 from utils.file_io import read_data
 from utils.shell_io import byte_style
 from tqdm import tqdm
-from data.delta import E_XDIM
+from data.binary import E_XDIM
 from data.cross.binary import unzip_xlogit, targets, disco_tree, TreeKeeper
 from data.cross.binary import unzip_and_double_swaps_p1, double_swaps_p1
-from data.trapezoid import trapezoid_to_layers
+from data.binary.trapezoid import trapezoid_to_layers
 from itertools import zip_longest
 from utils.types import O_HEAD, S_EXH, F_RAND_CON, F_RAND_CON_SUB, F_RAND_CON_MSB, device, binary_factors
 

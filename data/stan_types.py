@@ -20,153 +20,112 @@ call_fasttext = make_call_fasttext(ft_bin)
 
 split_files = {'train': M_TRAIN, 'dev': M_DEVEL, 'test': M_TEST}
 
-from nltk.tree import Tree
-from collections import Counter, defaultdict
-from tqdm import tqdm
-from utils.pickle_io import pickle_dump, pickle_load
-from utils.str_ops import histo_count
-from os.path import join, isfile
-from data.io import check_vocab, save_vocab, sort_count
 from sys import stderr
-from data.delta import DeltaX, lnr_order, xtype_to_logits
-from unidecode import unidecode
+from nltk.tree import Tree
+from collections import Counter, namedtuple, defaultdict
+from os.path import join
+from data.io import check_vocab, post_build
 
-def string_to_word_polar_xtype(line):
-    line = line.replace(b'\\/', b'/').replace(b'\xc2\xa0', b'.').decode('utf-8')
-    line = unidecode(line)
-    tree = Tree.fromstring(line)
-    x    = DeltaX.from_stan(tree)
-    polar, direc, _ = x.to_triangles()
-    words = tree.leaves()
-    polar = tuple(p[0] if isinstance(p, list) else p for p in polar)
-    return words, polar, direc
+VocabCounters = namedtuple('VocabCounters', 'length, word, polar, xtype')
+build_counters = lambda: VocabCounters(Counter(), Counter(), Counter(), Counter())
 
 def build(save_to_dir, stree_path, corp_name, verbose = True, **kwargs):
     assert corp_name == C_SSTB
-
-    jobs = []
-    for src, dst in split_files.items():
-        with open(join(stree_path, f'{src}.txt'), 'rb') as fr:
-            for line in fr:
-                jobs.append((line, dst))
             
+    from time import sleep
     from data.io import distribute_jobs
     from multiprocessing import Process, Queue
     from utils.types import num_threads
-    num_threads = min(num_threads, len(jobs))
-    workers = distribute_jobs(jobs, num_threads)
-    q = Queue()
+    from utils.str_ops import StringProgressBar
+    from utils.shell_io import byte_style
+
     class WorkerX(Process):
         def __init__(self, *args):
             Process.__init__(self)
             self._q_jobs = args
 
         def run(self):
-            q, jobs = self._q_jobs
-            len_cnts = {}
-            tok_cnt, pol_cnt, xty_cnt = Counter(), Counter(), Counter()
+            from data.continuous.binary import BinarySignal
+            BinarySignal.share_cells()
+            counters = defaultdict(build_counters)
+            i, q, jobs = self._q_jobs
             for line, dst in jobs:
-                token, polar, xtype = string_to_word_polar_xtype(line) # terrible sign
-                tok_cnt += Counter(token)
-                pol_cnt += Counter(polar)
-                xty_cnt += Counter(xtype)
-                xtype = tuple(xtype_to_logits(x) for x in xtype)
-                instance = token, polar, xtype, dst
-                q.put(instance)
-                if dst not in len_cnts:
-                    len_cnts[dst] = Counter()
-                len_cnts[dst][len(token)] += 1
-            summary = tok_cnt, pol_cnt, xty_cnt, len_cnts, dst
-            q.put(summary)
+                tree = Tree.fromstring(line)
+                dx = BinarySignal.from_sstb(tree)
+                for _, p, o in dx.signals():
+                    counters[dst].polar.update(p)
+                    counters[dst].xtype.update(o)
+                counters[dst].word.update(dx.word())
+                counters[dst].length[dx.max_height] += 1
+                q.put(i)
+            q.put((i, dict(counters)))
 
-    for i in range(num_threads):
-        w = WorkerX(q, workers[i])
-        w.start()
-        workers[i] = w
-
-    train_tok_cnt = thread_join_cnt = 0
-    tok_cnt, pol_cnt, xty_cnt = Counter(), Counter(), Counter()
-    len_cnts = {dst: Counter() for dst in split_files.values()}
-    from contextlib import ExitStack
-    from itertools import count
-    from time import sleep
-    with ExitStack() as stack, tqdm(desc = f'  Receiving samples from {num_threads} threads', total = len(jobs)) as qbar:
-        ttf = stack.enter_context(open(join(save_to_dir, f'{M_TRAIN}.word'),  'w', encoding = 'utf-8'))
-        ptf = stack.enter_context(open(join(save_to_dir, f'{M_TRAIN}.polar'), 'w', encoding = 'utf-8'))
-        xtf = stack.enter_context(open(join(save_to_dir, f'{M_TRAIN}.xtype'), 'w', encoding = 'utf-8'))
-        tvf = stack.enter_context(open(join(save_to_dir, f'{M_DEVEL}.word'),  'w', encoding = 'utf-8'))
-        pvf = stack.enter_context(open(join(save_to_dir, f'{M_DEVEL}.polar'), 'w', encoding = 'utf-8'))
-        xvf = stack.enter_context(open(join(save_to_dir, f'{M_DEVEL}.xtype'), 'w', encoding = 'utf-8'))
-        t_f = stack.enter_context(open(join(save_to_dir, f'{M_TEST}.word'),   'w', encoding = 'utf-8'))
-        p_f = stack.enter_context(open(join(save_to_dir, f'{M_TEST}.polar'),  'w', encoding = 'utf-8'))
-        x_f = stack.enter_context(open(join(save_to_dir, f'{M_TEST}.xtype'),  'w', encoding = 'utf-8'))
-        for instance_cnt in count(): # Yes! this edition works fine!
+    corpus = []
+    for src, dst in split_files.items():
+        with open(join(stree_path, f'{src}.txt')) as fr:
+            for line in fr:
+                corpus.append((line, dst))
+                
+    num_threads = min(num_threads, len(corpus))
+    workers = distribute_jobs(corpus, num_threads)
+    q = Queue()
+    thread_join_cnt = 0
+    counters = defaultdict(build_counters)
+    desc = f'Collecting vocabulary from {num_threads} threads ['
+    with StringProgressBar.segs(num_threads, prefix = desc, suffix = ']') as qbar:
+        for i in range(num_threads):
+            jobs = workers[i]
+            w = WorkerX(i, q, jobs)
+            w.start()
+            workers[i] = w
+            qbar.update(i, total = len(jobs))
+            
+        while True:
             if q.empty():
                 sleep(0.0001)
             else:
-                t = q.get()
-                if len(t) == 4:
-                    token, polar, xtype, dst = t
-                    if dst == M_TRAIN:
-                        tf, pf, xf = ttf, ptf, xtf
-                    elif dst == M_DEVEL:
-                        tf, pf, xf = tvf, pvf, xvf
-                    else:
-                        tf, pf, xf = t_f, p_f, x_f
-                    tf.write(' '.join(token) + '\n')
-                    pf.write(' '.join(polar) + '\n')
-                    xf.write(' '.join(xtype) + '\n')
-                    qbar.update(1)
+                if isinstance(t := q.get(), int):
+                    qbar.update(t)
                 else: # summary
                     thread_join_cnt += 1
-                    tc, pc, xc, lcs, dst = t
-                    if dst == M_TRAIN:
-                        train_tok_cnt += len(tc)
-                    tok_cnt += tc
-                    pol_cnt += pc
-                    xty_cnt += xc
-                    for _dst, lc in lcs.items():
-                        len_cnts[_dst] += lc
+                    t, vc = t
+                    for ds, ss in vc.items():
+                        ds = counters[ds]
+                        for dst, src in zip(ds, ss):
+                            dst.update(src)
+                    suffix = f'] {thread_join_cnt} ended.'
+                    qbar.desc = desc, suffix
+                    workers[t].join()
                     if thread_join_cnt == num_threads:
                         break
+        suffix = '] ' + byte_style(f'✔ {len(corpus)} trees.', '2')
+        qbar.desc = desc, suffix
 
-    for dst, len_cnt in len_cnts.items():
-        print(f'Length distribution in [ {dst.title()} set ]', file = stderr)
-        print(histo_count(len_cnt, bin_size = 10), file = stderr)
-    for w in workers:
-        w.join()
-
-    pickle_dump(join(save_to_dir, 'info.pkl'), len_cnts)
-
-    tok_file = join(save_to_dir, 'vocab.word')
-    pol_file = join(save_to_dir, 'vocab.polar')
-    xty_file = join(save_to_dir, 'vocab.xtype')
-    _, ts = save_vocab(tok_file, tok_cnt, [NIL])
-    _, ss = save_vocab(pol_file, pol_cnt, [NIL])
-    _, dr = save_vocab(xty_file, xty_cnt, lnr_order(xty_cnt)[0])
-    return train_tok_cnt, ts, ss, dr
+    def field_fn(all_counts, field, fw_rpt):
+        cnt = getattr(all_counts, field)
+        if field not in ('xtype', 'length') and (more := cnt.keys() - getattr(counters[M_TRAIN], field)):
+            if field == 'word':
+                count = sum(cnt[w] for w in more)
+                fw_rpt.write(f'Word vocabulary has {len(more):,} types ({count:,}/{sum(cnt.values()):,} counts) not in train-set.\n')
+            else:
+                fw_rpt.write(f'{field.title()} has ')
+                fw_rpt.write(' '.join(more) + ' not in train-set.\n')
+    return post_build(save_to_dir, build_counters, VocabCounters, counters, field_fn)
 
 def check_data(save_dir, valid_sizes):
-    try:
-        _, tok_size, syn_size, xty_size = valid_sizes
+    try: # 53,18280,21701,6,6
+        _, train_tok_size, all_tok_size, sem_size, xty_size = valid_sizes
+        if train_tok_size > all_tok_size:
+            raise ValueError(f'Train vocab({all_tok_size}) should be less than corpus vocab({all_tok_size})')
     except:
         print('Should check vocab with compatible sizes, even Nones', file = stderr)
         return False
     tok_file = join(save_dir, 'vocab.word')
     syn_file = join(save_dir, 'vocab.polar')
     xty_file = join(save_dir, 'vocab.xtype')
-    res = check_vocab(tok_file, tok_size)
-    res = res and check_vocab(syn_file, syn_size)
+    res = check_vocab(tok_file, all_tok_size)
+    res = res and check_vocab(syn_file, sem_size)
     res = res and check_vocab(xty_file, xty_size)
-
-    fname = join(save_dir, 'info.pkl')
-    if res and isfile(fname):
-        info = pickle_load(fname)
-        print('Total:', sum(sum(info[ds].values()) for ds in split_files.values()), file = stderr)
-        for ds in split_files.values():
-            print(f'Length distribution in [ {ds.title()} set ] ({sum(info[ds].values())})', file = stderr)
-            print(histo_count(info[ds], bin_size = 10), file = stderr)
-    
     return res
 
 
