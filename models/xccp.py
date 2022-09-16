@@ -9,9 +9,9 @@ try:
     import xccp_decode
     import numpy as np
     print(byte_style('With our cuda::xccp_decode✨', '2'))
-    def predict_disco_sections_(disco_2d, layer_fence, dis_batch_idx, dis_length, dis_indice, head_score):
+    def predict_disco_sections_(disco_2d, layer_chunk, dis_batch_idx, dis_length, dis_indice, head_score):
         (sections, comp_id, component, comp_check, final_thresholds,
-         trials) = xccp_decode.predict_disco_sections(disco_2d, dis_length, dis_batch_idx, dis_indice.contiguous(), layer_fence.contiguous(), head_score, 0.5, True, -1)
+         trials) = xccp_decode.predict_disco_sections(disco_2d, dis_length, dis_batch_idx, dis_indice.contiguous(), layer_chunk.contiguous(), head_score, 0.5, True, -1)
         disco_2d = (x.cpu().numpy() for x in (dis_batch_idx, dis_length, disco_2d, comp_id, component, comp_check, final_thresholds, trials))
         layer_2d_logits = {}
         for bid, dis_len, clear_2d, cid, comps, check, thresh, trial in zip(*disco_2d):
@@ -27,14 +27,14 @@ except:
     print('    -> try', byte_style('\'cd cuda; python setup.py install\''), file = stderr)
     xccp_decode = None
 
-def continuous_fence(bbt_zeros, continuous, fence_logits):
+def continuous_chunk(bbt_zeros, continuous, chunk_logits):
     batch_dim, con_min, con_max = bool_start_end(continuous)
     con_left  = torch.cat([bbt_zeros, continuous], dim = 1)
     con_right = torch.cat([continuous, bbt_zeros], dim = 1)
     con_left[batch_dim, con_min] = True
     con_right[batch_dim, con_max + 1] = True
-    fl_left  = condense_left(fence_logits, condense_helper(con_left,  as_existence = True))
-    fl_right = condense_left(fence_logits, condense_helper(con_right, as_existence = True))
+    fl_left  = condense_left(chunk_logits, condense_helper(con_left,  as_existence = True))
+    fl_right = condense_left(chunk_logits, condense_helper(con_right, as_existence = True))
     return torch.where(fl_left * fl_right > 0, # same sign
                        torch.where(fl_left > 0,
                                    torch.where(fl_left > fl_right, fl_left, fl_right),
@@ -65,9 +65,9 @@ def get_head_score(medoid, disco_2d, dis_length, get_dis_emb, head_logit):
         raise ValueError('Unknown medoid: ' + medoid)
     return head_score
 
-def predict_disco_sections(disco_2d, layer_fence, dis_batch_idx, dis_length, dis_indice, head_score, debug = False):
+def predict_disco_sections(disco_2d, layer_chunk, dis_batch_idx, dis_length, dis_indice, head_score, debug = False):
     if disco_2d.is_cuda and xccp_decode is not None:
-        cuda_sections, cuda_layer_2d_logits = predict_disco_sections_(disco_2d, layer_fence, dis_batch_idx, dis_length, dis_indice, head_score)
+        cuda_sections, cuda_layer_2d_logits = predict_disco_sections_(disco_2d, layer_chunk, dis_batch_idx, dis_length, dis_indice, head_score)
         if debug:
             _, dis_max_children, _ = disco_2d.shape
             fb_comps = torch.ones(1, dis_max_children, dtype = torch.bool, device = dis_batch_idx.device)
@@ -116,9 +116,9 @@ def predict_disco_sections(disco_2d, layer_fence, dis_batch_idx, dis_length, dis
                 comp_max_idx = comp_idx[dis_b_max] # 0101 -> 01 or 10
                 indice = indice[:dis_len]
                 dis_max_idx = indice[dis_b_max] # 4578 -> 57
-                layer_fence[bid, dis_max_idx] = True # 00101_11_1 -> 
+                layer_chunk[bid, dis_max_idx] = True # 00101_11_1 -> 
                 dis_comps.append((bid, dis_max_idx, comps, comp_max_idx, indice))
-            sections = layer_fence.cumsum(dim = 1) # 0011123444
+            sections = layer_chunk.cumsum(dim = 1) # 0011123444
             for bid, dis_max_idx, comps, comp_max_idx, indice in dis_comps:
                 order = sections[bid, dis_max_idx][comp_max_idx]
                 sections[bid, indice] = (order[:, None] * comps).sum(dim = 0)
@@ -171,9 +171,9 @@ stem_config = dict(space_dim           = orient_dim,
                    disco_2d_activation = activation_type,
                    disco_2d_form       = disco_2d_form,
                    disco_2d_medoid     = medoid,
-                   fence_linear_dim    = orient_dim,
+                   chunk_linear_dim    = orient_dim,
                    space_module        = rnn_module_type,
-                   fence_activation    = activation_type,
+                   chunk_activation    = activation_type,
                    attention_hint      = discontinuous_attention_hint,
                    num_layers          = num_ori_layer,
                    drop_out            = frac_4,
@@ -229,7 +229,7 @@ class DiscoMultiStem(MultiStem):
     def __init__(self,
                  model_dim,
                  space_dim,
-                 continuous_fence_only,
+                 continuous_chunk_only,
                  disco_1d_form,
                  disco_1d_activation,
                  disco_2d_activation,
@@ -237,8 +237,8 @@ class DiscoMultiStem(MultiStem):
                  disco_2d_medoid,
                  space_module,
                  disco_1d_hidden_dim,
-                 fence_linear_dim,
-                 fence_activation,
+                 chunk_linear_dim,
+                 chunk_activation,
                  attention_hint,
                  num_layers,
                  drop_out,
@@ -246,16 +246,16 @@ class DiscoMultiStem(MultiStem):
                  trainable_initials):
         super().__init__(model_dim,
                          space_dim,
-                         fence_linear_dim,
+                         chunk_linear_dim,
                          space_module,
                          None,
-                         fence_activation,
+                         chunk_activation,
                          attention_hint,
                          num_layers,
                          drop_out,
                          rnn_drop_out,
                          trainable_initials)
-        self._continuous_fence_only = continuous_fence_only
+        self._continuous_chunk_only = continuous_chunk_only
         dis_dim, SelectCache.fn = _select(disco_1d_form, model_dim, space_dim)
         self.predict_1d_disco = LinearBinary(dis_dim, disco_1d_hidden_dim, disco_1d_activation)
 
@@ -302,7 +302,7 @@ class DiscoMultiStem(MultiStem):
         layers_of_u_emb = []
         layers_of_existence = []
         # training logits
-        layers_of_fence = [] # 101011
+        layers_of_chunk = [] # 101011
         layers_of_disco_1d = [] # 0000111100
         layers_of_disco_2d = [] # 1010x0101
         
@@ -323,7 +323,7 @@ class DiscoMultiStem(MultiStem):
                 segment   .append(seg_len)
                 seg_length.append(seq_len)
 
-            disco_hidden, _ = self._fence_emb(unit_emb, h0c0)
+            disco_hidden, _ = self._chunk_emb(unit_emb, h0c0)
             fw, bw = self.pad_fwbw_hidden(disco_hidden, existence)
             disco_hidden = self._stem_dp(disco_hidden) # the order should be kept
             fw = self._stem_dp(fw)
@@ -331,8 +331,8 @@ class DiscoMultiStem(MultiStem):
             cache = SelectCache(unit_emb, disco_hidden, fw, bw)
             disco_1d_logits = self.predict_1d_disco(cache.disco_1d)
             layers_of_disco_1d.append(disco_1d_logits)
-            fence_logits = self.predict_fence(fw, bw) # local fw & bw for continuous
-            layer_fence_logits = fence_logits # save for the next function
+            chunk_logits = self.predict_chunk(fw, bw) # local fw & bw for continuous
+            layer_chunk_logits = chunk_logits # save for the next function
 
             longer_seq_idx = torch.arange(seg_len + 1, device = unit_emb.device)
             seq_idx = longer_seq_idx[None, :seg_len]
@@ -376,8 +376,8 @@ class DiscoMultiStem(MultiStem):
                 dis_batch_idx, = torch.where(dis_batch)
                 dis_batch_size, = dis_batch_idx.shape
                 continuous = existence & ~discontinuous
-                if self._continuous_fence_only:
-                    fence_logits = continuous_fence(bbt_zeros, continuous, fence_logits)
+                if self._continuous_chunk_only:
+                    chunk_logits = continuous_chunk(bbt_zeros, continuous, chunk_logits)
 
                 if teacher_forcing and disco_2d_intra_rate:
                     con_rand = continuous & disco_1d_rand
@@ -411,7 +411,7 @@ class DiscoMultiStem(MultiStem):
                 disco_2d_logits = self.predict_2d_disco(card_lhs, card_rhs)
             else:
                 disco_2d_logits = None
-            layers_of_fence.append(fence_logits)
+            layers_of_chunk.append(chunk_logits)
 
             sub_emb = 0 # self._stem_dp(self._subject_bias())
             if self._subject_unit:  sub_emb = sub_emb + self._stem_dp(self._subject_unit(unit_emb))
@@ -428,13 +428,13 @@ class DiscoMultiStem(MultiStem):
                     layers_of_disco_2d.append(disco_2d_logits.reshape(-1))
             else:
                 layer_len = seq_len[:, None]
-                layer_fence_logits[:, 0] = fmax
-                layer_fence_logits[batch_dim, seq_len] = fmax
-                layer_fence_logits[longer_seq_idx > layer_len] = fmin
-                layer_fence = (layer_fence_logits > 0)[:, :-1]
+                layer_chunk_logits[:, 0] = fmax
+                layer_chunk_logits[batch_dim, seq_len] = fmax
+                layer_chunk_logits[longer_seq_idx > layer_len] = fmin
+                layer_chunk = (layer_chunk_logits > 0)[:, :-1]
 
                 if disco_2d_logits is None:
-                    sections = layer_fence.cumsum(dim = 1)
+                    sections = layer_chunk.cumsum(dim = 1)
                     # layers_of_slice.append((dis_slice_start, dis_slice_start))
                     # layers_of_shape.append(None)
                     layers_of_disco_2d.append({})
@@ -445,15 +445,15 @@ class DiscoMultiStem(MultiStem):
                     # 012345678
                     # 000011011 (disc.)
                     #_0101?11?1 v
-                    #0010__1__1 v (result: layer_fence)
+                    #0010__1__1 v (result: layer_chunk)
                     #000011011_ ^
                     dis_length = dis_exist.sum(dim = 1)
                     dis_indice = condense_left(seq_idx.repeat(dis_batch_size, 1), dis_helper)
-                    layer_fence &= discontinuous.logical_not()
+                    layer_chunk &= discontinuous.logical_not()
                     disco_2d_logits = self._sigmoid(disco_2d_logits) # need to be in a arange (not hard compress)
                     head_score = get_head_score(self._medoid, disco_2d_logits, dis_length, get_dis_emb, sub_emb)
 
-                    sections, disco_2d = predict_disco_sections(disco_2d_logits, layer_fence, dis_batch_idx, dis_length, dis_indice, head_score)
+                    sections, disco_2d = predict_disco_sections(disco_2d_logits, layer_chunk, dis_batch_idx, dis_length, dis_indice, head_score)
                     layers_of_disco_2d.append(disco_2d)
                 sections = torch.where(seq_idx < layer_len, sections, torch.zeros_like(sections))
                 layers_of_space.append(sections)
@@ -467,7 +467,7 @@ class DiscoMultiStem(MultiStem):
 
         embeddings = torch.cat(layers_of_u_emb,     dim = 1)
         existence  = torch.cat(layers_of_existence, dim = 1)
-        fence      = torch.cat(layers_of_fence,     dim = 1) if layers_of_fence else torch.zeros(batch_size, 0, dtype = unit_emb.dtype, device = unit_emb.device)
+        chunk      = torch.cat(layers_of_chunk,     dim = 1) if layers_of_chunk else torch.zeros(batch_size, 0, dtype = unit_emb.dtype, device = unit_emb.device)
         disco_1d   = torch.cat(layers_of_disco_1d,  dim = 1)
         if teacher_forcing:
             if hasattr(inter_disco, 'inter'):
@@ -495,7 +495,7 @@ class DiscoMultiStem(MultiStem):
                 weight = torch.cat(layers_of_weight, dim = 1)
             seg_length = torch.stack(seg_length, dim = 1)
 
-        return StemOutput(embeddings, existence, (weight, disco_1d, fence, disco_2d, disco_2d_positive, disco_2d_negative, inter_2d_negative, space, segment, seg_length))
+        return StemOutput(embeddings, existence, segment, (weight, disco_1d, chunk, disco_2d, disco_2d_positive, disco_2d_negative, inter_2d_negative, space, seg_length))
 
     @property
     def message(self):
@@ -603,14 +603,14 @@ class BaseRnnParser(OutputLayer):
     #     dis_b_max = blocky_max(comp_idx, clear_2d.sum(dim = 0), False)
     #     comp_max_idx = comp_idx[dis_b_max] # 0101 -> 01 or 10
     #     dis_max_idx = dis_indice[dis_bid, :dis_len][dis_b_max]
-    #     layer_fence[con_bid, dis_max_idx] = True # 00101_11_1 -> 
+    #     layer_chunk[con_bid, dis_max_idx] = True # 00101_11_1 -> 
     #     dis_comps[dis_bid] = dis_max_idx, comps, comp_max_idx
     #     return dis_bid
 
     # dis_idx = torch.arange(dis_size, device = dis_batch_idx.device)
     # dis_idx.map2_(dis_batch_idx, dis_length, disco_inject)
 
-    # print(layer_fence * 1)
+    # print(layer_chunk * 1)
         # num_comps, _ = comps.shape
         # comp_idx = (comp_dim[:num_comps, None] * comps).sum(dim = 0) # 0101 (or 1010)
     # min_sec, _ = sections.min(1)
@@ -643,9 +643,9 @@ class BaseRnnParser(OutputLayer):
             # after sections
             # if (existence != ((unit_emb ** 2).sum(-1) > 0)).any():
             #     breakpoint()
-                    # fence_comp = ((seq_idx < layer_len) & (sections == 0)).any(dim = 1, keepdim = True)
-                    # if fence_comp.any():
-                    #     print(torch.where(fence_comp.squeeze(-1)))
-                    #     print(torch.where(layer_fence[:, 0].logical_not()))
+                    # chunk_comp = ((seq_idx < layer_len) & (sections == 0)).any(dim = 1, keepdim = True)
+                    # if chunk_comp.any():
+                    #     print(torch.where(chunk_comp.squeeze(-1)))
+                    #     print(torch.where(layer_chunk[:, 0].logical_not()))
                     #     breakpoint()
-                    # sections += fence_comp
+                    # sections += chunk_comp

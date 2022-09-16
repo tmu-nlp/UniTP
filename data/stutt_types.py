@@ -1,56 +1,41 @@
-C_TIGER = 'tiger'
 C_DPTB = 'dptb'
-C_ABSTRACT = 'discontinuous'
+C_TIGER = 'tiger'
 E_DISCONTINUOUS = C_TIGER, C_DPTB
 
-from utils.param_ops import change_key
-def select_corpus(data_config, corpus_name):
-    assert C_ABSTRACT in data_config
-    if corpus_name is None:
-        config = change_key(data_config, C_ABSTRACT, *E_DISCONTINUOUS)
-        # if 'binarization' in config:
-        #     for corp_name, binarization in multilingual_binarization.items():
-        #         data_config[corp_name]['binarization'] = binarization
-    else:
-        assert corpus_name in E_DISCONTINUOUS
-        change_key(data_config, C_ABSTRACT, corpus_name)
-
-from data.io import make_call_fasttext, check_fasttext, check_vocab, split_dict, post_build, get_corpus
+from data.io import make_call_fasttext, check_vocab, split_dict, post_build, get_corpus
 build_params = {C_DPTB:  split_dict(   '2-21',          '22',          '23'),
                 C_TIGER: split_dict('1-40474', '40475-45474', '45475-50474')}
 ft_bin = {C_DPTB: 'en', C_TIGER: 'de'}
 call_fasttext = make_call_fasttext(ft_bin)
 
-from utils.types import false_type, true_type, binarization_5_head, NIL, ply_shuffle, frac_close_0, frac_close_1, frac_25
-from utils.types import train_batch_size, train_max_len, train_bucket_len, vocab_size, tune_epoch_type, inter_height_2d
-dccp_data_config = dict(vocab_size     = vocab_size,
-                        binarization   = binarization_5_head,
-                        batch_size     = train_batch_size,
-                        max_len        = train_max_len,
-                        bucket_len     = train_bucket_len,
-                        min_gap        = tune_epoch_type,
-                        ply_shuffle    = ply_shuffle,
-                        unify_sub      = true_type,
-                        sort_by_length = false_type)
+from utils.types import make_parse_data_config, make_parse_factor, make_beta, make_close_frac
+from utils.types import true_type, ply_shuffle
+from utils.types import tune_epoch_type, inter_height_2d
+from utils.types import F_CON, F_RANDOM, F_LEFT, F_RIGHT, F_DEP, K_CORP, F_SENTENCE
 
-from data.cross.multib import F_CON, F_RANDOM, F_LEFT, F_RIGHT, F_DEP
-medium_factor = dict(balanced = frac_close_0,
-                     more_sub = frac_25,
-                     others = {F_RANDOM: frac_close_1,
-                               F_LEFT: frac_close_0,
-                               F_RIGHT: frac_close_0,
-                               F_DEP: frac_close_0,
-                               F_CON: frac_close_0})
-xccp_data_config = dict(vocab_size     = vocab_size,
-                        batch_size     = train_batch_size,
-                        medium_factor  = medium_factor,
-                        max_len        = train_max_len,
-                        bucket_len     = train_bucket_len,
-                        min_gap        = tune_epoch_type,
-                        sort_by_length = false_type,
-                        unify_sub      = true_type,
-                        max_inter_height = inter_height_2d,
-                        continuous_fence_only = true_type)
+def dccp_factor(*level_left_right):
+    return make_parse_factor(binarization = make_beta(*level_left_right),
+                             ply_shuffle  = ply_shuffle)
+
+dccp_data_config = make_parse_data_config()
+dccp_data_config[K_CORP] = {
+    C_DPTB:  dccp_factor(F_SENTENCE, 1, 1),
+    C_TIGER: dccp_factor(F_SENTENCE, 1, 1)
+}
+
+xccp_data_config = make_parse_data_config(
+    min_gap      = tune_epoch_type,
+    max_interply = inter_height_2d,
+    continuous_fence_only = true_type)
+
+factors = F_CON, F_RANDOM, F_LEFT, F_RIGHT, F_DEP
+factors = {f: make_close_frac(float(f == F_RANDOM)) for f in factors}
+def xccp_factor():
+    return make_parse_factor(msub = 0.25, **factors)
+xccp_data_config[K_CORP] = {
+     C_DPTB: xccp_factor(),
+     C_TIGER: xccp_factor()
+}
 
 
 from utils.shell_io import byte_style
@@ -58,6 +43,9 @@ from utils.str_ops import StringProgressBar, linebar
 from time import sleep
 def select_and_split_corpus(corp_name, corp_path,
                             train_set, devel_set, test_set):
+    from data.cross import Signal
+    Signal.set_binary()
+    Signal.set_multib()
     if corp_name == C_TIGER:
         from xml.etree import ElementTree
         folder_pattern = lambda x: f's{x}'
@@ -67,14 +55,17 @@ def select_and_split_corpus(corp_name, corp_path,
             train_set = set(_corpus)
         get_fileids = lambda sids: (_corpus[s] for s in sids if s in _corpus) # some sids are not in _corpus
         corpus = get_corpus(train_set, devel_set, test_set, folder_pattern, get_fileids)
+        from_corpus = Signal.from_tiger_graph
     else:#if corp_name == C_DPTB:
         from data.penn_types import select_and_split_corpus as sasc
-        (reader, _corpus) = sasc(corp_name[1:], corp_path, train_set, devel_set, test_set)
-        corpus = []
-        for m, fn in linebar(_corpus):
-            for tree in reader.parsed_sents(fn):
-                corpus.append((m, tree))
-    return corpus
+        from_corpus = Signal.from_disco_penn
+        (reader, _corpus, _) = sasc(corp_name[1:], corp_path, train_set, devel_set, test_set)
+        corpus = defaultdict(list)
+        for m, fs in linebar(_corpus.items()):
+            for fn in fs:
+                for tree in reader.parsed_sents(fn):
+                    corpus[m].append(tree)
+    return corpus, from_corpus
 
 from collections import Counter, defaultdict, namedtuple
 VocabCounters = namedtuple('VocabCounters', 'length, word, tag, b_label, m_label, sentence_gap, phrase_gap')
@@ -89,12 +80,16 @@ def build(save_to_dir,
           devel_set,
           test_set,
           **kwargs):
-    from data.io import distribute_jobs
-    from multiprocessing import Process, Queue
-    from utils.types import num_threads
+    from data.mp import Rush, Process
     from data.cross.evalb_lcfrs import disco_exact_match
     from data.cross.binary import disco_tree as tree_from_binary
     from data.cross.multib import disco_tree as tree_from_multib
+
+    fileid_split, from_corpus = select_and_split_corpus(corp_name, corp_path, train_set, devel_set, test_set)
+    corpus = []
+    for m, trees in fileid_split.items():
+        for tree in trees:
+            corpus.append((m, tree))
 
     class WorkerX(Process):
         def __init__(self, *args):
@@ -102,22 +97,15 @@ def build(save_to_dir,
             self._args = args
 
         def run(self):
-            from data.cross import Signal
-            Signal.set_binary()
-            Signal.set_multib()
 
             errors = []
-            i, q, sents, corp_name = self._args
+            i, q, sents = self._args
             counters = defaultdict(build_counters)
-            if corp_name == C_TIGER:
-                signal_cls = Signal.from_tiger_graph
-            else:
-                signal_cls = Signal.from_disco_penn
 
             for ds, sent in sents:
                 counter = counters[ds]
                 try:
-                    dx = signal_cls(sent)
+                    dx = from_corpus(sent)
                     wd, tg = dx.word_tag
                 except ValueError as e:
                     errors.append(f' Value {e}')
@@ -157,47 +145,23 @@ def build(save_to_dir,
                     errors.append('BnM')
                 q.put(i)
 
-            q.put((i, errors, dict(counters)))
+            q.put((i, sum(sum(vc.length.values()) for vc in counters.values()), errors, dict(counters)))
 
-    corpus = select_and_split_corpus(corp_name, corp_path, train_set, devel_set, test_set)
-
-    num_threads = min(num_threads, len(corpus))
-    workers = distribute_jobs(corpus, num_threads)
-    q = Queue()
-
+    rush = Rush(WorkerX, corpus)
     errors = []
-    thread_join_cnt = 0
     counters = defaultdict(build_counters)
-    desc = f'Collecting vocabulary from {num_threads} threads ['
-    with StringProgressBar.segs(num_threads, prefix = desc, suffix = ']') as qbar:
-        for i in range(num_threads):
-            jobs = workers[i]
-            w = WorkerX(i, q, jobs, corp_name)
-            w.start()
-            workers[i] = w
-            qbar.update(i, total = len(jobs))
-
-        while True:
-            if q.empty():
-                sleep(0.0001)
-            else:
-                if isinstance(t := q.get(), int):
-                    qbar.update(t)
-                else: # summary
-                    thread_join_cnt += 1
-                    t, er, vc = t
-                    for ds, ss in vc.items():
-                        ds = counters[ds]
-                        for dst, src in zip(ds, ss):
-                            dst.update(src)
-                    suffix = f'] {thread_join_cnt} ended.'
-                    qbar.desc = desc, suffix
-                    workers[t].join()
-                    errors.extend(er)
-                    if thread_join_cnt == num_threads:
-                        break
-        suffix = '] ' + byte_style(f'✔ {len(corpus) - len(errors)} trees.', '2')
-        qbar.desc = desc, suffix
+    def receive(t, qbar):
+        if isinstance(t, int):
+            qbar.update(t)
+        else: # summary
+            t, tc, er, vc = t
+            for ds, ss in vc.items():
+                ds = counters[ds]
+                for dst, src in zip(ds, ss):
+                    dst.update(src)
+            errors.extend(er)
+            return t, tc
+    rush.mp_while(True, receive, 'Collecting vocabulary')
 
     if errors:
         desc = byte_style(f'✗ {len(errors)}', '1')

@@ -41,6 +41,7 @@ class Stem(nn.Module):
         self._dp_layer = nn.Dropout(drop_out)
         self.orient = nn.Linear(orient_dim, 1)
         self.combine = get_combinator(combine_type, model_dim)
+        self._threshold = 0
         if trainable_initials:
             c0 = torch.randn(num_layers * 2, 1, hidden_size)
             h0 = torch.randn(num_layers * 2, 1, hidden_size)
@@ -52,6 +53,17 @@ class Stem(nn.Module):
             self.register_parameter('_h0', None)
             self.register_parameter('_c0', None)
             self._initial_size = None
+
+    @property
+    def threshold(self):
+        return self._threshold
+
+    @threshold.setter
+    def set_threshold(self, threshold):
+        self._threshold = threshold
+
+    def orientation(self, logits):
+        return logits > self._threshold
 
     def blind_combine(self, unit_hidden, existence = None):
         return self.combine(None, unit_hidden, existence)
@@ -74,139 +86,121 @@ class Stem(nn.Module):
     def forward(self,
                 existence,
                 unit_hidden,
-                height = 0,
+                condense_per,
                 **kw_args):
         batch_size, seq_len, _ = existence.shape
         h0c0 = self.get_h0c0(batch_size)
 
-        if height == 0:
-            (layers_of_unit, layers_of_existence, layers_of_orient,
-             trapezoid_info) = self.triangle_forward(existence, unit_hidden, batch_size, seq_len, h0c0, **kw_args)
+        if not condense_per:
+            (layers_of_unit, layers_of_existence, layers_of_orient, batch_segment,
+             segment) = self.triangle_forward(existence, unit_hidden, batch_size, seq_len, h0c0, **kw_args)
         else:
-            (layers_of_unit, layers_of_existence, layers_of_orient,
-             trapezoid_info) = self.trapozoids_forward(height, existence, unit_hidden, batch_size, seq_len, h0c0, **kw_args)
-
-        layers_of_unit.reverse()
-        layers_of_orient.reverse()
-        layers_of_existence.reverse()
+            (layers_of_unit, layers_of_existence, layers_of_orient, batch_segment,
+             segment) = self.trapozoids_forward(condense_per, existence, unit_hidden, batch_size, seq_len, h0c0, **kw_args)
 
         unit_hidden = torch.cat(layers_of_unit,   dim = 1)
         orient      = torch.cat(layers_of_orient, dim = 1)
         existence   = torch.cat(layers_of_existence, dim = 1)
 
-        return StemOutput(unit_hidden, existence, (orient, trapezoid_info))
+        return StemOutput(unit_hidden, existence, batch_segment, (orient, segment))
 
     def triangle_forward(self,
                          existence,
                          unit_hidden,
                          batch_size, seq_len, h0c0,
-                         supervised_orient = None, **kw_args):
+                         supervision = None, **kw_args):
         layers_of_orient = []
         layers_of_unit   = []
         layers_of_existence = []
         num_layers = seq_len
 
-        teacher_forcing = isinstance(supervised_orient, Tensor)
-        modification = not teacher_forcing and isinstance(supervised_orient, tuple)
+        teacher_forcing = isinstance(supervision, Tensor)
+        modification = not teacher_forcing and isinstance(supervision, tuple)
         if modification:
-            offsets, lengths = supervised_orient
-            batch_dim = torch.arange(batch_size, device = existence.device)
-            ends = offsets + lengths - 1
+            offsets, lengths = supervision
+            if offsets is None: offsets = torch.zeros_like(lengths)
+            seq_dim = torch.arange(seq_len, device = existence.device)[None]
+            seq_end = offsets + lengths
 
-        for length in range(num_layers, 0, -1):
-            orient = self.predict_orient(unit_hidden, h0c0)
-            layers_of_orient.append(orient)
+        start = 0
+        segment = []
+        for reduce_num in range(num_layers):
+            length = num_layers - reduce_num
+            orient_logits = self.predict_orient(unit_hidden, h0c0)
+            layers_of_orient.append(orient_logits)
             layers_of_unit  .append(unit_hidden)
             layers_of_existence.append(existence)
+            segment.append(length)
             if length == 1: break
 
             if teacher_forcing:
-                start = s_index(length - 1)
-                end   = s_index(length)
-                right = supervised_orient[:, start:end, None]
+                end   = start + length
+                right = supervision[:, start:end, None]
+                start = end
             elif modification: # emprically not necessary, not more such in trapezoids
-                right = orient > 0
-                starts = torch.where(offsets < length, offsets, torch.zeros_like(offsets))
-                _ends_ = ends - (num_layers - length)
-                _ends_ = torch.where( starts < _ends_,  _ends_, torch.ones_like(_ends_) * (length - 1))
-                right[batch_dim, starts] = True
-                right[batch_dim, _ends_] = False
+                seq = seq_dim[:length]
+                bos = seq <= offsets
+                eos = seq >= (seq_end - reduce_num - 1)
+                right[eos] = False
+                right[bos] = True
             else:
-                right = orient > 0
+                right = self.orientation(orient_logits)
 
             (existence, new_jnt, lw_relay, rw_relay,
              unit_hidden) = self.combine(right, unit_hidden, existence)
-        return layers_of_unit, layers_of_existence, layers_of_orient, None
+        return layers_of_unit, layers_of_existence, layers_of_orient, segment, None
 
 
     def trapozoids_forward(self,
-                           height,
+                           condense_per,
                            existence,
                            unit_hidden,
-                           batch_size, seq_len, h0c0,
-                           supervised_orient = None, **kw_args):
+                           _, seq_len, h0c0,
+                           supervision = None, **kw_args):
         layers_of_orient = []
         layers_of_unit   = []
         layers_of_existence = []
-        teacher_forcing = isinstance(supervised_orient, Tensor)
-        if teacher_forcing:
-            end = supervised_orient.shape[1]
-        segment, seg_length = [], []
+        teacher_forcing = isinstance(supervision, Tensor)
+        start = 0
+        batch_segment, segment = [], []
 
-        for l_ in count():
-            if not teacher_forcing:
-                segment.append(seq_len)
-                if l_ % height == 0:
-                    seg_length.append(existence.sum(dim = 1)) #
-                else:
-                    seg_length.append(seg_length[-1] - 1)
+        for lid in count():
+            batch_segment.append(seq_len)
+            if not teacher_forcing or lid % condense_per == 0:
+                segment.append(existence.sum(dim = 1)) #
+            else:
+                segment.append(segment[-1] - 1)
 
-            orient = self.predict_orient(unit_hidden, h0c0)
-            layers_of_orient.append(orient)
+            orient_logits = self.predict_orient(unit_hidden, h0c0)
+            layers_of_orient.append(orient_logits)
             layers_of_unit  .append(unit_hidden)
             layers_of_existence.append(existence)
             if seq_len == 1: break
 
             if teacher_forcing:
-                start = end - seq_len
-                right = supervised_orient[:, start:end, None]
-                end   = start
+                end   = start + seq_len
+                right = supervision[:, start:end, None]
+                start = end
             else:
-                right = orient > 0
+                right = self.orientation(orient_logits)
 
             (existence, new_jnt, lw_relay, rw_relay,
              unit_hidden) = self.combine(right, unit_hidden, existence)
 
-            if l_ % height == height - 1:
-                # import pdb; pdb.set_trace()
-                existence.squeeze_(dim = 2) # will soon be replaced
+            if not teacher_forcing or lid % condense_per == condense_per - 1:
+                existence.squeeze_(dim = 2)
                 helper = condense_helper(existence, as_existence = True)
                 unit_hidden, existence = condense_left(unit_hidden, helper, get_cumu = True)
                 seq_len = unit_hidden.shape[1]
             else:
                 seq_len -= 1
 
-        if not teacher_forcing:
-            segment.reverse()
-            seg_length.reverse()
-            seg_length = torch.cat(seg_length, dim = 1)
-
-        return layers_of_unit, layers_of_existence, layers_of_orient, (segment, seg_length)
+        return layers_of_unit, layers_of_existence, layers_of_orient, batch_segment, torch.cat(segment, dim = 1)
 
 
-from models.loss import get_loss
 from models.backend import OutputLayer
 from utils.param_ops import change_key
-class BaseRnnParser(OutputLayer):
+class _CB(OutputLayer):
     def __init__(self, *args, **kwargs):
         change_key(kwargs, 'orient_layer', 'stem_layer')
         super().__init__(Stem, *args, **kwargs)
-
-    def get_losses(self, batch, tag_logits, top3_label_logits, label_logits, height_mask, weight_mask, key = None):
-        tag_fn = self._tag_layer if key is None else self._tag_layer[key]
-        label_fn = self._label_layer if key is None else self._label_layer[key]
-        tag_loss   = get_loss(tag_fn,   self._logit_max, tag_logits,   batch, 'tag')
-        label_loss = get_loss(label_fn, self._logit_max, label_logits, batch, True, height_mask, weight_mask, 'label')
-        if top3_label_logits is not None:
-            label_loss += get_loss(label_fn, self._logit_max, top3_label_logits, batch, 'top3_label')
-        return tag_loss, label_loss

@@ -1,4 +1,4 @@
-from data import XRB2brackets, SUB
+from data import XRB2brackets, no_backslash, RB2brackets, SUB
 from nltk.tree import Tree
 from data.cross import draw_str_lines as __draw
 from data.cross.dptb import direct_read as __read
@@ -7,7 +7,7 @@ from random import random
 draw_str_lines = lambda tree, **kwargs: __draw(*__read(tree), **kwargs)
 
 def ptb_update_word(tag_unary, word, _):
-    if word != (mord := XRB2brackets(word)):
+    if word != (mord := no_backslash(word)):
         tag_unary[0] = mord
 
 def ctb_update_tag(tag_unary, _, tag):
@@ -153,7 +153,7 @@ def remove_trace(mtree, update_word_tag_fn, word_trace):
             else: # more than one child without cascade
                 # NP (SBAR) (-NONE- *-1)
                 del mtree[tag_path]
-        else:
+        elif callable(update_word_tag_fn):
             update_word_tag_fn(mtree[tag_path], word, tag)
 
 
@@ -161,8 +161,8 @@ from utils import do_nothing
 class Signal:
     @classmethod
     def set_binary(cls):
-        from data.continuous.binary import tree_loc_path, signals
-        cls.b_prepare = tree_loc_path
+        from data.continuous.binary import tree_loc_path_length, signals
+        cls.b_prepare = tree_loc_path_length
         cls.b_signals = signals
 
     @classmethod
@@ -170,6 +170,28 @@ class Signal:
         from data.continuous.multib import tree_path, signals
         cls.m_prepare = tree_path
         cls.m_signals = signals
+
+    @classmethod
+    def set_char(cls):
+        from data.continuous.multib import char_signals
+        cls.m_char_signals = char_signals
+
+    def serialize(self, efficient = True):
+        data = [self._tree, self._lexi]
+        if efficient:
+            ort, adt = self.original_and_additional
+            data += [ort, adt]
+            if adt:
+                data.append(self.efficient_tree)
+        return tuple(data)
+
+    @classmethod
+    def instantiate(cls, args):
+        signal = cls(*args[:2])
+        if args[2:]:
+            etree = args[4] if args[3] else args[0]
+            signal._esub = args[2:4], etree
+        return signal
 
     @classmethod
     def from_ptb(cls, tree):
@@ -217,10 +239,12 @@ class Signal:
         self._tree = tree
         self._lexi = lexical
         self._blen = len(bottom)
-        self._word, self._tag = zip(*bottom)
         self._esub = None
         self._original  = [None, None]
         self._efficient = [None, None]
+        self._charater  = [None, None]
+        word, self._tag = zip(*bottom)
+        self._word = tuple(RB2brackets(w) for w in word)
 
     @property
     def original_and_additional(self):
@@ -232,6 +256,23 @@ class Signal:
     def efficient_tree(self):
         self.original_and_additional
         return self._esub[1]
+
+    def char_segment(self, max_subword_height = None, more_sub = 0, joint = True):
+        if all(len(w) == 1 for w in self._word):
+            return [] if joint else [list(range(len(self._word) + 1))]
+            
+        if randomized := (more_sub and (max_subword_height is None or max_subword_height > 2)):
+            tree, paths = Signal.m_char_signals(self._word, more_sub, max_subword_height)
+        elif empty := (self._charater[1] is None):
+            tree, paths = Signal.m_char_signals(self._word, max_subword_height = 2)
+        if randomized or empty:
+            _, bs = Signal.m_signals(tree, paths, joint = joint)
+            bs = bs[:1]
+            if not randomized:
+                self._charater[1] = bs
+        else:
+            bs = self._charater[1]
+        return bs
 
     def binary(self, factor = None, efficient = False, more_sub = 0, every_n = 1, *largs, **kwargs):
         return Signal.b_signals(factor, *self._prepare(True, efficient, more_sub), every_n, *largs, **kwargs)
@@ -256,6 +297,10 @@ class Signal:
         return (self._efficient if efficient else self._original)[multib]
 
     @property
+    def tree(self):
+        return self._tree
+
+    @property
     def word(self):
         return self._word
     
@@ -267,8 +312,24 @@ class Signal:
     def max_height(self):
         return self._blen
 
+    def char_to_idx(self, c2i):
+        idx = []
+        for wd in self._word:
+            idx.extend(c2i(w) for w in wd)
+        return idx
+
     def word_to_idx(self, w2i):
         return [w2i(w) for w in self._word]
     
     def tag_to_idx(self, t2i):
         return [t2i(t) for t in self._tag]
+
+
+def flatten_children(nodes):
+    children = []
+    for x in nodes:
+        if isinstance(x, Tree):
+            children.append(x)
+        else:
+            children.extend(x)
+    return children

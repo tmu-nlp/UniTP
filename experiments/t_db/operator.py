@@ -3,7 +3,7 @@ from utils.operator import Operator
 from utils.param_ops import get_sole_key
 from time import time
 from utils.math_ops import is_bin_times #, f_score
-from utils.types import M_TRAIN, BaseType, frac_open_0, frac_06, frac_close, tune_epoch_type, beta_tuple
+from utils.types import M_TRAIN, BaseType, frac_open_0, frac_06, frac_close, tune_epoch_type
 from models.utils import PCA, fraction
 from experiments.helper import WarmOptimHelper
 from data.cross.evalb_lcfrs import DiscoEvalb, ExportWriter, read_param
@@ -381,7 +381,7 @@ from utils.file_io import isfile
 from utils.pickle_io import pickle_dump, pickle_load
 from data.cross import bracketing, Counter, new_word_label, filter_words
 from data.cross.binary import disco_tree
-def batch_trees(bid_offset, heads_gen, segments, i2vs, fall_back_root_label = None):
+def batch_trees(bid_offset, heads_gen, segments, i2vs, fallback_label = None):
     for sid, (s_seq_len, s_token, s_tag, s_label, s_right, s_joint, s_direc) in enumerate(heads_gen):
         sid += bid_offset
         layers_of_label = []
@@ -403,7 +403,7 @@ def batch_trees(bid_offset, heads_gen, segments, i2vs, fall_back_root_label = No
         bottom_end = s_seq_len[0] + 1
         tags  = tuple(i2vs.tag[i]   for i in   s_tag[1:bottom_end])
         words = tuple(i2vs.token[i] for i in s_token[1:bottom_end])
-        yield disco_tree(words, tags, layers_of_label, layers_of_right, layers_of_joint, layers_of_direc, fall_back_root_label)
+        yield disco_tree(words, tags, layers_of_label, layers_of_right, layers_of_joint, layers_of_direc, fallback_label)
 
 def inner_score(bt, td, prm_args, export_writer = None):
     if export_writer:

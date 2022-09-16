@@ -1,16 +1,18 @@
 from data.penn import PennReader
-from data.penn_types import C_PTB, C_KTB, nccp_data_config, select_and_split_corpus
+from data.penn_types import E_CONTINUE, C_PTB, C_KTB, nccp_data_config, select_and_split_corpus
 from utils.types import M_TRAIN, M_DEVEL, M_TEST
 from utils.param_ops import HParams, get_sole_key
 
 from models.plm import XLNetDatasetHelper
-from experiments.t_plm_cb.model import ContinuousXLNetTree, model_type
-from experiments.t_cb.operator import PennOperator, train_type
+from experiments.t_plm_cb.model import XLNetCB, model_type
+from experiments.t_cb.operator import CBOperator, train_type
+
+CORPORA = set(E_CONTINUE)
 
 get_any_penn = lambda ptb = None: ptb
 def get_configs(recorder = None):
     if recorder is None:
-        return {C_PTB: nccp_data_config}, model_type, train_type
+        return nccp_data_config, model_type, train_type
     
     data_config, model_config, train_config, _ = recorder.task_specs()
     penn = HParams(get_any_penn(**data_config))
@@ -48,5 +50,5 @@ def get_configs(recorder = None):
 
     task_params = {pname: reader.get_to_model(pname) for pname in ('num_tags', 'num_labels', 'paddings')}
 
-    model = ContinuousXLNetTree(**model_config, **task_params)
-    return  PennOperator(model, get_datasets, recorder, reader.i2vs, recorder.evalb, train_config)
+    model = XLNetCB(**model_config, **task_params)
+    return  CBOperator(model, get_datasets, recorder, reader.i2vs, recorder.evalb, train_config)

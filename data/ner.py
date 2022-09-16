@@ -1,5 +1,6 @@
-from data.backend import WordBaseReader, LengthOrderedDataset, post_batch
-from data.ner_types import M_TRAIN, M_DEVEL, M_TEST, NIL, split_files, read_dataset, remove_bio_prefix
+from data.vocab import VocabKeeper
+from data.dataset import LengthOrderedDataset, post_batch
+from data.ner_types import M_TRAIN, M_DEVEL, M_TEST, split_files, read_dataset, remove_bio_prefix
 from data.io import load_i2vs, join
 from utils.types import vocab_size, train_batch_size, train_max_len, train_bucket_len, true_type, false_type
 from utils.types import valid_size, BaseType, rate_5
@@ -23,8 +24,9 @@ data_type = dict(vocab_size     = vocab_size,
                                        insert        = augment,
                                        substitute    = augment))
 
-from data.backend import CharTextHelper, add_char_from_word, PAD, tqdm
-class NerReader(WordBaseReader):
+from data import PAD
+from data.utils import CharTextHelper #, add_char_from_word, tqdm
+class NerReader(VocabKeeper):
     def __init__(self,
                  vocab_dir,
                  corpus_path,
@@ -74,7 +76,7 @@ class NerReader(WordBaseReader):
 
         return post_batch(mode, len_sort_ds, sort_by_length, bucket_length, batch_size)
 
-from data.backend import insert_word, substitute_word, drop_word
+from data.noise import insert_word, substitute_word, drop_word
 from data.ner_types import insert_o, substitute_o, delete_o
 from random import random, sample, randint
 class NegativeAugment:

@@ -4,8 +4,12 @@ from utils.types import BaseType, true_type, frac_4, frac_2
 from utils.types import num_ori_layer, false_type
 from utils.types import num_ctx_layer, hidden_dim
 from utils.param_ops import HParams
+from collections import namedtuple
 from models.types import act_fasttext
-from models.utils import PCA
+from models.utils import PCA, get_multilingual
+
+BottomOutput   = namedtuple('BottomOutput', 'batch_size, batch_len, embedding, cell_hidden')
+TagLabelOutput = namedtuple('TagLabelOutput', 'tag_start, tag_end, tags, labels, layers_of_hidden')
 input_config = dict(pre_trained = true_type, activation = act_fasttext, drop_out = frac_4)
 
 class InputLeaves(nn.Module):
@@ -14,12 +18,9 @@ class InputLeaves(nn.Module):
                  num_tokens,
                  initial_weight,
                  nil_as_pad,
-                #  unk_id,
                  pre_trained,
                  activation,
-                 drop_out):#,
-                #  random_unk_from_id,
-                #  random_unk_prob):
+                 drop_out):
         super().__init__()
 
         if initial_weight is None: # tokenization without <nil>, <bos> & <eos> are included tuned with others
@@ -73,10 +74,10 @@ class InputLeaves(nn.Module):
             self._pca_base = PCA(self._main_emb_layer.weight), True
             self._main_emb_tuned = False
 
-    def pca(self, word_emb):
+    def pca(self, input_emb):
         pca_base, static = self._pca_base
         assert static, 'has_no_static_pca'
-        return pca_base(word_emb)
+        return pca_base(input_emb)
 
     def forward(self, word_idx, tune_pre_trained):
         bound, nil_as_pad = self._main_extra_bound_pad
@@ -153,7 +154,7 @@ class Contextual(nn.Module):
                 if state_none_num_sum_weight == 'weight_layers':
                     self._layer_weights = nn.Parameter(torch.zeros(num_layers, 2, 1, 1))
                     self._layer_softmax = nn.Softmax(dim = 0)
-                    self._state_to_top3 = nn.Linear(model_dim, 3 * hidden_dim)
+                    self._state_to_top3 = nn.Linear(model_dim, hidden_dim)
                 self._state_config = num_layers, use_cell_as_state, state_none_num_sum_weight, hidden_dim
         else:
             self._contextual = None
@@ -166,7 +167,7 @@ class Contextual(nn.Module):
         dynamic_emb, final_state = self._contextual(static_emb)
 
         if self._state_config is None:
-            top_3 = None
+            hidden = None
         else:
             num_layers, use_cell_as_state, state_none_num_sum_weight, hidden_dim = self._state_config
             if isinstance(final_state, tuple):
@@ -184,9 +185,9 @@ class Contextual(nn.Module):
             final_state = final_state.transpose(0, 1).reshape(batch_size, model_dim)
             if use_cell_as_state:
                 final_state = torch.tanh(final_state)
-            top_3 = self._state_to_top3(final_state).reshape(batch_size, 3, hidden_dim)
+            hidden = self._state_to_top3(final_state).reshape(batch_size, hidden_dim)
 
-        return dynamic_emb, top_3
+        return dynamic_emb, hidden
 
 
 from models.combine import get_combinator
@@ -194,74 +195,48 @@ class InputLayer(nn.Module):
     def __init__(self,
                  paddings,
                  model_dim,
-                 use,
-                 word_emb,
-                 char_rnn,
-                 contextual_layer,
-                 combine_static,
-                 num_chars       = None,
-                 num_tokens      = None,
-                 initial_weights = None,
+                 input_emb,
+                 contextualize,
+                 combine_emb_and_cxt,
+                 num_tokens = None,
+                 weight_fn  = None,
                  **kwargs_forwarding):
         super().__init__(model_dim, **kwargs_forwarding)
-        if use['word_emb']:
-            if isinstance(num_tokens, int):
-                self._word_emb = InputLeaves(model_dim, num_tokens, initial_weights, not paddings, **word_emb)
-                input_dim = self._word_emb.input_dim
-            else:
-                from utils.param_ops import get_sole_key
-                self._word_emb = nn.ModuleDict({k: InputLeaves(model_dim, v, initial_weights[k], not paddings[k], **word_emb) for k,v in num_tokens.items()})
-                input_dim = get_sole_key(n.input_dim for n in self._word_emb.values())
+        if isinstance(num_tokens, int):
+            self._input_emb = InputLeaves(model_dim, num_tokens, weight_fn(), not paddings, **input_emb)
+            input_dim = self._input_emb.input_dim
         else:
-            self._word_emb = None
-            input_dim = model_dim
-        if use['char_rnn']:
-            embed_dim = char_rnn['embed_dim']
-            self._char_rnn = PadRNN(num_chars, None, None, fence_dim = model_dim, char_space_idx = 1, **char_rnn)
-            self._char_lin = nn.Linear(embed_dim, model_dim)
-            self._char_act = nn.Tanh()
-        else:
-            self._char_rnn = None
+            from utils.param_ops import get_sole_key
+            self._input_emb = nn.ModuleDict({k: InputLeaves(model_dim, v, weight_fn[k](), not paddings[k], **input_emb) for k,v in num_tokens.items()})
+            input_dim = get_sole_key(n.input_dim for n in self._input_emb.values())
 
-        contextual_layer = Contextual(input_dim, model_dim, self.hidden_dim, **contextual_layer)
+        contextual_layer = Contextual(input_dim, model_dim, self.hidden_dim, **contextualize)
         diff = model_dim - input_dim
         self._combine_static = None
         self._bias_only = False
         if contextual_layer.is_useless:
-            self._contextual_layer = None
+            self._contextualize = None
             assert diff == 0, 'useless difference'
         else:
-            self._contextual_layer = contextual_layer
-            if combine_static:
-                self._bias_only = combine_static in ('NS', 'NV')
-                self._combine_static = get_combinator(combine_static, input_dim)
+            self._contextualize = contextual_layer
+            if combine_emb_and_cxt:
+                self._bias_only = combine_emb_and_cxt in ('NS', 'NV')
+                self._combine_static = get_combinator(combine_emb_and_cxt, input_dim)
             assert diff >= 0, 'invalid difference'
         self._half_dim_diff = diff >> 1
 
-    def forward(self, word_idx, tune_pre_trained, ingore_logits = False,
-                sub_idx = None, sub_fence = None, offset = None, key = None,
-                squeeze_existence = None, 
+    def forward(self, word_idx, tune_pre_trained,
+                ingore_logits = False, key = None, squeeze_existence = None, 
                 **kw_args):
         assert isinstance(squeeze_existence, bool)
         batch_size, batch_len = word_idx.shape
-        if self._word_emb:
-            emb = self._word_emb if key is None else self._word_emb[key]
-            static, bottom_existence = emb(word_idx, tune_pre_trained)
-            if self._char_rnn:
-                char_info = self._char_rnn(sub_idx, sub_fence, offset)
-                char_info = self._stem_dp(char_info)
-                char_info = self._char_lin(char_info)
-                char_info = self._char_act(char_info)
-                static = static + char_info * bottom_existence
-        else:
-            bottom_existence = word_idx > 0
-            bottom_existence.unsqueeze_(dim = 2)
-            static = self._char_rnn(sub_idx, sub_fence, offset) * bottom_existence
-        if self._contextual_layer is None:
+        emb = self._input_emb if key is None else self._input_emb[key]
+        static, bottom_existence = emb(word_idx, tune_pre_trained)
+        if self._contextualize is None:
             base_inputs = static
-            top3_hidden = None
+            cell_hidden = None
         else:
-            dynamic, top3_hidden = self._contextual_layer(static)
+            dynamic, cell_hidden = self._contextualize(static)
             if self._half_dim_diff:
                 zero_pads = torch.zeros(batch_size, batch_len, self._half_dim_diff, dtype = static.dtype, device = static.device)
                 static = torch.cat([zero_pads, static, zero_pads], dim = 2)
@@ -271,32 +246,31 @@ class InputLayer(nn.Module):
         if squeeze_existence:
             bottom_existence = bottom_existence.squeeze(dim = 2)
         base_returns = super().forward(base_inputs, bottom_existence, ingore_logits, key, **kw_args)
-        top3_labels  = super().get_label(top3_hidden) if top3_hidden is not None else None
-        return (batch_size, batch_len, static, top3_labels) + base_returns
+        return (BottomOutput(batch_size, batch_len, static, cell_hidden),) + base_returns
 
     def get_static_pca(self, key = None):
-        if self._word_emb:
-            if isinstance(self._word_emb, InputLeaves):
-                word_emb = self._word_emb
+        if self._input_emb:
+            if isinstance(self._input_emb, InputLeaves):
+                input_emb = self._input_emb
             else:
-                word_emb = self._word_emb[key]
-            if word_emb.has_static_pca:
-                return word_emb.pca
+                input_emb = self._input_emb[key]
+            if input_emb.has_static_pca:
+                return input_emb.pca
         return None
 
     def update_static_pca(self, key = None):
-        if self._word_emb:
-            if isinstance(self._word_emb, InputLeaves):
-                word_emb = self._word_emb
+        if self._input_emb:
+            if isinstance(self._input_emb, InputLeaves):
+                input_emb = self._input_emb
             else:
-                word_emb = self._word_emb[key]
-            if word_emb.has_static_pca:
-                word_emb.flush_pc_if_emb_is_tuned()
+                input_emb = self._input_emb[key]
+            if input_emb.has_static_pca:
+                input_emb.flush_pc_if_emb_is_tuned()
 
     def state_dict(self, *args, **kwargs):
         odc = super().state_dict(*args, **kwargs)
-        emb = self._word_emb
-        prefix = '_word_emb.'
+        emb = self._input_emb
+        prefix = '_input_emb.'
         suffix = '_main_emb_layer.weight'
         if isinstance(emb, InputLeaves) and not emb._main_emb_tuned:
             odc.pop(prefix + suffix)
@@ -335,6 +309,7 @@ class InputLayer(nn.Module):
 
 from models.utils import get_logit_layer
 from models.loss import get_decision, get_decision_with_value
+from models.loss import get_loss, get_label_height_mask
 class OutputLayer(nn.Module):
     def __init__(self,
                  stem_fn,
@@ -360,6 +335,13 @@ class OutputLayer(nn.Module):
             if argmax:
                 self._activation = tag_label_layer['activation']()
             self._score_fn = score_act(dim = 2)
+
+            if isinstance(self._tag_layer, nn.ModuleDict):
+                self.get_multilingual_tag_matrices = lambda: get_multilingual(self._tag_layer)
+
+            if isinstance(self._label_layer, nn.ModuleDict):
+                self.get_multilingual_label_matrices = lambda: get_multilingual(self._label_layer)
+
         self._hidden_dim = hidden_dim
         self._model_dim = model_dim
 
@@ -368,34 +350,31 @@ class OutputLayer(nn.Module):
                 bottom_existence,
                 ingore_logits = False,
                 key = None,
-                small_endian_tags = None,
+                tag_layer = 0,
                 **kw_args):
+        if tag_layer: kw_args['n_layers'] = tag_layer
+        sout = self._stem_layer(bottom_existence, base_inputs, **kw_args)
+        
+        if self._hidden_dim and not ingore_logits: # embedding, existence, segment, extension
 
-        (layers_of_base, layers_of_existence,
-         stem_specs) = self._stem_layer(bottom_existence,
-                                        base_inputs, # dynamic can be none
-                                        **kw_args)
+            tag_start = tag_end = 0
+            if tag_layer == 0:
+                tag_len = tag_end = sout.segment[0]
+            else:
+                for tag_len in sout.segment[:tag_layer + 1]:
+                    tag_end += tag_len
+                tag_start = tag_end - tag_len
 
-        if self._hidden_dim:
-            layers_of_hidden = self._shared_layer(layers_of_base)
+            layers_of_hidden = self._shared_layer(sout.embedding[:, tag_start:])
             layers_of_hidden = self._dp_layer(layers_of_hidden)
             if self._logit_max:
                 layers_of_hidden = self._activation(layers_of_hidden)
 
-            if self._tag_layer is None or ingore_logits:
+            if self._tag_layer is None:
                 tags = None
             else:
-                _, batch_len, _ = base_inputs.shape
                 tag_fn = self._tag_layer if key is None else self._tag_layer[key]
-                if isinstance(small_endian_tags, torch.Tensor): # training
-                    tags = layers_of_hidden[small_endian_tags]
-                elif small_endian_tags is None: # inference
-                    tags = layers_of_hidden
-                elif small_endian_tags:
-                    tags = layers_of_hidden[:, :batch_len]
-                else:
-                    tags = layers_of_hidden[:, -batch_len:]
-                tags = tag_fn(tags)
+                tags = tag_fn(layers_of_hidden[:, :tag_len])
             
             if self._label_layer is None or ingore_logits:
                 labels = None
@@ -403,11 +382,9 @@ class OutputLayer(nn.Module):
                 label_fn = self._label_layer if key is None else self._label_layer[key]
                 labels = label_fn(layers_of_hidden)
         else:
-            layers_of_hidden = tags = labels = None
+            tag_start = tag_end = tags = labels = layers_of_hidden = None
 
-        return layers_of_base, layers_of_existence, layers_of_hidden, tags, labels, stem_specs
-        # return layers_of_base, layers_of_hidden, layers_of_existence, layers_of_orient, tags, labels, trapezoid_info
-        # return existence, embeddings, weight, fence, fence_idx, fence_vote, tags, labels, segment, seg_length
+        return sout, TagLabelOutput(tag_start, tag_end, tags, labels, layers_of_hidden)
 
     @property
     def model_dim(self):
@@ -420,6 +397,17 @@ class OutputLayer(nn.Module):
     @property
     def stem(self):
         return self._stem_layer
+
+    def get_losses(self, batch, tag_logits, label_logits, weight, key = None):
+        label_height_mask = get_label_height_mask(batch)
+        if weight is not None:
+            label_height_mask = label_height_mask * weight
+
+        tag_fn = self._tag_layer if key is None else self._tag_layer[key]
+        label_fn = self._label_layer if key is None else self._label_layer[key]
+        tag_loss   = get_loss(tag_fn,   self._logit_max, tag_logits,   batch['tag'])
+        label_loss = get_loss(label_fn, self._logit_max, label_logits, batch['label'], label_height_mask)
+        return tag_loss, label_loss
         
     def get_label(self, hidden, key = None):
         label_fn = self._label_layer if key is None else self._label_layer[key]
@@ -431,16 +419,6 @@ class OutputLayer(nn.Module):
     def get_decision_with_value(self, logits):
         return get_decision_with_value(self._score_fn, logits)
 
-    def get_multilingual(self, get_label):
-        layer = self._label_layer if get_label else self._tag_layer
-        assert isinstance(layer, nn.ModuleDict)
-        corps = list(layer.keys())
-        for eid, lhs in enumerate(corps):
-            for rhs in corps[eid:]:
-                d = reduce_matrix(layer[lhs].weight, layer[rhs].weight, distance)
-                c = reduce_matrix(layer[lhs].weight, layer[rhs].weight, cosine)
-                yield lhs, rhs, d, c
-
     @property
     def message(self):
         messages = []
@@ -450,20 +428,13 @@ class OutputLayer(nn.Module):
             messages.append(self.message)
         return '\n'.join(messages)
 
-def distance(lhs, rhs):
-    diff = lhs - rhs
-    diff = (diff ** 2).sum(2)
-    return diff.sqrt() / lhs.shape[1]
 
-def cosine(lhs, rhs):
-    lr = (lhs * rhs).sum(2)
-    l2 = (lhs * lhs).sum(2)
-    r2 = (rhs * rhs).sum(2)
-    return lr / (l2 * r2)
-
-def reduce_matrix(lhs, rhs, fn): # [num, dim]
-    return fn(lhs.unsqueeze(1).detach(), rhs.unsqueeze(0).detach()).cpu().numpy()
-
+def simple_parameters(*shape):
+    h0 = torch.empty(*shape)
+    h0 = nn.Parameter(h0, requires_grad = True)
+    bound = 1 / math.sqrt(shape[-1])
+    init.uniform_(h0, -bound, bound)
+    return h0
 
 char_rnn_config = dict(embed_dim    = hidden_dim,
                        drop_out     = frac_4,
@@ -471,42 +442,37 @@ char_rnn_config = dict(embed_dim    = hidden_dim,
                        module       = rnn_module_type,
                        num_layers   = num_ori_layer,
                        trainable_initials = false_type)
-from models.utils import math, init, birnn_fwbw, fencepost, Bias
+from models.utils import math, init, birnn_fwbw, fencepost
 from models.utils import condense_helper, condense_left
 class PadRNN(nn.Module):
     def __init__(self,
                  num_chars,
                  attention_hint, # dims
-                 linear_dim, # 01+ fence_vote, activation
+                 linear_dim, # 01+ chunk_vote, activation
                  embed_dim,
-                 fence_dim,
+                 chunk_dim,
                  drop_out,
                  num_layers,
                  module, # num_layers, rnn_drop_out
                  rnn_drop_out,
                  trainable_initials,
-                 fence_vote = None,
+                 chunk_vote = None,
                  activation = None,
                  char_space_idx = None):
         super().__init__()
-        single_size = fence_dim // 2
+        single_size = chunk_dim // 2
         if num_layers:
-            self._fence_emb = module(embed_dim, single_size,
+            self._chunk_emb = module(embed_dim, single_size,
                                      num_layers    = num_layers,
                                      bidirectional = True,
                                      batch_first   = True,
                                      dropout = rnn_drop_out if num_layers > 1 else 0)
         else:
-            self._fence_emb = None
+            self._chunk_emb = None
         self._tanh = nn.Tanh()
-        bound = 1 / math.sqrt(single_size)
         if trainable_initials:
-            c0 = torch.empty(num_layers * 2, 1, single_size)
-            h0 = torch.empty(num_layers * 2, 1, single_size)
-            self._c0 = nn.Parameter(c0, requires_grad = True)
-            self._h0 = nn.Parameter(h0, requires_grad = True)
-            init.uniform_(self._c0, -bound, bound)
-            init.uniform_(self._h0, -bound, bound)
+            self._h0 = simple_parameters(num_layers * 2, 1, single_size)
+            self._c0 = simple_parameters(num_layers * 2, 1, single_size)
             self._initial_size = single_size
         else:
             self.register_parameter('_h0', None)
@@ -514,8 +480,7 @@ class PadRNN(nn.Module):
             self._initial_size = None
 
         if char_space_idx is None:
-            self._pad = nn.Parameter(torch.empty(1, 1, single_size), requires_grad = True)
-            init.uniform_(self._pad, -bound, bound)
+            self._pad = simple_parameters(1, 1, single_size)
         else:
             self._pad = char_space_idx
         self._stem_dp = nn.Dropout(drop_out)
@@ -525,10 +490,10 @@ class PadRNN(nn.Module):
 
         if attention_hint: # domain_and_subject is open
             if not isinstance(attention_hint, HParams): attention_hint = HParams(attention_hint)
-            self._domain = nn.Linear(fence_dim, embed_dim, bias = False) if attention_hint.get('boundary') else None
+            self._domain = nn.Linear(chunk_dim, embed_dim, bias = False) if attention_hint.get('boundary') else None
             self._subject_unit  = nn.Linear(embed_dim, embed_dim, bias = False) if attention_hint.unit else None
-            self._subject_state = nn.Linear(fence_dim, embed_dim, bias = False) if attention_hint.state else None
-            single_size = fence_dim // 2
+            self._subject_state = nn.Linear(chunk_dim, embed_dim, bias = False) if attention_hint.state else None
+            single_size = chunk_dim // 2
             if attention_hint.before:
                 self._subject_fw_b = nn.Linear(single_size, embed_dim, bias = False)
                 self._subject_bw_b = nn.Linear(single_size, embed_dim, bias = False)
@@ -550,39 +515,39 @@ class PadRNN(nn.Module):
             # self._subject_bias = Bias(embed_dim) # 0 ~ useless
 
         if linear_dim:
-            if fence_vote is None:
-                self._fence_vote = None
-                self._fence_l1 = nn.Linear(fence_dim, linear_dim)
+            if chunk_vote is None:
+                self._chunk_vote = None
+                self._chunk_l1 = nn.Linear(chunk_dim, linear_dim)
                 if linear_dim == 1:
-                    self._fence_l2 = self._fence_act = lambda x: x
+                    self._chunk_l2 = self._chunk_act = lambda x: x
                 else:
-                    self._fence_act = activation()
-                    self._fence_l2 = nn.Linear(linear_dim, 1)
+                    self._chunk_act = activation()
+                    self._chunk_l2 = nn.Linear(linear_dim, 1)
             else:
-                self._fence_act = activation()
-                from_unit, method = fence_vote.split('.')
+                self._chunk_act = activation()
+                from_unit, method = chunk_vote.split('.')
                 from_unit = from_unit == 'unit'
                 if method == 'dot':
-                    self._fence_l1 = nn.Linear(fence_dim, linear_dim)
+                    self._chunk_l1 = nn.Linear(chunk_dim, linear_dim)
                     if from_unit:
-                        self._fence_l2 = nn.Linear(embed_dim, linear_dim)
+                        self._chunk_l2 = nn.Linear(embed_dim, linear_dim)
                     else:
-                        self._fence_l2 = nn.Linear(fence_dim, linear_dim)
-                    method = self.predict_fence_2d_dot
+                        self._chunk_l2 = nn.Linear(chunk_dim, linear_dim)
+                    method = self.predict_chunk_2d_dot
                 elif method == 'cat':
                     if from_unit:
-                        self._fence_l1 = nn.Linear(fence_dim + embed_dim, linear_dim)
+                        self._chunk_l1 = nn.Linear(chunk_dim + embed_dim, linear_dim)
                     else:
-                        self._fence_l1 = nn.Linear(fence_dim << 1, linear_dim)
-                    self._fence_l2 = nn.Linear(linear_dim, 1)
-                    method = self.predict_fence_2d_cat
+                        self._chunk_l1 = nn.Linear(chunk_dim << 1, linear_dim)
+                    self._chunk_l2 = nn.Linear(linear_dim, 1)
+                    method = self.predict_chunk_2d_cat
                 else:
                     raise ValueError('Unknown method: ' + method)
-                self._fence_vote = from_unit, method
-        # fence_p: f->hidden [b, s+1, h]
-        # fence_c: u->hidden [b, s, h]
+                self._chunk_vote = from_unit, method
+        # chunk_p: f->hidden [b, s+1, h]
+        # chunk_c: u->hidden [b, s, h]
         # pxc: v->vote [b, s+1, s]
-        # fence: s->score [b, s+1] .sum() > 0
+        # chunk: s->score [b, s+1] .sum() > 0
 
     def get_h0c0(self, batch_size):
         if self._initial_size:
@@ -594,20 +559,20 @@ class PadRNN(nn.Module):
             h0c0 = None
         return h0c0
 
-    def pad_fwbw_hidden(self, fence_hidden, existence):
+    def pad_fwbw_hidden(self, chunk_hidden, existence):
         pad = self._stem_dp(self._pad)
         pad = self._tanh(pad)
-        return birnn_fwbw(fence_hidden, pad, existence)
+        return birnn_fwbw(chunk_hidden, pad, existence)
 
-    def domain_and_subject(self, fw, bw, fence_idx, unit_emb, fence_hidden):
+    def domain_and_subject(self, fw, bw, split_fn, unit_emb, chunk_hidden):
         if self._domain:
-            dom_emb = self._domain(fencepost(fw, bw, fence_idx))
+            dom_emb = self._domain(fencepost(fw, bw, split_fn()))
             dom_emb = self._stem_dp(dom_emb)
         else:
             dom_emb = None
         sub_emb = 0 #self._stem_dp(self._subject_bias())
         if self._subject_unit:  sub_emb = sub_emb + self._stem_dp(self._subject_unit(unit_emb))
-        if self._subject_state: sub_emb = sub_emb + self._stem_dp(self._subject_state(fence_hidden))
+        if self._subject_state: sub_emb = sub_emb + self._stem_dp(self._subject_state(chunk_hidden))
         if self._subject_fw_a:  sub_emb = sub_emb + self._stem_dp(self._subject_fw_a(fw[:, 1:]))
         if self._subject_bw_a:  sub_emb = sub_emb + self._stem_dp(self._subject_bw_a(bw[:, :-1]))
         if self._subject_fw_b:  sub_emb = sub_emb + self._stem_dp(self._subject_fw_b(fw[:, :-1]))
@@ -616,20 +581,20 @@ class PadRNN(nn.Module):
         if self._subject_bw_d:  sub_emb = sub_emb + self._stem_dp(self._subject_bw_d(bw[:, :-1] - bw[:, 1:]))
         return dom_emb, sub_emb
 
-    def forward(self, char_idx, fence = None, offset = None): # concat fence vectors
+    def forward(self, char_idx, chunk = None, offset = None): # concat chunk vectors
         batch_size, char_len = char_idx.shape
         char_emb = self._char_emb(char_idx)
         char_emb = self._stem_dp(char_emb)
-        fence_hidden, _ = self._fence_emb(char_emb, self.get_h0c0(batch_size))
-        if fence is None:
+        chunk_hidden, _ = self._chunk_emb(char_emb, self.get_h0c0(batch_size))
+        if chunk is None:
             helper = condense_helper(char_idx == self._pad, True, offset)
-            fence_hidden = fence_hidden.view(batch_size, char_len, 2, -1)
-            fw = fence_hidden[:, :, 0]
-            bw = fence_hidden[:, :, 1]
+            chunk_hidden = chunk_hidden.view(batch_size, char_len, 2, -1)
+            fw = chunk_hidden[:, :, 0]
+            bw = chunk_hidden[:, :, 1]
         else:    
             existence = char_idx > 0
-            fw, bw = birnn_fwbw(fence_hidden, self._tanh(self._pad), existence)
-            helper = condense_helper(fence, True, offset)
+            fw, bw = birnn_fwbw(chunk_hidden, self._tanh(self._pad), existence)
+            helper = condense_helper(chunk, True, offset)
         fw = condense_left(fw, helper)
         bw = condense_left(bw, helper)
         # select & concat: fw[:*-1] - fw[*1:] & bw...
@@ -639,36 +604,36 @@ class PadRNN(nn.Module):
     def diff_emb(fw, bw):
         return torch.cat([fw[:, 1:] - fw[:, :-1], bw[:, :-1] - bw[:, 1:]], dim = 2)
 
-    def predict_fence(self, fw, bw):
-        fence = torch.cat([fw, bw], dim = 2)
-        fence = self._fence_l1(fence)
-        fence = self._stem_dp(fence)
-        fence = self._fence_act(fence)
-        return self._fence_l2(fence).squeeze(dim = 2)
+    def predict_chunk(self, fw, bw):
+        chunk = torch.cat([fw, bw], dim = 2)
+        chunk = self._chunk_l1(chunk)
+        chunk = self._stem_dp(chunk)
+        chunk = self._chunk_act(chunk)
+        return self._chunk_l2(chunk).squeeze(dim = 2)
 
-    def predict_fence_2d_dot(self, fw, bw, hidden, seq_len): # TODO not act for unit
-        fence = torch.cat([fw, bw], dim = 2)
-        fence = self._fence_l1(fence)
-        fence = self._fence_act(self._stem_dp(fence))
-        unit = self._fence_l2(hidden)
-        unit = self._fence_act(self._stem_dp(unit))
-        vote = torch.bmm(fence, unit.transpose(1, 2)) # [b, s+1, s]
+    def predict_chunk_2d_dot(self, fw, bw, hidden, seq_len): # TODO not act for unit
+        chunk = torch.cat([fw, bw], dim = 2)
+        chunk = self._chunk_l1(chunk)
+        chunk = self._chunk_act(self._stem_dp(chunk))
+        unit = self._chunk_l2(hidden)
+        unit = self._chunk_act(self._stem_dp(unit))
+        vote = torch.bmm(chunk, unit.transpose(1, 2)) # [b, s+1, s]
         third_dim = torch.arange(unit.shape[1], device = hidden.device)
         third_dim = third_dim[None, None] < seq_len[:, None, None]
         third_dim = torch.where(third_dim, vote, torch.zeros_like(vote))
         return third_dim, third_dim.sum(dim = 2)
     
-    def predict_fence_2d_cat(self, fw, bw, hidden, seq_len):
-        fence = torch.cat([fw, bw], dim = 2)
-        _, fence_len, fence_dim = fence.shape
+    def predict_chunk_2d_cat(self, fw, bw, hidden, seq_len):
+        chunk = torch.cat([fw, bw], dim = 2)
+        _, chunk_len, chunk_dim = chunk.shape
         batch_size, seg_len, hidden_dim = hidden.shape
-        fence = fence[:, :, None].expand(batch_size, fence_len, seg_len, fence_dim)
-        hidden = hidden[:, None].expand(batch_size, fence_len, seg_len, hidden_dim)
-        vote = torch.cat([fence, hidden], dim = 3) # [b, s+1, s, e]
-        vote = self._fence_l1(vote)
+        chunk = chunk[:, :, None].expand(batch_size, chunk_len, seg_len, chunk_dim)
+        hidden = hidden[:, None].expand(batch_size, chunk_len, seg_len, hidden_dim)
+        vote = torch.cat([chunk, hidden], dim = 3) # [b, s+1, s, e]
+        vote = self._chunk_l1(vote)
         vote = self._stem_dp(vote)
-        vote = self._fence_act(vote)
-        vote = self._fence_l2(vote).squeeze(dim = 3)
+        vote = self._chunk_act(vote)
+        vote = self._chunk_l2(vote).squeeze(dim = 3)
         third_dim = torch.arange(seg_len, device = hidden.device)
         third_dim = third_dim[None, None] < seq_len[:, None, None]
         third_dim = torch.where(third_dim, vote, torch.zeros_like(vote))

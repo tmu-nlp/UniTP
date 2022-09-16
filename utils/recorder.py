@@ -260,7 +260,7 @@ class Recorder:
             checkpoint = torch.load(model_fname)
             model_state = checkpoint['model_state_dict']
             missing_keys, unexpected_keys = model.load_state_dict(model_state, strict = False)
-            if not all(x.startswith('_word_emb.') and x.endswith('._main_emb_layer.weight') for x in missing_keys) or unexpected_keys:
+            if not all(x.startswith('_input_emb.') and x.endswith('._main_emb_layer.weight') for x in missing_keys) or unexpected_keys:
                 for mk in missing_keys:
                     mks = set(mk.split('.'))
                     if unexpected_keys:

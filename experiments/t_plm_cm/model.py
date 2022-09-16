@@ -1,4 +1,4 @@
-from models.accp import BaseRnnParser, model_type
+from models.accp import _CM, model_type
 from utils.types import word_dim, num_ctx_layer_0, frac_0
 from models.plm import subword_proc, XLNetLeaves
 
@@ -13,7 +13,7 @@ model_type = model_type.copy()
 model_type['input_layer'] = xlnt_leaves_config
 model_type['model_dim']   = word_dim
 
-class ContinuousXLNetTree(BaseRnnParser):
+class ContinuousXLNetTree(_CM):
     def __init__(self,
                  model_dim,
                  paddings,

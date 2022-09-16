@@ -2,30 +2,9 @@ C_PTB = 'ptb'
 C_CTB = 'ctb'
 C_KTB = 'ktb'
 C_NPCMJ = 'npcmj'
-C_ABSTRACT = 'continuous'
 E_CONTINUE = C_PTB, C_CTB, C_KTB, C_NPCMJ
 
-from utils.types import O_LFT, O_RGT
-multilingual_binarization = {
-    C_PTB: {O_LFT: 0.15, O_RGT: 0.85},
-    C_CTB: {O_LFT: 0.2, O_RGT: 0.8},
-    C_KTB: {O_LFT: 0.7, O_RGT: 0.3},
-    C_NPCMJ: {O_LFT: 0.7, O_RGT: 0.3},
-}
-
-from utils.param_ops import change_key
-def select_corpus(data_config, corpus_name):
-    assert C_ABSTRACT in data_config
-    if corpus_name is None:
-        config = change_key(data_config, C_ABSTRACT, *E_CONTINUE)
-        if 'binarization' in config:
-            for corp_name, binarization in multilingual_binarization.items():
-                data_config[corp_name]['binarization'] = binarization
-    else:
-        assert corpus_name in E_CONTINUE
-        change_key(data_config, C_ABSTRACT, corpus_name)
-
-from data.io import make_call_fasttext, check_fasttext, check_vocab, split_dict
+from data.io import make_call_fasttext, check_vocab, split_dict
 build_params = {C_PTB: split_dict('2-21',             '22',      '23'    ),
                 C_CTB: split_dict('001-270,440-1151', '301-325', '271-300'),
                 C_KTB: split_dict('300',              '0-14',    '15-29'),
@@ -34,28 +13,32 @@ build_params = {C_PTB: split_dict('2-21',             '22',      '23'    ),
 ft_bin = {C_PTB: 'en', C_CTB: 'zh', C_KTB: 'ja', C_NPCMJ: 'ja'}
 call_fasttext = make_call_fasttext(ft_bin)
 
-from utils.types import false_type, true_type, binarization, frac_close_0
-from utils.types import train_batch_size, train_max_len, train_bucket_len, vocab_size, trapezoid_height
-nccp_data_config = dict(vocab_size       = vocab_size,
-                        binarization     = binarization,
-                        batch_size       = train_batch_size,
-                        max_len          = train_max_len,
-                        bucket_len       = train_bucket_len,
-                        with_ftags       = false_type,
-                        unify_sub        = true_type,
-                        sort_by_length   = false_type,
-                        nil_as_pads      = true_type,
-                        trapezoid_height = trapezoid_height)
+from utils.types import make_parse_data_config, make_parse_factor, make_beta, F_CNF, F_SENTENCE
+from utils.types import true_type, trapezoid_height, token_type, K_CORP
 
-accp_data_config = dict(vocab_size       = vocab_size,
-                        batch_size       = train_batch_size,
-                        balanced         = frac_close_0,
-                        max_len          = train_max_len,
-                        bucket_len       = train_bucket_len,
-                        unify_sub        = true_type,
-                        sort_by_length   = false_type)
+def nccp_factor(*level_left_right):
+    return make_parse_factor(binarization = make_beta(*level_left_right))
+
+nccp_data_config = make_parse_data_config()
+nccp_data_config['nil_pad'] = true_type
+nccp_data_config['condense_per'] = trapezoid_height
+nccp_data_config[K_CORP] = {
+    C_PTB: nccp_factor(F_SENTENCE, F_CNF, 0.15),
+    C_CTB: nccp_factor(F_SENTENCE, F_CNF, 0.2),
+    C_KTB: nccp_factor(F_SENTENCE, F_CNF, 0.7),
+    C_NPCMJ: nccp_factor(F_SENTENCE, F_CNF, 0.7)
+}
+
+accp_data_config = make_parse_data_config()
+accp_data_config[K_CORP] = {
+    C_PTB: make_parse_factor(token = token_type),
+    C_CTB: make_parse_factor(token = token_type),
+    C_KTB: make_parse_factor(token = token_type),
+    C_NPCMJ: make_parse_factor(token = token_type)
+}
 
 from utils.str_ops import StringProgressBar, cat_lines
+from utils.shell_io import byte_style
 from sys import stderr
 from os.path import join, dirname
 from os import listdir
@@ -63,7 +46,7 @@ from contextlib import ExitStack
 from collections import Counter, defaultdict, namedtuple
 
 from nltk.tree import Tree
-from data.io import SourcePool, distribute_jobs, post_build, get_corpus
+from data.io import SourcePool, post_build, get_corpus
 from random import seed
 
 def gen_trees(fpath, keep_str):
@@ -104,7 +87,6 @@ class CorpusReader:
 
     def break_corpus(self, n_frag = 300, rand_seed = 31415926, n_samples = 3):
         from tempfile import TemporaryDirectory
-        from utils.shell_io import byte_style
         src_files = self.fileids()
         src_files.sort() # ensure file order
         fpath = TemporaryDirectory() # persists til pid ends
@@ -169,22 +151,29 @@ class CorpusReader:
 from utils.types import M_TRAIN
 def select_and_split_corpus(corp_name, corp_path,
                             train_set, devel_set, test_set):
+    from data.continuous import Signal
+    Signal.set_binary()
+    Signal.set_multib()
     if corp_name == C_PTB:
         folder_pattern = lambda x: f'{x:02}' # 23/wsj_0000.mrg
         from nltk.corpus import BracketParseCorpusReader
         reader = BracketParseCorpusReader(corp_path, r".*/wsj_.*\.mrg")
         get_fileid = dirname
+        from_corpus = Signal.from_ptb
     else:
         folder_pattern = lambda x: f'{x:04}' # /xxxx_0000.xx
         reader = CorpusReader(corp_path)
         if corp_name in (C_KTB, C_NPCMJ):
+            from_corpus = Signal.from_ktb
             reader.break_corpus(int(train_set)); train_set = '__rest__'
+        else:
+            from_corpus = Signal.from_ctb
         get_fileid = lambda fn: fn[5:-3]
 
     get_fileids = lambda ds: (fn for fn in reader.fileids() if get_fileid(fn) in ds)
     if train_set == '__rest__':
         train_set = set(get_fileid(fn) for fn in reader.fileids())
-    return reader, get_corpus(train_set, devel_set, test_set, folder_pattern, get_fileids)
+    return reader, get_corpus(train_set, devel_set, test_set, folder_pattern, get_fileids), from_corpus
 
 VocabCounters = namedtuple('VocabCounters', 'length, word, tag, label, xtype')
 build_counters = lambda: VocabCounters(Counter(), Counter(), Counter(), Counter(), Counter())
@@ -197,35 +186,28 @@ def build(save_to_dir,
           test_set,
           **kwargs):
 
-    (reader, corpus) = select_and_split_corpus(corp_name, corp_path, train_set, devel_set, test_set)
+    (reader, fileid_split, from_corpus) = select_and_split_corpus(corp_name, corp_path, train_set, devel_set, test_set)
+    corpus = []
+    for n, fs in fileid_split.items():
+        for f in fs:
+            corpus.append((n, f))
 
-    from time import sleep
     from utils import do_nothing
-    from utils.types import F_RAND_CON, num_threads
-    from utils.str_ops import StringProgressBar
-    from utils.shell_io import byte_style
-    from multiprocessing import Process, Queue # seamless with threading.Thread
+    from utils.types import F_RANDOM
+    from data.mp import Rush, Process
     class WorkerX(Process):
         def __init__(self, *args):
             Process.__init__(self)
             self._args = args
 
         def run(self):
-            from data.continuous import Signal
             from data.continuous.multib import get_tree_from_signals as multib_tree
             from data.continuous.binary import get_tree_from_signals as binary_tree, X_RGT
-            Signal.set_binary()
-            Signal.set_multib()
-            i, q, reader, fileids = self._args
+            i, q, fileids, reader = self._args
             inst_cnt = n_proceed = l_estimate = 0
             n_fileid = len(fileids)
             counters = defaultdict(build_counters)
             err_cnf, err_conversion = [], []
-            dx_fn = {
-                C_PTB: Signal.from_ptb,
-                C_CTB: Signal.from_ctb,
-                C_KTB: Signal.from_ktb,
-                C_NPCMJ: Signal.from_ktb}[corp_name]
 
             for eid, (ds, fn) in enumerate(fileids):
                 trees = reader.parsed_sents(fn)
@@ -237,9 +219,9 @@ def build(save_to_dir,
                     br = []
                     q.put((i, n_estimate) if n_estimate != l_estimate else i)
                     try:
-                        dx = dx_fn(tree)
-                        bl, bx = dx.binary(F_RAND_CON)
-                        ml, ms = dx.multib()
+                        dx = from_corpus(tree)
+                        bl, bx = dx.binary(F_RANDOM)
+                        ml, ms = dx.multib(joint = False)
                         for xtype in bx:
                             br.append([x & X_RGT for x in xtype])
                     except:
@@ -249,13 +231,13 @@ def build(save_to_dir,
                     wd = dx.word
                     tg = dx.tag
                     try:
-                        btree, warning = binary_tree(wd, tg, bl, br, word_fn = do_nothing)
-                        if btree != tree or warning:
-                            err_conversion.append((fn, eid, warning)); safe_conversion = False
-                        if multib_tree(wd, tg, ml, ms, word_fn = do_nothing) != tree:
-                            err_conversion.append((fn, eid, None)); safe_conversion = False
+                        btree = binary_tree(wd, tg, bl, br, word_fn = do_nothing)
+                        # if  != tree:
+                        #     err_conversion.append((fn, eid)); safe_conversion = False
+                        if multib_tree(wd, tg, ml, ms, word_fn = do_nothing) != btree:
+                            err_conversion.append((fn, eid)); safe_conversion = False
                     except:
-                        err_conversion.append((fn, eid, None))
+                        err_conversion.append((fn, eid))
                         safe_conversion = False
                     if safe_conversion:
                         counter.word.update(wd)
@@ -266,50 +248,30 @@ def build(save_to_dir,
                         inst_cnt += 1
                         counter.length[dx.max_height] += 1
 
-            q.put((inst_cnt, dict(counters), err_cnf, err_conversion))
-
-    num_threads = min(num_threads, len(corpus))
-    workers = distribute_jobs(corpus, num_threads)
-    q = Queue()
-    for i in range(num_threads):
-        w = WorkerX(i, q, reader, workers[i])
-        w.start()
-        workers[i] = w
+            q.put((i, inst_cnt, dict(counters), err_cnf, err_conversion))
 
     err_cnf, err_conversion = [], []
-    tree_cnt = thread_join_cnt = 0
     counters = defaultdict(build_counters)
-    desc = f'Collecting vocabulary from {num_threads} threads ['
-    with StringProgressBar.segs(num_threads, prefix = desc, suffix = ']') as qbar:
-        while True:
-            if q.empty():
-                sleep(0.01)
+    rush = Rush(WorkerX, corpus, reader)
+    def receive(t, qbar):
+        if isinstance(t, tuple):
+            if len(t) == 2:
+                tid, n_estimate = t
+                qbar.update(tid, total = n_estimate)
+                qbar.update(tid)
             else:
-                if isinstance(t := q.get(), tuple):
-                    if len(t) == 2:
-                        tid, n_estimate = t
-                        qbar.update(tid, total = n_estimate)
-                        qbar.update(tid)
-                    else:
-                        thread_join_cnt += 1
-                        tc, vc, erc, erv = t
-                        for ds, ss in vc.items():
-                            ds = counters[ds]
-                            for dst, src in zip(ds, ss):
-                                dst.update(src)
-                        tree_cnt += tc
-                        err_cnf.extend(erc)
-                        err_conversion.extend(erv)
-                        suffix = f'] {thread_join_cnt} ended.'
-                        qbar.desc = desc, suffix
-                        if thread_join_cnt == num_threads:
-                            break
-                else:
-                    qbar.update(t)
-        for w in workers:
-            w.join()
-        suffix = '] ' + byte_style(f'✔ {tree_cnt} trees.', '2')
-        qbar.desc = desc, suffix
+                i, tc, vc, erc, erv = t
+                for ds, ss in vc.items():
+                    ds = counters[ds]
+                    for dst, src in zip(ds, ss):
+                        dst.update(src)
+                err_cnf.extend(erc)
+                err_conversion.extend(erv)
+                return i, tc
+        else:
+            qbar.update(t)
+    rush.mp_while(False, receive, 'Collecting vocabulary')
+
     if err_cnf:
         desc = byte_style(f'✗ {len(err_cnf)}', '1')
         desc += ' errors during CNF (KTB/NPCMJ has 3 sentences, e.g., \'* *** * ***\', in ver. 202202).'

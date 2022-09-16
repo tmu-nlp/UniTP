@@ -9,8 +9,8 @@ model_type['model_dim']        = word_dim
 model_type['char_rnn']         = char_rnn_config
 model_type['word_emb']         = input_config
 model_type['use']              = dict(char_rnn = false_type, word_emb = true_type)
-model_type['contextual_layer'] = contextual_config
-model_type['combine_static']   = combine_static_type
+model_type['contextualize'] = contextual_config
+model_type['combine_emb_and_cxt']   = combine_static_type
 
 class DiscoRnnTree(InputLayer, BaseRnnParser):
     def __init__(self, *args, **kwargs):

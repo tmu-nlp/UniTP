@@ -1,70 +1,49 @@
-from data.penn import PennReader
-from data.penn_types import C_ABSTRACT, C_KTB, nccp_data_config
-from data.penn_types import select_and_split_corpus, select_corpus
-from utils.types import M_TRAIN, M_DEVEL, M_TEST
-from utils.param_ops import HParams
-from utils.shell_io import byte_style
-from data.backend import pre_word_base, post_word_base
+from data.penn_types import E_CONTINUE, nccp_data_config
+from experiments.t_cb.model import CB, model_type
+from experiments.t_cb.operator import CBOperator, train_type
 
-from experiments.t_cb.model import ContinuousRnnTree, model_type
-from experiments.t_cb.operator import PennOperator, train_type
+CORPORA = set(E_CONTINUE)
 
 def get_configs(recorder = None):
     if recorder is None:
-        return {C_ABSTRACT: nccp_data_config}, model_type, train_type
+        return nccp_data_config, model_type, train_type
+    
+    from data.penn import PennReader
+    from data.utils import post_word_base
+    from utils.types import M_TRAIN, K_CORP
+    from utils.param_ops import HParams
     
     data_config, model_config, train_config, _ = recorder.task_specs()
     readers = {}
-    chelper = pre_word_base(model_config)
-    train_cnf, non_train_cnf = {}, {}
-    for corp_name in data_config:
-        penn = HParams(data_config[corp_name], fallback_to_none = True)
-        if penn.trapezoid_height:
-            specs = select_and_split_corpus(corp_name,
-                                            penn.source_path,
-                                            penn.data_splits.train_set,
-                                            penn.data_splits.devel_set,
-                                            penn.data_splits.test_set)
-            data_splits = {k:v for k,v in zip((M_TRAIN, M_DEVEL, M_TEST), specs[-1])}
-            trapezoid_specs = specs[:-1] + (data_splits, penn.trapezoid_height, corp_name == C_KTB)
-            from data.continuous.binary.trapezoid.dataset import TrapezoidalDM as dm_cls
-            prompt = f'Use trapezoidal data (stratifying height: {penn.trapezoid_height})', '2'
-        else:
-            trapezoid_specs = None
-            from data.continuous.binary.triangle.dataset import TriangularDM as dm_cls
-            prompt = f'Use triangular data (stratifying height: +inf)', '3'
-        
-        readers[corp_name] = PennReader(
-            penn.data_path,
-            penn.vocab_size,
-            True, # load_label
-            penn.unify_sub,
-            penn.with_ftags,
-            penn.nil_as_pads,
-            trapezoid_specs,
-            chelper)
-        train_cnf[corp_name] = cnf = penn.binarization._nested
-        non_train_cnf[corp_name] = {max(cnf, key = cnf.get): 1}
-    print(byte_style(*prompt))
+    penn = HParams(data_config)
     
-    def get_datasets(mode):
+    for corp_name, dc in data_config[K_CORP].items():
+        readers[corp_name] = PennReader(corp_name,
+            HParams(dc, fallback_to_none = True),
+            penn.unify_sub,
+            penn.nil_pad)
+                
+    def get_datasets(mode, new_factor = None):
         datasets = {}
         for corp_name, reader in readers.items():
             if mode == M_TRAIN:
-                datasets[corp_name] = reader.batch(
-                    M_TRAIN,
-                    penn.batch_size,
-                    penn.bucket_len,
-                    train_cnf[corp_name],
-                    max_len = penn.max_len,
-                    sort_by_length = penn.sort_by_length)
+                if (train_ds := reader.loaded_ds.get(mode)) is None:
+                    datasets[corp_name] = reader.binary(
+                        M_TRAIN, penn.condense_per, penn.batch_size, penn.bucket_len, 0, penn.max_len,
+                        penn.sort_by_length, new_factor[corp_name] if new_factor else None)
+                else:
+                    from data.dataset import post_batch
+                    train_ds.reset_binary_factor(*new_factor[corp_name])
+                    datasets[corp_name] = post_batch(mode, train_ds, penn.sort_by_length, penn.bucket_len, penn.batch_size)
             else:
-                datasets[corp_name] = reader.batch(
-                    mode,
-                    penn.batch_size << 1, 0,
-                    non_train_cnf[corp_name])
+                datasets[corp_name] = reader.binary(mode, penn.condense_per, penn.batch_size << 1, 0)
         return datasets
+        
+    if not penn.condense_per:
+        from data.continuous.binary.mp import TriangularDM as dm_cls
+    else:
+        from data.continuous.binary.mp import TrapezoidalDM as dm_cls
 
-    model, i2vs = post_word_base(ContinuousRnnTree, model_config, data_config, readers)
+    model, i2vs = post_word_base(CB, model_config, data_config[K_CORP], readers)
     get_dm = lambda num_threads: dm_cls(penn.batch_size << 1, i2vs, num_threads)
-    return PennOperator(model, get_datasets, recorder, i2vs, get_dm, recorder.evalb, train_config)
+    return CBOperator(model, get_datasets, recorder, i2vs, get_dm, recorder.evalb, train_config)

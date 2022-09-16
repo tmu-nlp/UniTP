@@ -1,2 +1,2 @@
 from collections import namedtuple
-StemOutput = namedtuple('StemOutput', 'embeddings, existence, extension')
+StemOutput = namedtuple('StemOutput', 'embedding, existence, segment, extension')

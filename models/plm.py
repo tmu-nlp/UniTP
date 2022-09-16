@@ -166,7 +166,7 @@ _penn_to_xlnet = {'``': '"', "''": '"'}
 from tqdm import tqdm
 from unidecode import unidecode
 from multiprocessing import Pool
-from data.backend import TextHelper
+from data.utils import TextHelper
 class PreDatasetHelper(TextHelper):
     def __init__(self, text, *args):
         with Pool() as p:

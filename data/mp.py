@@ -1,46 +1,71 @@
-from multiprocessing import Process, Queue, TimeoutError
+from multiprocessing import Pool, Process, Queue, TimeoutError
 from math import ceil
 from time import time, sleep
 
 from sys import stderr
-
-from data import before_to_seq
 from os.path import join, dirname
 from utils.shell_io import concatenate, byte_style
 
 t_sleep_deep = 0.1
 t_sleep_shallow = 0.001
+t_awake = 0.00001
 
+class Rush:
+    def __init__(self, worker_cls, jobs, *args):
+        from data.io import distribute_jobs
+        from utils.types import num_threads
+        num_threads = min(num_threads, len(jobs))
+        jobs = distribute_jobs(jobs, num_threads)
+        self._args = Queue(), worker_cls, num_threads, jobs, args
 
-def mp_workers(works, q, core_fn, num_returns_from_core_fn, desc = None):
-    returns = tuple([] for _ in range(num_returns_from_core_fn))
-    from tqdm import tqdm
-    from utils.file_io import DelayedKeyboardInterrupt
-    with tqdm(desc = desc) as qbar:
-        try:
-            while any(x.is_alive() for x in works):
-                if q.empty():
-                    sleep(0.00001)
-                else:
-                    for fr, rl in zip(core_fn(*q.get()), returns):
-                        rl.append(fr)
-                    qbar.update(1)
-            qbar.desc = desc + ' done'
-        except KeyboardInterrupt as ex:
-            with DelayedKeyboardInterrupt():
-                for x in works:
-                    x.kill()
-            raise ex
-    return returns
+    def mp_while(self, stable_total, receive_fn = None, prefix = 'Load'):
+        from utils.str_ops import StringProgressBar
+        from utils.file_io import DelayedKeyboardInterrupt
+        if receive_fn is None:
+            receive_fn = self.receive
+        start_time = time()
+        tree_count = thread_join_count = 0
+        q, worker_cls, num_threads, jobs, args = self._args
+        desc = prefix + f' from {num_threads} threads ['
+        with StringProgressBar.segs(num_threads, prefix = desc, suffix = ']') as qbar:
+            try:
+                for i in range(num_threads):
+                    if stable_total:
+                        qbar.update(i, total = len(jobs[i]))
+                    jobs[i] = w = worker_cls(i, q, jobs[i], *args)
+                    w.start()
+                while True:
+                    if q.empty():
+                        sleep(t_awake)
+                    elif (status := receive_fn(q.get(), qbar)) is not None:
+                        i, tree_cnt = status
+                        jobs[i].join()
+                        thread_join_count += 1
+                        tree_count += tree_cnt
+                        suffix = f'] {thread_join_count} ended.'
+                        qbar.desc = desc, suffix
+                        if thread_join_count == num_threads:
+                            break
+            except (KeyboardInterrupt, Exception) as ex:
+                with DelayedKeyboardInterrupt():
+                    for x in jobs:
+                        x.kill()
+                raise ex
+            suffix = '] ' + byte_style(f'✔ {tree_count} trees. ({time() - start_time:.1f} sec.)', '2')
+            qbar.desc = desc, suffix
+        return tree_count
+
+    def receive(self, t, qbar):
+        raise NotImplementedError()
 
 
 class D2T(Process):
-    def __init__(self, idx, in_q, out_q, multi_corp, vocabs, tree_gen_fn, cat_dir):
+    def __init__(self, idx, in_q, out_q, vocabs, tree_gen_fn, cat_dir):
         super().__init__()
-        self._id_q_vocabs_fn = idx, in_q, out_q, multi_corp, vocabs, tree_gen_fn, cat_dir
+        self._id_q_vocabs_fn = idx, in_q, out_q, vocabs, tree_gen_fn, cat_dir
 
     def run(self):
-        idx, in_q, out_q, multi_corp, vocabs, tree_gen_fn, cat_dir = self._id_q_vocabs_fn
+        idx, in_q, out_q, vocabs, tree_gen_fn, cat_dir = self._id_q_vocabs_fn
         t_sleep = t_sleep_shallow
         last_wake = time()
         while True:
@@ -60,7 +85,7 @@ class D2T(Process):
                 if signal < 0:
                     break
             key, tensor_args, corp_key = signal
-            if multi_corp:
+            if isinstance(vocabs, dict):
                 i2vs_args = vocabs[corp_key] + tensor_args
             else:
                 i2vs_args = vocabs + tensor_args
@@ -89,15 +114,10 @@ class DM:
         rout_q = Queue()
         self._q_receiver = rin_q, rout_q, None
         fpath = dirname(fdata) if fdata and cat_files else None
-
-        if multi_corp := isinstance(vocabs, dict):
-            vocabs = {k: before_to_seq(v._nested) for k,v in vocabs.items()}
-        else:
-            vocabs = before_to_seq(vocabs._nested)
         q_workers = []
         for seg_id in range(num_workers):
             in_q = Queue()
-            d2t = D2T(seg_id, in_q, rin_q, multi_corp, vocabs, self.tree_gen_fn, fpath)
+            d2t = D2T(seg_id, in_q, rin_q, vocabs, self.tree_gen_fn, fpath)
             d2t.start()
             q_workers.append((in_q, d2t))
         self._mp_workers = q_workers, ceil(batch_size / num_workers), batch_size, fdata, cat_files

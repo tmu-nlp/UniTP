@@ -1,12 +1,10 @@
-from nltk.util import pad_sequence
 import torch
 from torch import nn, Tensor
+from collections import namedtuple
 from models.types import activation_type, logit_type
-
 from utils.types import orient_dim, hidden_dim, num_ori_layer, true_type, frac_2, frac_4, frac_5, BaseWrapper, BaseType
-from visualization import DiscoThresholds
-from random import random
-from sys import stderr
+
+DiscoThresholds = namedtuple('DiscoThresholds', 'orient, joint, direct')
 
 def disco_orient_to_dict(x):
     comps = {}
@@ -336,6 +334,7 @@ class DiscoStem(nn.Module):
                 if prev.shape == curr.shape and (prev == curr).all() or pprev is not None and pprev.shape == curr.shape and (pprev == curr).all():
                     break
                 elif l_cnt == max_iter_n - 1:
+                    from sys import stderr
                     print(f'WARNING: Action layers overflow maximun {l_cnt}', file = stderr, end = '')
                     break
             joint = jnt_fn(unit_emb if local_joint else rd_hidden)
@@ -383,7 +382,7 @@ class DiscoStem(nn.Module):
             # segment    = torch.stack(segment,    dim = 0)
             seg_length = torch.stack(seg_length, dim = 1)
 
-        return StemOutput(embeddings, existence, (right_direc, joint, shuffled_right_direc, shuffled_joint, segment, seg_length))
+        return StemOutput(embeddings, existence, segment, (right_direc, joint, shuffled_right_direc, shuffled_joint, seg_length))
 
     @property
     def orient_bits(self):

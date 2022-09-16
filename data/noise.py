@@ -1,4 +1,4 @@
-from data.backend import LengthOrderedDataset
+from data.dataset import LengthOrderedDataset
 from utils.str_ops import write_ptr, delete_ptr, swap_ptr, is_numeric
 import numpy as np
 import torch
@@ -164,3 +164,75 @@ class CharDataset(LengthOrderedDataset):
             field_columns[f] = torch.as_tensor(column, dtype = torch.bool if f.endswith('_validity') else torch.long, device = device)
         field_columns['noise_type'] = noise_type # no need to be on GPU
         return field_columns
+
+
+
+class SequenceBaseReader:
+    def __init__(self, i2vs):
+        super().__init__(i2vs, {}, {})
+
+def drop_word(wi, indices, ws = None):
+    new_wi = []
+    if ws is None:
+        for sid, idx in enumerate(wi):
+            if sid not in indices:
+                new_wi.append(idx)
+        return new_wi
+            
+    new_ws = [0]
+    for sid, (start, end) in enumerate(zip(ws, ws[1:])):
+        if sid not in indices:
+            new_wi.extend(wi[start:end])
+            new_ws.append(end - start + new_ws[-1])
+    return new_wi, new_ws
+
+def insert_word(wi, indices, values, ws = None):
+    new_wi = []
+    head_v = 0
+    if ws is None:
+        for start, idx in enumerate(wi):
+            if start in indices:
+                new_wi.append(values[head_v])
+                head_v += 1
+            new_wi.append(idx)
+        if start + 1 in indices:
+            new_wi.append(values[head_v])
+        return new_wi
+
+    new_ws = [0]
+    for sid, (start, end) in enumerate(zip(ws, ws[1:] + [None])):
+        if sid in indices:
+            wm = values[head_v]
+            new_wi.extend(wm)
+            new_ws.append(len(wm) + new_ws[-1])
+            head_v += 1
+        # original
+        if end:
+            new_wi.extend(wi[start:end])
+            new_ws.append(end - start + new_ws[-1])
+    # import pdb; pdb.set_trace()
+    return new_wi, new_ws
+
+def substitute_word(wi, indices, values, ws = None):
+    new_wi = []
+    head_v = 0
+    if ws is None:
+        for start, idx in enumerate(wi):
+            if start in indices:
+                new_wi.append(values[head_v])
+                head_v += 1
+            else:
+                new_wi.append(idx)
+        return new_wi
+
+    new_ws = [0]
+    for sid, (start, end) in enumerate(zip(ws, ws[1:])):
+        if sid in indices:
+            wm = values[head_v]
+            new_wi.extend(wm)
+            new_ws.append(len(wm) + new_ws[-1])
+            head_v += 1
+        else:
+            new_wi.extend(wi[start:end])
+            new_ws.append(end - start + new_ws[-1])
+    return new_wi, new_ws

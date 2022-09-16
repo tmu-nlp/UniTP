@@ -1,14 +1,11 @@
-from utils.types import M_TRAIN, M_DEVEL, M_TEST, F_RAND_CON, beta_tuple
+from utils.types import M_TRAIN, M_DEVEL, M_TEST
 from data.io import load_i2vs
+from data import USUB
 
-from data.backend import WordBaseReader, post_batch, defaultdict, CharTextHelper, add_char_from_word
+from data.utils import ParsingReader
+from data.dataset import post_batch
 
-def beta(k, v):
-    if k == F_RAND_CON:
-        return v if isinstance(v, (tuple, bool)) else beta_tuple(v)
-    return v
-
-class DiscoReader(WordBaseReader):
+class DiscoReader(ParsingReader):
     def __init__(self,
                  vocab_dir,
                  vocab_size  = None,
@@ -17,13 +14,11 @@ class DiscoReader(WordBaseReader):
         self._load_options = True, extra_text_helper, False
         vocabs = 'word tag label'
         i2vs = load_i2vs(vocab_dir, vocabs.split())
-        if extra_text_helper is CharTextHelper:
-            add_char_from_word(i2vs)
         oovs = {}
         if unify_sub:
             labels = [t for t in i2vs['label'] if t[0] not in '#_']
             oovs['label'] = len(labels)
-            labels.append('_SUB')
+            labels.append(USUB)
             i2vs['label'] = labels
         super(DiscoReader, self).__init__(vocab_dir, vocab_size, True, i2vs, oovs)
 
@@ -66,7 +61,7 @@ class DiscoReader(WordBaseReader):
 
 from sys import stderr
 from utils.file_io import basename
-class DiscoMultiReader(WordBaseReader):
+class DiscoMultiReader(ParsingReader):
     def __init__(self,
                  vocab_dir,
                  has_greedy_sub,
@@ -77,8 +72,6 @@ class DiscoMultiReader(WordBaseReader):
                  word_trace = False,
                  extra_text_helper = None):
         i2vs = load_i2vs(vocab_dir, 'word tag label'.split())
-        if extra_text_helper is CharTextHelper:
-            add_char_from_word(i2vs)
         oovs = {}
         labels = i2vs['label']
         if has_greedy_sub:
@@ -87,7 +80,7 @@ class DiscoMultiReader(WordBaseReader):
         if unify_sub:
             labels = [t for t in labels if t[0] not in '#_']
             oovs['label'] = len(labels)
-            labels.append('_SUB' if has_greedy_sub else '#SUB')
+            labels.append(USUB if has_greedy_sub else '#SUB')
             i2vs['label'] = labels
         elif not has_greedy_sub: # MAry does not have binarization
             i2vs['label'] = [t for t in labels if t[0] != '_']

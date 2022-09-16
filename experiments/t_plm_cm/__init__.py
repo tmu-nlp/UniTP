@@ -1,20 +1,22 @@
-from data.penn import MultiReader
-from data.penn_types import C_PTB, accp_data_config, select_and_split_corpus
+from data.penn_types import E_CONTINUE, C_PTB, accp_data_config, select_and_split_corpus
 from utils.types import M_TRAIN
 from utils.param_ops import HParams, get_sole_key
 
 from models.plm import XLNetDatasetHelper
 from experiments.t_plm_cm.model import ContinuousXLNetTree, model_type
-from experiments.t_cm.operator import MultiOperator, train_type
+from experiments.t_cm.operator import CMOperator, train_type
 from experiments.t_plm_cb import get_any_penn
+
+CORPORA = set(E_CONTINUE)
 
 def get_configs(recorder = None):
     if recorder is None:
-        return {C_PTB: accp_data_config}, model_type, train_type
+        return accp_data_config, model_type, train_type
     
     data_config, model_config, train_config, _ = recorder.task_specs()
     penn = HParams(get_any_penn(**data_config), fallback_to_none = True)
 
+    from data.penn import MultiReader
     (corpus_reader, get_fnames, _,
      data_splits) = select_and_split_corpus(get_sole_key(data_config), 
                                             penn.source_path,
@@ -46,4 +48,4 @@ def get_configs(recorder = None):
     task_params = {pname: reader.get_to_model(pname) for pname in ('num_tags', 'num_labels', 'paddings')}
 
     model = ContinuousXLNetTree(**model_config, **task_params)
-    return MultiOperator(model, get_datasets, recorder, reader.i2vs, recorder.evalb, train_config)
+    return CMOperator(model, get_datasets, recorder, reader.i2vs, recorder.evalb, train_config)

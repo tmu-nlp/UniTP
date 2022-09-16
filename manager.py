@@ -8,7 +8,7 @@ from os import mkdir, listdir, environ
 from os.path import isdir, isfile, join, abspath
 from utils.yaml_io import save_yaml, load_yaml
 from utils.file_io import create_join, DelayedKeyboardInterrupt, link
-from utils.types import fill_placeholder
+from utils.types import fill_placeholder, K_CORP
 from utils.param_ops import zip_nt_params, iter_zipped_nt_params, change_key
 from utils.str_ops import strange_to
 from utils.shell_io import byte_style
@@ -150,6 +150,7 @@ class Manager:
                         print('    ' + info, file = print_file)
 
     def check_data(self, build_if_not_yet = False, num_thread = 1, print_file = sys.stderr):
+        from data.io import check_fasttext
         modified = []
         ready_paths = {}
         verbose = defaultdict(list)
@@ -171,49 +172,47 @@ class Manager:
                 verbose[corp_name].append(f'Invalid source_path {sp}')
                 continue
 
-            lp = datum['local_path']
-            lp = join('data', corp_name) if lp is None else lp.strip()
-            elp = join(self._work_dir, lp)
-            if not isdir(elp):
+            if isinstance(lp := datum['local_path'], str) and ((lp_exists := isdir(lp)) or isdir(join(self._work_dir, lp))):
+                if lp_exists:
+                    ep = lp
+                else:
+                    ep = join(self._work_dir, lp)
+            else:
                 lp = join('data', corp_name)
-                elp = join(self._work_dir, lp)
+                ep = join(self._work_dir, lp)
                 
-            m = self._dat_modules[corp_name]
-            ft_ready = m.check_fasttext(elp)
             ds_ready = False
-            sizes = datum['valid_sizes']
-            if sizes:
+            ft_ready = check_fasttext(ep)
+            m = self._dat_modules[corp_name]
+            if sizes := datum['valid_sizes']:
                 try:
                     sizes = strange_to(sizes)
                 except Exception as e:
                     sizes = None
                     print(e)
-            if datum['valid_sizes'] and sizes and m.check_data(elp, sizes):
+            if datum['valid_sizes'] and sizes and m.check_data(ep, sizes):
                 ds_ready = True
                 if ft_ready:
-                    ready_paths[corp_name] = elp
-                    print(f"*local dataset '{byte_style(corp_name, '3')}' is ready", file = print_file)
+                    ready_paths[corp_name] = ep
+                    print(f"*corpus '{byte_style(corp_name, '3')}' is ready", file = print_file)
                     continue # ready, no need to build
             elif build_if_not_yet:
-                print(f"(Re)build local dataset '{corp_name}'", file = print_file)
+                print(f"(Re)build vocabulary for '{corp_name}'", file = print_file)
                 # try:
                 sizes = m.build(create_join(self._work_dir, 'data', corp_name), sp, corp_name,
                                 **datum['build_params'], num_thread = num_thread)
                 ft_ready = False
                 ds_ready = True
-                # except Exception as e:
-                #     verbose[corp_name].append(f'Build Error: {str(e)}')
-                #     continue
                 
                 datum['local_path'] = lp
                 datum['valid_sizes'] = ','.join(str(i) for i in sizes)
                 modified.append(corp_name)
-                ready_paths[corp_name] = elp
+                ready_paths[corp_name] = ep
             else:
                 verbose[corp_name].append(f'Ready to build')
-
+                
             if fasttext and ds_ready and not ft_ready:
-                m.call_fasttext(fasttext, elp, corp_name)
+                m.call_fasttext(fasttext, ep, corp_name)
 
         if print_file and verbose:
             print('data:', file = print_file)
@@ -228,6 +227,7 @@ class Manager:
         return ready_paths, status
 
     def check_task_settings(self, print_file = sys.stderr):
+        from data.io import check_fasttext
         ready_tasks = {}
         ready_dpaths, status = self.check_data()
         verbose = {}
@@ -249,22 +249,18 @@ class Manager:
             data_config = task_config['data']
             errors = []
 
-            if 'nccp' in module_name or 'accp' in module_name:
-                errors.extend(evalb_errors)
-                datasets = ('ptb', 'ctb', 'ktb')
-                if not any(x in ready_dpaths for x in datasets):
-                    errors.append('None of \'' + "', '".join(datasets) + '\' is ready')
-            elif 'dccp' in module_name or 'xccp' in module_name:
-                errors.extend(evalb_lcfrs_errors)
-                datasets = ('tiger', 'dptb')
-                if not any(x in ready_dpaths for x in datasets):
-                    errors.append('Neither \'' + "' or '".join(datasets) + '\' is ready')
-            elif 'sentiment' in module_name:
+            if 'sentiment' in module_name:
                 if 'sstb' not in ready_dpaths:
                     errors.append('Core data \'sstb\' is not ready')
             elif 'tokenization' in module_name:
                 if not ready_dpaths:
                     errors.append('None of the datasets is ready')
+            else:
+                if not (ready_dpaths.keys() & m.CORPORA):
+                    errors.extend(evalb_errors)
+                    errors.append('None of \'' + "', '".join(m.CORPORA) + '\' is ready')
+                if all(not check_fasttext(path) for path in ready_dpaths.values()):
+                    errors.append('Lack pre-trained embeddings')
                 
             for k, mnp, unp in iter_zipped_nt_params(data_type, data_config):
                 if not mnp.validate(unp):
@@ -319,10 +315,10 @@ class Manager:
         data_config = task_spec['data']
 
         def diff_recorder(config_dict_or_instance):
-            if task.endswith('_nccp') or task.endswith('_accp') or task.endswith('_sentiment') or task.endswith('_ner'):
+            if task.endswith('cb') or task.endswith('cm') or task.endswith('_sentiment') or task.endswith('_ner'):
                 evalb = status['tool']['evalb']
                 evalb = abspath(evalb['path']), '-p', abspath(evalb['prm'])
-            elif task.endswith('_dccp') or task.endswith('_xccp'):
+            elif task.endswith('db') or task.endswith('dm'):
                 evalb = abspath(status['tool']['evalb_lcfrs_prm'])
             else:
                 evalb = None
@@ -337,20 +333,22 @@ class Manager:
             train_params = check_train(args.train)
         
         if None in exp_ids: # train new
-            if hasattr(module, 'select_corpus'):
-                module.select_corpus(data_config, corp_name)
+            if corp_name:
+                expected_corps = set()
+                for corp in corp_name.split(','):
+                    assert corp in module.CORPORA
+                    expected_corps.add(corp)
+            else:
+                expected_corps = module.CORPORA & ready_paths.keys()
+            if (excluded_corps := module.CORPORA - expected_corps) and not corp_name:
+                print(', '.join(byte_style(x, '1') for x in excluded_corps), byte_style('are not ready and thus excluded.', '3'))
 
-            for dn, dc in data_config.items():
-                if dc is None:
-                    data_config[dc] = dict(data_path = ready_paths[dc])
+            for corp in module.CORPORA:
+                if corp in excluded_corps:
+                    data_config[K_CORP].pop(corp)
                 else:
-                    dc['data_path'] = ready_paths[dn]
-                    if dc.get('trapezoid_height', None) is not None \
-                        or task.endswith('_accp') or task.endswith('_xccp') \
-                        or task.endswith('_ner'): # a trigger for source corpus
-                        corp_status = status['data'][dn]
-                        dc['source_path'] = corp_status['source_path']
-                        dc['data_splits'] = corp_status['build_params']
+                    data_config[K_CORP][corp].update(status['data'][corp])
+                    data_config[K_CORP][corp].update(local_path = join(self._work_dir, status['data'][corp]['local_path']))
 
         for exp_id in exp_ids:
             recorder = diff_recorder(task_spec) if exp_id is None else diff_recorder(exp_id)

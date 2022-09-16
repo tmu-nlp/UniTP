@@ -1,19 +1,12 @@
 import torch
 from torch.nn import functional as F
-from models.utils import bos_mask, eos_mask
+from utils.math_ops import s_index
 
-def cross_entropy(x_, y_, *big_endian_length_weight):
-    b_, t_, c_ = x_.shape
+def cross_entropy(x_, y_, w_ = None):
+    c_ = x_.shape[-1]
     losses = F.cross_entropy(x_.view(-1, c_), y_.view(-1), reduction = 'none')
-    if big_endian_length_weight:
-        big_endian, length, weight = big_endian_length_weight
-        if big_endian:
-            m_ = eos_mask(t_, length)
-        else:
-            m_ = bos_mask(t_, length)
-        if weight is not None:
-            m_ = m_ * weight
-        losses = losses * m_.view(-1)
+    if w_ is not None:
+        losses = losses * w_.view(-1)
     return losses.sum() # TODO turn off non-train gradient tracking
 
 def binary_cross_entropy(x, y, w):
@@ -52,24 +45,27 @@ def sorted_decisions(argmax, topk, logits):
 def sorted_decisions_with_values(score_fn, topk, logits):
     return score_fn(logits).topk(topk)
 
-def get_loss(net, argmax, logits, batch, *big_endian_height_mask_key):
+def get_loss(net, argmax, logits, gold, weight = None):
     if argmax:
-        if len(big_endian_height_mask_key) == 1:
-            key, = big_endian_height_mask_key
-            return cross_entropy(logits, batch[key]) # endian does not matter
-        big_endian, height_mask, weight, key = big_endian_height_mask_key
-        return cross_entropy(logits, batch[key], big_endian, height_mask, weight)
+        return cross_entropy(logits, gold, weight)
 
-    if len(big_endian_height_mask_key) == 1:
-        key, = big_endian_height_mask_key
-        distance = net.distance(logits, batch[key])
-    else:
-        big_endian, height_mask, key = big_endian_height_mask_key
-        if big_endian:
-            height_mask = eos_mask(logits.shape[1], height_mask)
-        else:
-            height_mask = bos_mask(logits.shape[1], height_mask)
-        distance = net.distance(logits, batch[key]) # [b, s]
-        distance = distance * height_mask
+    distance = net.distance(logits, gold)
+    if weight is not None:
+        distance = distance * weight
 
     return distance.sum() + net.repulsion()
+
+def get_label_height_mask(batch):
+    label = batch['label']
+    dim = torch.arange(label.shape[1], device = label.device)
+    if (segment := batch.get('segment')) is None:
+        length = batch['length']
+        if (offset := batch.get('offset')) is None:
+            seq = s_index(length)
+        else:
+            seq = s_index(length + offset) - s_index(offset)
+    else: # trapezoid
+        segment = torch.as_tensor(segment, device = label.device)
+        seg = segment.max(dim = 0).values
+        seq = (seg[None] * ((segment - 1) > 0)).sum(dim = 1) + 1
+    return dim[None] < seq[:, None]

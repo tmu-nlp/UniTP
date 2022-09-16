@@ -9,19 +9,17 @@ import sys
 from nltk.tree import Tree
 from utils.file_io import join, isfile, parpath
 from utils.pickle_io import pickle_load, pickle_dump
-from utils.param_ops import HParams
 
 inf_none_gen = (None for _ in count())
+inf_zero_gen = (0    for _ in count())
 
-DiscoThresholds = namedtuple('DiscoThresholds', 'right, joint, direc')
-IOVocab = namedtuple('IOVocab', 'vocabs, IOHead_fields, IOData_fields, thresholds')
+IOVocab = namedtuple('IOVocab', 'vocabs, IOHead_fields, IOData_fields, threshold')
 class TensorVis:
     @classmethod
-    def from_vfile(cls, fpath):
-        vocabs, IOHead_fields, IOData_fields, thresholds = pickle_load(fpath)
-        return cls(parpath(fpath), HParams(vocabs), IOHead_fields, IOData_fields, thresholds)
+    def from_vfile(cls, fpath): # vocabs, IOHead_fields, IOData_fields, threshold
+        return cls(parpath(fpath), *pickle_load(fpath))
 
-    def __init__(self, fpath, vocabs, IOHead_fields, IOData_fields, thresholds = None, clean_fn = None, fname = 'vocabs.pkl'):
+    def __init__(self, fpath, vocabs, IOHead_fields, IOData_fields, threshold = None, clean_fn = None, fname = 'vocabs.pkl'):
         files = listdir(fpath)
         if fname in files:
             assert isfile(join(fpath, fname))
@@ -29,15 +27,14 @@ class TensorVis:
                 clean_fn(files)
             anew = False
         else:
-            assert isinstance(vocabs, HParams)
-            pickle_dump(join(fpath, fname), IOVocab(vocabs._nested, IOHead_fields, IOData_fields, thresholds))
+            pickle_dump(join(fpath, fname), IOVocab(tuple(vocabs), IOHead_fields, IOData_fields, threshold))
             anew = True
         self._anew = anew
         self._fpath = fpath
         self._vocabs = vocabs
         self._head_type = namedtuple('IOHead', IOHead_fields)
         self._data_type = namedtuple('IOData', IOData_fields)
-        self._threshold = thresholds
+        self._threshold = threshold
 
     @property
     def is_anew(self):
@@ -65,8 +62,8 @@ class TensorVis:
 from contextlib import ExitStack
 class DiscontinuousTensorVis(TensorVis):
     def __init__(self, fpath, vocabs, thresholds):
-        IOHead_fields = 'token, tag, label, right, joint, direc, tree, segment, seg_length'
-        IOData_fields = 'token, tag, label, right, joint, direc, tree, segment, seg_length, mpc_word, mpc_phrase, warning, scores, tag_score, label_score, right_score, joint_score, direc_score'
+        IOHead_fields = 'token, tree'
+        IOData_fields = 'tag, label, right, joint, direc, tree, segment, seg_length, mpc_word, mpc_phrase, warning, scores, tag_score, label_score, right_score, joint_score, direc_score'
         super().__init__(fpath, vocabs, IOHead_fields, IOData_fields, thresholds)
 
     def set_head(self, batch_id, size, *args):
@@ -98,103 +95,78 @@ def tee_trees(join_fn, mode, lengths, trees, batch_id, bin_width):
                 print(tree, file = fw)
     return ftrees.keys()
 
-from data.continuous.binary.triangle import head_to_tree as tri_h2t
+from data import parsing_i2vs
 from data.continuous.binary.triangle import data_to_tree as tri_d2t
-from data.continuous.binary.trapezoid import head_to_tree as tra_h2t
 from data.continuous.binary.trapezoid import data_to_tree as tra_d2t
 from utils.shell_io import parseval, rpt_summary
 class ContinuousTensorVis(TensorVis):
     def __init__(self, fpath, vocabs):
-        IOHead_fields = 'offset, length, token, tag, label, right, tree, segment, seg_length'
-        IOData_fields = 'offset, length, token, tag, label, right, tree, segment, seg_length, mpc_word, mpc_phrase, warning, scores, tag_score, label_score, split_score, summary'
+        IOHead_fields = 'tree, token'
+        IOData_fields = 'tree, offset, length, word_emb, tree_emb, tag, label, orient, tag_score, label_score, orient_score, trapezoid_info, warning, summary'
         super().__init__(fpath, vocabs, IOHead_fields, IOData_fields)
 
-    def set_head(self, fhtree, offset, length, token, tag, label, right, trapezoid_info, *batch_id_size_bin_width):
-        old_tag = tag
+    def set_head(self, fhtree, trees, *args):
+        str_trees = []
+        for tree in trees:
+            str_tree = ' '.join(str(tree).split())
+            str_trees.append(str_tree)
+            print(str_tree, file = fhtree)
 
-        if tag is None:
-            tag = inf_none_gen
-
-        if trapezoid_info is None:
-            segment = seg_length = None
-            func_args = zip(offset, length, token, tag, label, right)
-            func_args = ((*args, self.vocabs) for args in func_args)
-            head_to_tree = tri_h2t
-        else:
-            segment, seg_length = trapezoid_info
-            func_args = zip(offset, length, token, tag, label, right, seg_length)
-            func_args = ((*args, segment, self.vocabs) for args in func_args)
-            head_to_tree = tra_h2t
-
-        trees = []
-        for args in func_args:
-            tree = str(head_to_tree(*args))
-            tree = ' '.join(tree.split())
-            print(tree, file = fhtree)
-            trees.append(tree)
-
-        if batch_id_size_bin_width:
-            batch_id, size, bin_width = batch_id_size_bin_width
+        if args:
+            batch_id, size, bin_width, length, token = args
 
             fname = self.join(f'head.{batch_id}_{size}.pkl')
-            head  = self.IOHead(offset, length, token, old_tag, label, right, trees, segment, seg_length)
+            head  = self.IOHead(str_trees, token)
             pickle_dump(fname, tuple(head)) # type check
-            return tee_trees(self.join, 'head', length, trees, batch_id, bin_width)
+            return tee_trees(self.join, 'head', length, str_trees, batch_id, bin_width)
 
-    def set_void_head(self, batch_id, size, offset, length, token):
-        fname = self.join(f'head.{batch_id}_{size}.pkl')
-        head  = self.IOHead(offset, length, token, None, None, None, None, None, None)
-        pickle_dump(fname, tuple(head))
-
-    def set_data(self, fdtree, on_error, batch_id, epoch,
-                 offset, length, token, tag, label, right, mpc_word, mpc_phrase,
-                 tag_score, label_score, split_score,
+    def set_data(self, fdtree, error_log_fn, batch_id, epoch,
+                 offset, length, token, token_emb, tree_emb,
+                 tag, label, orient,
+                 tag_score, label_score, orient_score,
                  trapezoid_info, size_bin_width_evalb):
-
-        tree_kwargs = dict(return_warnings = True, on_error = on_error)
-        error_prefix = f'  [{batch_id} {epoch}'
 
         old_tag   = tag
         old_tag_s = tag_score
         if tag is None: tag = inf_none_gen
-        if label is None:
-            label_ = label_score
-            tree_kwargs['error_root'] = 'NA'
-        else:
-            label_ = label
-        trees = []
-        batch_warnings = []
+        
+        label_  = label_score  if label  is None else label
+        offset_ = inf_zero_gen if offset is None else offset
+        i2vs = parsing_i2vs(self.vocabs)
         if trapezoid_info is None:
             segment = seg_length = None
-            func_args = zip(offset, length, token, tag, label_, right)
-            func_args = ((*args, self.vocabs) for args in func_args)
+            func_args = zip(offset_, length, token, tag, label_, orient)
+            func_args = (args + i2vs for args in func_args)
             data_to_tree = tri_d2t
         else:
             segment, seg_length = trapezoid_info
-            func_args = zip(offset, length, token, tag, label_, right, seg_length)
-            func_args = ((*args, segment, self.vocabs) for args in func_args)
+            func_args = zip(offset_, length, token, tag, label_, orient, seg_length)
+            func_args = (args + (segment,) + i2vs for args in func_args)
             data_to_tree = tra_d2t
 
-        for i, args in enumerate(func_args):
-            tree_kwargs['error_prefix'] = error_prefix + f']-{i} len={args[1]}'
-            tree, warnings = data_to_tree(*args, **tree_kwargs)
-            tree = str(tree)
-            tree = ' '.join(tree.split())
-            trees.append(tree)
-            print(tree, file = fdtree) # TODO use stack to protect opened file close and delete
+        str_trees, batch_warnings, log_warnings = [], [], {}
+        for i, dargs in enumerate(func_args):
+            tree, warnings = data_to_tree(*dargs, fallback_label = 'VROOT')
+            str_tree = ' '.join(str(tree).split())
+            print(str_tree, file = fdtree) # TODO use stack to protect opened file close and delete
+            str_trees.append(str_tree)
             batch_warnings.append(warnings)
+            if warnings:
+                log_warnings[i] = warnings
+        
+        if log_warnings:
+            error_log_fn(f'  Batch #{batch_id} has {len(log_warnings)} fallbacked conversions:')
 
         if size_bin_width_evalb:
             size, bin_width, evalb = size_bin_width_evalb
             if label is None: # unlabeled
-                pickle_dump(self.join(f'data.{batch_id}_{epoch}.pkl'),
-                            (offset, length, token, None, None, right, trees,
-                             segment, seg_length, mpc_word, mpc_phrase,
-                             batch_warnings, None, tag_score, label_score, split_score, None))
+                pickle_dump(self.join(f'data.{batch_id}_{epoch}.pkl'), tuple(self.IOData(
+                    str_trees, offset, length, token_emb, tree_emb, tag, label, orient,
+                    tag_score, label_score, orient_score, trapezoid_info, batch_warnings, None)))
                 return batch_warnings
 
             else: # supervised / labeled
-                tee_trees(self.join, 'data', length, trees, batch_id, bin_width)
+                tee_trees(self.join, 'data', length, str_trees, batch_id, bin_width)
 
                 fhead = f'head.{batch_id}_{size}.pkl'
                 assert isfile(self.join(fhead)), f"Need a head '{fhead}'"
@@ -204,7 +176,7 @@ class ContinuousTensorVis(TensorVis):
                 if evalb is None: # sentiment
                     # 52VII
                     from data.stan_types import calc_stan_accuracy
-                    idv, smy, key_score = calc_stan_accuracy(fhead, fdata, error_prefix, on_error)
+                    idv, smy, key_score = calc_stan_accuracy(fhead, fdata, print)
                 else: # constituency
                     proc = parseval(evalb, fhead, fdata)
                     idv, smy = rpt_summary(proc.stdout.decode(), True, True)
@@ -220,9 +192,8 @@ class ContinuousTensorVis(TensorVis):
                     key_score = smy.get('F1', 0)
 
                 fdata = self.join(f'data.{batch_id}_{epoch}.pkl')
-                data = self.IOData(offset, length, token, old_tag, label, right, trees,
-                            segment, seg_length, mpc_word, mpc_phrase,
-                            batch_warnings, idv, tag_score, label_score, split_score, smy)
+                data = self.IOData(str_trees, offset, length, token_emb, tree_emb, tag, label, orient,
+                    tag_score, label_score, orient_score, trapezoid_info, batch_warnings, (idv, smy))
                 pickle_dump(fdata, tuple(data))
 
                 return key_score
@@ -293,18 +264,14 @@ if desktop:
     from tempfile import TemporaryDirectory
     from nltk.draw import TreeWidget
     from nltk.draw.util import CanvasFrame
-    from time import time, sleep
+    from time import time
     from utils.math_ops import uneven_split, itp
-    from math import exp, sqrt, pi
     from functools import partial
-    from data.binary import warning_level, NIL
-    from utils.param_ops import more_kwargs
     from utils.file_io import path_folder
-    from concurrent.futures import ProcessPoolExecutor
-    from data.triangle import triangle_to_layers
-    from data.trapezoid import trapezoid_to_layers, inflate
+    from data import NIL
+    from data.continuous.binary.triangle import triangle_to_layers
+    from data.continuous.binary.trapezoid import trapezoid_to_layers, inflate
     from data.cross import draw_str_lines
-    # from multiprocessing import Pool
 
     class PathWrapper:
         def __init__(self, fpath, sftp):
@@ -1166,19 +1133,6 @@ if desktop:
                      background,
                      xlab, ylab, clab,
                      filtered = None):
-        # globals().update({k:v for k,v in zip(BoardConfig._fields, config)})
-        # stat_board.create_line(offx, offy, offx, offy + height, fill = stat_color)
-        # stat_board.create_line(offx, offy, offx + width,  offy, fill = stat_color)
-        # stat_board.create_line(offx, offy + height, offx + width, offy + height, fill = stat_color)
-        # stat_board.create_line(offx + width,  offy, offx + width, offy + height, fill = stat_color)
-        # if distance and distance > 0:
-        #     for i in range(width):
-        #         for j in range(int(height)):
-        #             x = i / width
-        #             y = j / height
-        #             z = sum(exp(-((x - xj) ** 2 )/ (2*distance**2)-((y - yj) ** 2 )/ (2*distance**2)) for xj, yj in xy) / len(xy)
-        #             stat_board.create_line(offx + i,     offy + height - j,
-        #                                    offx + i + 1, offy + height - j, fill = make_color(z))
 
         xy, xy_min, xy_max, xy_orig, coord = stat.scatter_data(scatter_min_max, offset_length, filtered)
             

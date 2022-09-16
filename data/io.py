@@ -1,5 +1,5 @@
-from collections import defaultdict, Counter
-import sys
+from collections import defaultdict
+from sys import stderr
 from os.path import isfile, join, basename
 
 SEP = '\t'
@@ -24,13 +24,16 @@ def make_call_fasttext(corp_ft_bin):
             vfile = join(path, fn + '.vec')
             ft_bin = corp_ft_bin[corp_name]
             ft_bin = fasttext['ft_bin'][ft_bin]
-            print(f"calling fasttext for [{wfile}:{vfile}] of {corp_name} with '{basename(ft_bin)}'", file = sys.stderr)
+            print(f"calling fasttext for [{wfile}:{vfile}] of {corp_name} with '{basename(ft_bin)}'", file = stderr)
             call_fasttext(fasttext['path'], wfile, vfile, ft_bin, fasttext['ft_lower'])
     return inner
 
 def check_fasttext(path):
-    wfile = join(path, 'word.vec')
-    vfile = join(path, 'vocab.word')
+    return __check_ft(path, 'word') and __check_ft(path, 'char')
+
+def __check_ft(path, fname):
+    wfile = join(path, fname + '.vec')
+    vfile = join(path, 'vocab.' + fname)
     if isfile(wfile) and isfile(vfile):
         # import pdb; pdb.set_trace()
         from utils.file_io import count_lines
@@ -93,7 +96,8 @@ def save_vocab(save_to_file, main_cnt, prefix = [], appendix_cnt = None):
     return main_cnt
 
 def post_build(save_to_dir, build_counters, vc_type, counters, field_fn = None):
-    from utils.types import NIL, M_TRAIN
+    from data import NIL
+    from utils.types import M_TRAIN
     from utils.str_ops import histo_count
     sizes = []
     all_counts = build_counters()
@@ -114,7 +118,7 @@ def post_build(save_to_dir, build_counters, vc_type, counters, field_fn = None):
                 field_fn(all_counts, field, fw)
     return sizes
 
-def load_i2vs(vocab_dir, suffixes):
+def load_i2vs(vocab_dir, *suffixes):
     i2vs = {}
     for suf in suffixes:
         py_v = list(gen_vocab(join(vocab_dir, f'vocab.{suf}')))
@@ -134,44 +138,23 @@ def gen_vocab(fname):
             yield tok
 
 def check_vocab(fname, expected_size = None):
-    # print('check', fname, file = sys.stderr)
     special_bound = None
     try:
         with open(fname, 'r') as fr:
             for idx, tok in enumerate(fr):
                 if special_bound is not None:
                     if SEP not in tok:
-                        print('Ill-formed', fname, file = sys.stderr)
+                        print('Ill-formed', fname, file = stderr)
                         return False
                 elif SEP in tok:
                     special_bound = idx
     except Exception as e:
-        print(e, file = sys.stderr)
+        print(e, file = stderr)
         return False
     if expected_size and expected_size != idx + 1:
-        print('Invalid size %d vs. %d' % (expected_size, idx + 1), fname, file = sys.stderr)
+        print('Invalid size %d vs. %d' % (expected_size, idx + 1), fname, file = stderr)
         return False
     return True
-
-def encapsulate_vocabs(i2vs, oovs):
-    def inner(i2v, f): # python bug: namespace
-        size = len(i2v)
-        v2i = {v:i for i,v in enumerate(i2v)}
-        
-        if f in oovs: # replace the dict function
-            oov = oovs[f]
-            v2i_func = lambda v: v2i.get(v, oov)
-            assert oov in range(size)
-        else:
-            v2i_func = v2i.get
-        return size, v2i_func
-
-    v2is  = {}
-    for f, i2v in i2vs.items():
-        v2is[f] = inner(i2v, f)
-        i2vs[f] = tuple(i2v)
-
-    return i2vs, v2is
 
 def sorting_order(seq, key = lambda x: (len(x), x)):
     order = {}
@@ -238,8 +221,7 @@ def get_corpus(train_set, devel_set, test_set, folder_pattern, get_fileids):
     assert not (train_set & test_set)
     assert not (devel_set & test_set)
     assert not (devel_set & train_set)
-    fileids = []
+    fileids = defaultdict(set)
     for n, s in {M_TRAIN: train_set, M_DEVEL: devel_set, M_TEST: test_set}.items():
-        for f in get_fileids(s):
-            fileids.append((n, f))
+        fileids[n].update(get_fileids(s))
     return fileids

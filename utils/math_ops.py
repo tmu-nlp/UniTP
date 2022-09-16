@@ -16,6 +16,11 @@ def harmony(*fractions):
     return len(fractions) / sum(1/f for f in fractions)
 
 from math import sqrt, floor, log
+
+def log_to_frac(*x_low_high):
+    x, low, high = (log(x) for x in x_low_high)
+    return (x - low) / (high - low)
+
 def t_index(sid, b = 1):
     c = (2 - b) / (2 * b)
     lid = floor(sqrt(sid * 2 + c*c) - c)

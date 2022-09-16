@@ -1,85 +1,152 @@
-from data import SUP, brackets2RB
-from data.mp import DM
 from nltk.tree import Tree
 from collections import defaultdict
-from data.continuous import bottom_paths
-from utils import do_nothing
+from data import SUP, SUBS, brackets2RB
+from data.continuous import bottom_paths, flatten_children
 from utils.str_ops import height_ratio
-
-class MaryDM(DM):
-    @staticmethod
-    def tree_gen_fn(i2w, i2t, i2l, segments, token, tag, label, fence, seg_length):
-        for tokens, tags, labels, fences, seg_lengths in zip(token, tag, label, fence, seg_length):
-            layers_of_label = []
-            layers_of_fence = []
-            label_start = 0
-            fence_start = 0
-            for l_cnt, (l_size, l_len) in enumerate(zip(segments, seg_lengths)):
-                label_layer = tuple(i2l(i) for i in labels[label_start: label_start + l_len])
-                layers_of_label.append(label_layer)
-                if l_cnt:
-                    layers_of_fence.append(fences[fence_start: fence_start + l_len + 1])
-                    fence_start += l_size + 1
-                else:
-                    ln = l_len
-                if l_len == 1:
-                    break
-                label_start += l_size
-            wd = [i2w[i] for i in tokens[:ln]]
-            tg = [i2t[i] for i in   tags[:ln]]
-            tree, _ = get_tree_from_signals(wd, tg, layers_of_label, layers_of_fence, 'VROOT')
-            yield ' '.join(str(tree).split())
-
-    @staticmethod
-    def arg_segment_fn(seg_id, seg_size, batch_size, args):
-        start = seg_id * seg_size
-        if start < batch_size:
-            return args[:1] + tuple(x[start: (seg_id + 1) * seg_size] for x in args[1:])
+from utils import do_nothing
 
 tree_path = lambda lexical, tree, length: (tree, bottom_paths(lexical, tree, length))
 
-def signals(tree, lex_paths, l2i = do_nothing):
+from random import random
+def append_sub(subword, msub, max_height, path, bpaths, bottom):
+    lhs, rhs = random_subword_path(subword, msub, max_height, path + (len(bottom),))
+    if isinstance(rhs, tuple): # leave
+        bpaths.append(rhs)
+    else:
+        bpaths.extend(rhs)
+    bottom.append(lhs)
+
+def char_leaf(chars, path):
+    if len(chars) == 1:
+        return Tree(SUP, [chars]), path
+    leaves = []
+    bpaths = []
+    for eid, x in enumerate(chars):
+        leaves.append(Tree(SUP, [x]))
+        bpaths.append(path + (eid,))
+    return Tree(SUP, leaves), bpaths
+
+def random_subword_path(word, msub = 0, max_height = None, path = ()):
+    bottom = []
+    bpaths = []
+    if max_height and max_height == len(path) + (len(word) > 1):
+        return char_leaf(word, path)
+
+    subword = word[0]
+    for char in word[1:]:
+        if msub and random() < msub:
+            append_sub(subword, msub, max_height, path, bpaths, bottom)
+            subword = char
+        else:
+            subword += char
+
+    if not bottom:
+        return char_leaf(word, path)
+
+    append_sub(subword, msub, max_height, path, bpaths, bottom)
+    return Tree(SUP, bottom), bpaths
+
+def char_signals(words, msub = 0, max_subword_height = None):
+    if max_subword_height:
+        assert max_subword_height > 1
+    bottom = []
+    wpaths = []
+    for eid, word in enumerate(words):
+        tree, path = random_subword_path(word, msub, max_subword_height, (eid,))
+        bottom.append(tree)
+        if isinstance(path, list):
+            wpaths.extend(path)
+        else:
+            wpaths.append(path)
+    return Tree(SUP, bottom), tuple((p, False) for p in wpaths)
+
+def get_words_from_tree(tree):
+    return [''.join(wd.leaves()) for wd in tree]
+
+
+_END = [(-1,)]
+def j_fn(bottom_label, paths, tree, l2i, offset = 1): # advantage@fewer_signals
+    label_layer = []
+    joint_layer = []
+    npath_layer = []
+    joint_count = 1
+    for eid, (l_path, r_path) in enumerate(zip(paths, paths[1:] + _END)):
+        if (p_path := l_path[:-1]) == r_path[:-1] and l_path[-1] + 1 == r_path[-1]:
+            joint_count += 1
+            joint_layer.append(eid + offset)
+            if joint_count == len(tree[p_path]):
+                label_layer.append(l2i(tree[p_path].label()))
+                npath_layer.append(p_path)
+                joint_count = 0 # impossible to rejoin rightwards
+        elif joint_count > 1:
+            joint_layer = joint_layer[:1 - joint_count]
+            label_layer.extend(bottom_label[eid + 1 - joint_count:eid + 1])
+            npath_layer.extend(paths       [eid + 1 - joint_count:eid + 1])
+            joint_count = 1
+        elif joint_count == 1:
+            label_layer.append(bottom_label[eid])
+            npath_layer.append(l_path)
+        else:
+            joint_count += 1
+    return label_layer, joint_layer, npath_layer
+
+def s_fn(bottom_label, paths, tree, l2i): # advantage@decoding
+    def append_to_layer(eid, label, path):
+        split_layer.append(eid)
+        label_layer.append(label)
+        npath_layer.append(path)
+    label_layer = []
+    split_layer = [0]
+    npath_layer = []
+    child_count = 1
+    for eid, (l_path, r_path) in enumerate(zip(paths, paths[1:] + _END), 1):
+        if (p_path := l_path[:-1]) == r_path[:-1] and l_path[-1] + 1 == r_path[-1]:
+            child_count += 1
+        else:
+            if child_count == len(tree[p_path]):
+                path  = p_path
+                label = l2i(tree[path].label())
+            else: # lack direct children
+                for i in range(eid - child_count, eid - 1):
+                    append_to_layer(i + 1, bottom_label[i], paths[i])
+                path  = l_path
+                label = bottom_label[eid - 1]
+            append_to_layer(eid, label, path)
+            child_count = 1
+    return label_layer, split_layer, npath_layer
+    
+def signals(tree, lex_paths, l2i = do_nothing, joint = None):
     paths, bottom_label = [], []
-    for eid, (path, lexical) in enumerate(lex_paths):
+    for path, lexical in lex_paths:
         label = tree[path].label()
         if lexical:
             label = SUP + label
         bottom_label.append(l2i(label))
         paths.append(path)
         
-    def append_to_layer(eid, label, path):
-        split_layer.append(eid)
-        label_layer.append(label)
-        npath_layer.append(path)
-        
-    END = (-1,)
     layers_of_labels = [bottom_label]
-    layers_of_splits = []
+    layers_of_struct = []
     while len(paths) > 1:
-        label_layer = []
-        split_layer = [0]
-        npath_layer = []
-        child_count = 1
-        for eid, (l_path, r_path) in enumerate(zip(paths, paths[1:] + [END]), 1):
-            if (p_path := l_path[:-1]) == r_path[:-1] and l_path[-1] + 1 == r_path[-1]:
-                child_count += 1
-            else:
-                if child_count == len(tree[p_path]):
-                    path  = p_path
-                    label = l2i(tree[path].label())
-                else: # lack direct children
-                    for i in range(eid - child_count, eid - 1):
-                        append_to_layer(i + 1, bottom_label[i], paths[i])
-                    path  = l_path
-                    label = bottom_label[eid - 1]
-                append_to_layer(eid, label, path)
-                child_count = 1
-        assert len(npath_layer) == len(label_layer) == len(split_layer) - 1
+        if joint is None: # self validation
+            sl, ss, sp = s_fn(bottom_label, paths, tree, l2i)
+            jl, jj, jp = j_fn(bottom_label, paths, tree, l2i)
+            assert len(sp) == len(sl) == len(ss) - 1
+            assert len(jp) == len(jl)
+            assert sl == jl and sp == jp and not (set(ss) & set(jj))
+            if (set(ss) | set(jj)) != set(range(max(ss) + 1)):
+                print(ss)
+                print(jj)
+                breakpoint()
+            bottom_label = sl
+            paths = sp
+            continue
+        (label_layer, struct_layer,
+         npath_layer) = (s_fn, j_fn)[joint](bottom_label, paths, tree, l2i)
         layers_of_labels.append(label_layer)
-        layers_of_splits.append(split_layer)
+        layers_of_struct.append(struct_layer)
         bottom_label = label_layer
         paths = npath_layer
-    return layers_of_labels, layers_of_splits
+    return layers_of_labels, layers_of_struct
 
 
 def coord_vote(units, fence_location):
@@ -92,15 +159,6 @@ def coord_vote(units, fence_location):
     if fence_location > unit_location:
         return f'«{fence_location - unit_location - 1}{height_ratio(pro_num_ratio)}'
     return f'{height_ratio(pro_num_ratio)}{unit_location - fence_location}»'
-
-def flatten_children(nodes):
-    children = []
-    for x in nodes:
-        if isinstance(x, Tree):
-            children.append(x)
-        else:
-            children.extend(x)
-    return children
 
 func_unary_char = '&'
 def flatten_children_with_weights(bottom, start, weights, bar = '│'):
@@ -165,20 +223,20 @@ def unary_label_match(tree, label):
             return False
     return False
 
-def get_tree_from_signals(word, tag, layers_of_labels, layers_of_splits, 
-                          fall_back_root           = None,
+def get_tree_from_signals(word, tag, layers_of_labels, layers_of_splits,
                           layers_of_weights        = None,
                           layers_of_fence_vote     = None,
+                          fallback_label           = None,
                           mark_np_without_dt_child = False,
                           word_fn                  = brackets2RB):
     bottom = []
     add_weight_base = layers_of_weights is not None
-    balancing_bottom_sub = add_weight_base and any(x[0] not in '#_' for x in layers_of_labels[0])
     add_fence_vote_base = layers_of_fence_vote is not None
+    balancing_bottom_sub = add_weight_base and any(x[0] not in SUBS for x in layers_of_labels[0])
     unary_chars = '│' + func_unary_char 
     for w, t, label in zip(word, tag, layers_of_labels[0]):
         leaf = Tree(t, [word_fn(w)])
-        if label[0] not in '#_':
+        if label[0] not in SUBS:
             leaf = Tree(label, [leaf])
         elif balancing_bottom_sub:
             leaf = Tree('│', [leaf])
@@ -193,7 +251,7 @@ def get_tree_from_signals(word, tag, layers_of_labels, layers_of_splits,
         new_bottom = []
         # leave_cnt = 0
         add_weight = add_weight_base and lid < len(layers_of_weights)
-        balancing_sub = add_weight_base and any(x[0] not in '#_' for x in label_layer)
+        balancing_sub = add_weight_base and any(x[0] not in SUBS for x in label_layer)
         add_fence_vote = add_fence_vote_base and lid < len(layers_of_fence_vote)
         if add_fence_vote:
             bottom = flatten_layer_with_fence_vote(bottom, layers_of_fence_vote[lid])
@@ -201,7 +259,7 @@ def get_tree_from_signals(word, tag, layers_of_labels, layers_of_splits,
         for label, start, end in zip(label_layer, split_layer, split_layer[1:]):
             if end - start == 1: # unary
                 sub_tree = bottom[start]
-                if label[0] in '#_' or (unary_label_match(sub_tree[0], label) if add_fence_vote else (sub_tree.label() == label)):
+                if label[0] in SUBS or (unary_label_match(sub_tree[0], label) if add_fence_vote else (sub_tree.label() == label)):
                     # relay sub
                     if isinstance(sub_tree, Tree) and balancing_sub:
                         relay_label = sub_tree.label()
@@ -213,7 +271,7 @@ def get_tree_from_signals(word, tag, layers_of_labels, layers_of_splits,
                     sub_tree = Tree(label, flatten_children(bottom[start:end]))
                 # leave_cnt += len(sub_tree.leaves())
             elif label[0] == '#':
-                assert fall_back_root is not None
+                assert fallback_label is not None
                 if balancing_sub:
                     children = flatten_children(bottom[start:end])
                     if add_weight:
@@ -249,33 +307,22 @@ def get_tree_from_signals(word, tag, layers_of_labels, layers_of_splits,
                 else:
                     children = flatten_children(children)
                     sub_tree = Tree(label, children) if label[0] != '_' else children
-                # leave_cnt += len(sub_tree.leaves())
-            # print(str(sub_tree))
             new_bottom.append(sub_tree)
-        # import pdb; pdb.set_trace()
         bottom = new_bottom
-
-        # if leave_cnt != bottom_len:
-        #     quit_on_error = True
-        # if quit_on_error:
-        #     break
         
-    if fall_back_root is None:
+    if fallback_label is None:
         tree = bottom.pop()
         assert not bottom
-    elif len(bottom) > 1:
-        if layers_of_weights and layers_of_weights[lid + 1]: # never be here
-            bottom, _ = flatten_children_with_weights(bottom, 0, layers_of_weights[lid + 1])
-        else:
-            bottom = flatten_children(bottom)
-        tree = Tree(fall_back_root, bottom)
-    else:
+    elif len(bottom) == 1:
         bottom = flatten_children(bottom)
         tree = bottom.pop()
+    else:
+        bottom = flatten_children(bottom)
+        tree = Tree(fallback_label, flatten_children(bottom))
     
     if add_weight_base or add_fence_vote_base:
         tree.un_chomsky_normal_form(unaryChar = func_unary_char)
-    if fall_back_root is None:
+    if fallback_label is None:
         return tree
     if add_weight_base:
         return tree, not bottom, headedness_stat

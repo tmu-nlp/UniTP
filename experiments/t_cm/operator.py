@@ -1,61 +1,22 @@
 import torch
 from time import time
 from utils.math_ops import is_bin_times
-from utils.types import M_TRAIN, BaseType, frac_open_0, true_type, false_type, tune_epoch_type, frac_06, frac_close
+from utils.types import M_TRAIN, BaseType, frac_open_0, true_type, tune_epoch_type, frac_06, frac_close
 from models.utils import fraction, mean_stdev
 from models.loss import binary_cross_entropy, hinge_loss
-from experiments.t_cb.operator import PennOperator
+from experiments.t_cb.operator import CBOperator
+from experiments.helper import make_tensors, speed_logg, continuous_score_desc_logg
 from data.penn_types import C_PTB
-from utils.shell_io import byte_style
 
 
 train_type = dict(loss_weight = dict(tag   = BaseType(0.2, validator = frac_open_0),
                                      label = BaseType(0.3, validator = frac_open_0),
-                                     fence = BaseType(0.5, validator = frac_open_0)),
-                  fence_hinge_loss = true_type,
+                                     chunk = BaseType(0.5, validator = frac_open_0)),
+                  chunk_hinge_loss = true_type,
                   learning_rate = BaseType(0.001, validator = frac_open_0),
                   tune_pre_trained = dict(from_nth_epoch = tune_epoch_type,
                                           lr_factor = frac_06))
                 #   keep_low_attention_rate = BaseType(1.0, validator = frac_close),
-
-
-def unpack_label_like(seq, segment):
-    layers = []
-    start = 0
-    for size in segment:
-        end = start + size
-        layers.append(seq[:, start:end])
-        start = end
-    return layers
-
-def unpack_fence(seq, segment, is_indices):
-    layers = []
-    start = 0
-    for size in segment[is_indices:]:
-        end = start + size + 1
-        layers.append(seq[:, start:end])
-        start = end
-    return layers
-
-def extend_fence_idx(unpacked_fence_idx):
-    layers = []
-    first = unpacked_fence_idx[0]
-    bs = first.shape[0]
-    batch_dim = torch.arange(bs, device = first.device)[:, None]
-    for layer in unpacked_fence_idx:
-        full_layer = torch.zeros(bs, layer.max() + 1, dtype = torch.bool, device = first.device)
-        full_layer[batch_dim, layer] = True
-        layers.append(full_layer)
-    return torch.cat(layers, dim = 1)
-
-def unpack_fence_vote(fence_vote, batch_size, segment):
-    layers = []
-    start = 0
-    for size in segment:
-        end = start + (size + 1) * size
-        layers.append(fence_vote[:, start:end].reshape(batch_size, size + 1, size))
-        start = end
-    return layers
 
 def serialize_matrix(m, skip = None):
     for rid, row in enumerate(m):
@@ -87,55 +48,48 @@ def save_txt(fname, append, lhv, rhv, dst, cos):
         fw.write(f'\nCosine\n  {n}:\n')
         fw.write(sort_matrix(cos, lhv, rhv, True))
 
-class MultiOperator(PennOperator):
+class CMOperator(CBOperator):
     def __init__(self, model, get_datasets, recorder, i2vs, get_dm, evalb, train_config):
         super().__init__(model, get_datasets, recorder, i2vs, get_dm, evalb, train_config)
 
     def _step(self, mode, ds_name, batch, batch_id = None):
 
-        supervised_signals = {}
-        supervised_signals['key'] = corp = ds_name if self.multi_corp else None
+        batch['key'] = corp = ds_name if self.multi_corp else None
         if mode == M_TRAIN:
-            supervised_signals['supervised_fence'] = gold_fences = unpack_fence(batch['fence'], batch['segment'], True)
+            batch['supervision'] = gold_chunks = batch['chunk'][:, :-2] # top 2 are stable ones and useless
             # supervised_signals['keep_low_attention_rate'] = self._train_config.keep_low_attention_rate
-        if 'sub_idx' in batch:
-            supervised_signals['sub_idx'] = batch['sub_idx']
-        if 'sub_fence' in batch:
-            supervised_signals['sub_fence'] = batch['sub_fence']
-        elif 'plm_idx' in batch:
-            for x in ('plm_idx', 'plm_start'):
-                supervised_signals[x] = batch[x]
+        elif 'tag_layer' in batch:
+            batch['bottom_supervision'] = batch['tag_layer'], batch['char_chunk']
 
-        batch_time = time() # weight, fence, fence_idx, fence_vote, segment, seg_length
-        (batch_size, batch_len, static, top3_label_logits,
-         embeddings, existences, _, tag_logits, label_logits,
-         (weights, fence_logits, fence_idx, fence_vote,
-          segment, seg_length)) = self._model(batch['token'], self._tune_pre_trained, **supervised_signals)
+        batch_time = time()
+        bottom, stem, tag_label = self._model(batch['token'], self._tune_pre_trained, **batch)
         batch_time = time() - batch_time
+        batch_size, batch_len = bottom[:2]
+        existences = stem.existence
+        tag_start, tag_end, tag_logits, label_logits, _ = tag_label
+        weight, chunk_logits, chunk_vote, batch_segment = stem.extension
 
-        fences = fence_logits > 0
-        if not self._train_config.fence_hinge_loss:
-            fence_logits = self._sigmoid(fence_logits)
+        chunks = self._model.stem.chunk(chunk_logits)
+        if not self._train_config.chunk_hinge_loss:
+            chunk_logits = self._sigmoid(chunk_logits)
 
         if mode == M_TRAIN:
             tags    = self._model.get_decision(tag_logits  )
             labels  = self._model.get_decision(label_logits)
-            bottom_existence = existences[:, :batch_len]
-            tag_mis      = (tags    != batch['tag'])
+            tag_mis      = (tags    != batch['tag'  ])
             label_mis    = (labels  != batch['label'])
-            tag_weight   = (  tag_mis | bottom_existence)
-            label_weight = (label_mis | existences)
-            extended_gold_fences = extend_fence_idx(gold_fences)
+            tag_weight   = (  tag_mis | existences[:, tag_start: tag_end])
+            label_weight = (label_mis | existences[:, tag_start:])
             
-            tag_loss, label_loss = self._model.get_losses(batch, None, tag_logits, label_logits, corp)
-            if self._train_config.fence_hinge_loss:
-                fence_loss = hinge_loss(fence_logits, extended_gold_fences, None)
+            tag_loss, label_loss = self._model.get_losses(batch, tag_logits, label_logits, label_weight, corp)
+            if self._train_config.chunk_hinge_loss:
+                chunk_loss = hinge_loss(chunk_logits, gold_chunks, None)
             else:
-                fence_loss = binary_cross_entropy(fence_logits, extended_gold_fences, None)
+                chunk_loss = binary_cross_entropy(chunk_logits, gold_chunks, None)
 
             total_loss = self._train_config.loss_weight.tag * tag_loss
             total_loss = self._train_config.loss_weight.label * label_loss + total_loss
-            total_loss = self._train_config.loss_weight.fence * fence_loss + total_loss
+            total_loss = self._train_config.loss_weight.chunk * chunk_loss + total_loss
             total_loss.backward()
             
             if self.recorder._writer is not None:
@@ -145,38 +99,29 @@ class MultiOperator(PennOperator):
                 self.recorder.tensorboard(self.global_step, 'Accuracy/%s', suffix,
                     Tag   = 1 - fraction(tag_mis,     tag_weight),
                     Label = 1 - fraction(label_mis, label_weight),
-                    Fence = fraction(fences == extended_gold_fences))
+                    Fence = fraction(chunks == gold_chunks))
                 self.recorder.tensorboard(self.global_step, 'Loss/%s', suffix,
                     Tag   = tag_loss,
                     Label = label_loss,
-                    Fence = fence_loss,
+                    Fence = chunk_loss,
                     Total = total_loss)
-                batch_kwargs = dict(Length = batch_len, SamplePerSec = batch_len / batch_time)
-                if 'segment' in batch:
-                    batch_kwargs['Height'] = batch['segment'].shape[0]
-                self.recorder.tensorboard(self.global_step, 'Batch/%s', suffix, **batch_kwargs)
+                self.recorder.tensorboard(self.global_step, 'Batch/%s', suffix,
+                    Length = batch_len,
+                    Height = len(stem.segment),
+                    SamplePerSec = batch_len / batch_time)
         else:
             vis, _, _, serial, draw_weights = self._vis_mode
-
-            tags   = self._model.get_decision(tag_logits  ).type(torch.uint8).cpu().numpy()
-            labels = self._model.get_decision(label_logits).type(torch.uint8).cpu().numpy()
-            fences = fence_idx.type(torch.int16).cpu().numpy()
-            seg_length = seg_length.type(torch.int16).cpu().numpy()
-            if fence_vote is not None and draw_weights:
-                fence_vote = fence_vote.type(torch.float16).cpu().numpy()
-            if serial:
-                b_head = tuple((batch[x].type(torch.uint8) if x in ('tag', 'label', 'fence') else batch[x]).cpu().numpy() for x in 'token tag label fence'.split())
-                b_head = b_head + (batch['segment'].cpu().numpy(), batch['seg_length'].cpu().numpy())
-                # length, token, tag, label, fence, segment, seg_length
-
-                weight = mean_stdev(weights).cpu().numpy() if draw_weights else None
-                b_data = (tags, labels, fences, fence_vote, weight, segment, seg_length)
-            else:
-                b_head = (batch_id, batch['token'].cpu().numpy())
-                # segment, token, tag, label, fence, seg_length
-                b_data = (tags, labels, fences, segment, seg_length)
-
-            vis.process(b_head + b_data)
+            b_head = [batch['tree'], batch['length'], batch['token']]
+            tags   = self._model.get_decision(tag_logits  )
+            labels = self._model.get_decision(label_logits)
+            b_data = [tags.type(torch.short), labels.type(torch.short), chunks, stem.segment, batch_segment, batch.get('tag_layer', 0)]
+            if serial: # [tree, length, token, tag, label, chunk, b_seg, segment, weight, vote]
+                if draw_weights:
+                    b_data.append(mean_stdev(weight).type(torch.float16))
+                    b_data.append(None if chunk_vote is None else chunk_vote.type(torch.float16))
+                else:
+                    b_data += [None, None]
+            vis.process(batch_id, make_tensors(*b_head, *b_data))
         return batch_size, batch_len
 
     def _before_validation(self, ds_name, epoch, use_test_set = False, final_test = False):
@@ -224,7 +169,7 @@ class MultiOperator(PennOperator):
         work_dir = self.recorder.create_join(folder)
         serial = draw_weights or flush_heads or self.dm is None
         if serial:
-            async_ = True
+            async_ = False
             vis = MultiVis(epoch,
                           work_dir,
                           self._evalb,
@@ -241,7 +186,7 @@ class MultiOperator(PennOperator):
         vis.before()
         self._vis_mode = vis, use_test_set, final_test, serial, draw_weights
 
-        if final_test and hasattr(self._model, 'get_multilingual'):
+        if final_test and self.multi_corp:
             work_dir = self._recorder.create_join('multilingual')
             # save vocabulary
             for corp, i2vs in self.i2vs.items():
@@ -252,7 +197,7 @@ class MultiOperator(PennOperator):
             # save Tag/Label
             for get_label in (False, True):
                 prefix = ('tag', 'label')[get_label] + '.'
-                for lhs, rhs, dst, cos in self._model.get_multilingual(get_label):
+                for lhs, rhs, dst, cos in (self._model.get_multilingual_tag_matrices(), self._model.get_multilingual_tag_matrices()):
                     # save matrix
                     #  # 'a+' if get_label else 'w' lhv, rhv = self.i2vs[lhs], self.i2vs[rhs]
                     if lhs == rhs:
@@ -284,7 +229,11 @@ class MultiOperator(PennOperator):
         else:
             scores, desc, logg = vis.after()
             length_bins = None
-        desc = (ds_name.upper() if self.multi_corp else 'Evalb') + desc
+        if self.multi_corp:
+            desc = ds_name.upper() + desc
+            logg = ds_name + ' ' + logg
+        else:
+            desc = 'Evalb' + desc
 
         if length_bins is not None:
             if self.multi_corp:
@@ -298,22 +247,7 @@ class MultiOperator(PennOperator):
                 else:
                     self._mode_length_bins = length_bins, test_bins # change devel
 
-        speed_outer = float(f'{count / seconds:.1f}')
-        speed_inner = float(f'{count / vis.proc_time:.1f}') # unfolded with multiprocessing
-        if vis.is_async:
-            rate = vis.proc_time / seconds
-        else:
-            rate = vis.proc_time / (seconds - vis.proc_time)
-
-        if serial:
-            dmt = speed_dm = ''
-        else:
-            dmt = self._dm.duration
-            speed_dm = f' ◇ {count / dmt:.1f}'
-            dmt = f' ◇ {dmt:.3f}'
-            desc += byte_style(speed_dm + 'sps.', '2')
-
-        logg += f' @{speed_outer} ◇ {speed_inner}{speed_dm} sps. (sym:nn {rate:.2f}; {seconds:.3f}{dmt} sec.)'
+        _desc, _logg, speed_outer, speed_dm = speed_logg(count, seconds, None if serial else self._dm)
         scores['speed'] = speed_outer
         if not final_test:
             prefix = 'TestSet' if use_test_set else 'DevelSet'
@@ -321,7 +255,7 @@ class MultiOperator(PennOperator):
             self.recorder.tensorboard(self.global_step, prefix + '/%s', suffix,
                                       F1 = scores.get('F1', 0),
                                       SamplePerSec = None if serial else speed_dm)
-        return scores, desc, logg
+        return scores, desc + _desc, logg + _logg
 
     def _get_optuna_fn(self, train_params):
         assert self.multi_corp
@@ -338,7 +272,7 @@ class MultiOperator(PennOperator):
                     balanced[corp] = data_config['balanced'] = trial.suggest_float(corp, 0.0, 1.0)
                 self._train_materials = balanced, self._train_materials[1] # for train/train_initials(max_epoch>0)
                 lr = specs['train']['learning_rate']
-                specs['train']['learning_rate'] = lr = trial.suggest_loguniform('learning_rate', 1e-6, lr)
+                specs['train']['learning_rate'] = lr = trial.suggest_float('learning_rate', 1e-6, lr, log = True)
                 self._train_config._nested.update(specs['train'])
                 self._train_materials = balanced, self._train_materials[1] # for train/train_initials(max_epoch>0)
                 return ''.join(height_ratio(b) for b in balanced.values()) + f';lr={lr:.1e}'
@@ -353,43 +287,10 @@ class MultiOperator(PennOperator):
 from utils.vis import BaseVis, VisRunner
 from utils.file_io import join, isfile, listdir, remove
 from utils.shell_io import parseval, rpt_summary
-from data.continuous.multib import get_tree_from_signals
+from data.continuous.multib.mp import tensor_to_tree
 from data.continuous import draw_str_lines
 from visualization import tee_trees
 from sys import stderr
-
-def batch_trees(b_word, b_tag, b_label, b_fence, b_segment, b_seg_length, i2vs, fb_label, b_weight = None, b_fence_vote = None, mark_np_without_dt = False):
-    for sid, (word, tag, label, fence, seg_length) in enumerate(zip(b_word, b_tag, b_label, b_fence, b_seg_length)):
-        layers_of_label = []
-        layers_of_fence = []
-        layers_of_weight = None if b_weight is None else []
-        layers_of_fence_vote = None if b_fence_vote is None else []
-        label_start = 0
-        fence_start = 0
-        fence_vote_start = 0
-        for l_cnt, (l_size, l_len) in enumerate(zip(b_segment, seg_length)):
-            label_layer = tuple(i2vs.label[i] for i in label[label_start: label_start + l_len])
-            layers_of_label.append(label_layer)
-            if l_cnt:
-                layers_of_fence.append(fence[fence_start: fence_start + l_len + 1])
-                fence_start += l_size + 1
-            else:
-                ln = l_len
-            if l_len == 1:# or l_cnt > 1 and layers_of_label[-1] == layers_of_label[-2]:
-                break
-            if b_weight is not None:
-                layers_of_weight.append(b_weight[sid, label_start: label_start + l_len])
-            if b_fence_vote is not None:
-                fence_vote_end = fence_vote_start + (l_size + 1) * l_size
-                fence_vote_layer = b_fence_vote[sid, fence_vote_start: fence_vote_end]
-                if fence_vote_layer.size: # for erroneous outputs
-                    fence_vote_layer = fence_vote_layer.reshape(l_size + 1, l_size)[:l_len + 1, :l_len]
-                    layers_of_fence_vote.append(fence_vote_layer)
-                    fence_vote_start = fence_vote_end
-            label_start += l_size
-        wd = [i2vs.token[i] for i in word[:ln]]
-        tg = [i2vs.tag  [i] for i in  tag[:ln]]
-        yield get_tree_from_signals(wd, tg, layers_of_label, layers_of_fence, fb_label, layers_of_weight, layers_of_fence_vote, mark_np_without_dt)
 
 
 class MultiVis(BaseVis):
@@ -407,7 +308,7 @@ class MultiVis(BaseVis):
         self._is_anew  = not isfile(htree) or flush_heads
         self._rpt_file = join(work_dir, f'data.{epoch}.rpt')
         self._logger   = logger
-        self._i2vs     = i2vs
+        self._i2vs     = i2vs.token, i2vs.tag, i2vs.label, 
         self.register_property('length_bins',  length_bins)
         self._draw_file = join(work_dir, f'data.{epoch}.art') if draw_weights else None
         self._error_idx = 0, []
@@ -427,23 +328,23 @@ class MultiVis(BaseVis):
         if self._draw_file and isfile(self._draw_file):
             remove(self._draw_file)
 
-    def _process(self, batch):
-        (h_token, h_tag, h_label, h_fence, h_segment, h_seg_length,
-         d_tag, d_label, d_fence, d_fence_vote, d_weight, d_segment, d_seg_length) = batch
+    def _process(self, _, batch):
+        (trees, length, token, tag, label, chunk, batch_segment, segment, tag_layer, weight, vote) = batch
 
         if self._is_anew:
-            trees = []
-            for tree in batch_trees(h_token, h_tag, h_label, h_fence, h_segment, h_seg_length, self._i2vs, None):
-                trees.append(' '.join(str(tree).split()))
-            self.length_bins |= tee_trees(self._join_fn, 'head', h_seg_length[:, 0], trees, None, 10)
+            str_trees = [' '.join(str(tree).split()) for tree in trees]
+            self.length_bins |= tee_trees(self._join_fn, 'head', length, str_trees, None, 10)
 
-        trees = []
+        str_trees = []
         idx_cnt, error_idx = self._error_idx
-        for tid, (tree, safe) in enumerate(batch_trees(h_token, d_tag, d_label, d_fence, d_segment, d_seg_length, self._i2vs, 'S')):
+        a_args = self._i2vs + (tag_layer, batch_segment,)
+        b_args = token, tag, label, chunk, segment
+        for args in zip(*b_args):
+            tree, safe = tensor_to_tree(*a_args, *args, fallback_label = 'VROOT')
             idx_cnt += 1 # start from 1
             if not safe:
                 error_idx.append(idx_cnt)
-            trees.append(' '.join(str(tree).split()))
+            str_trees.append(' '.join(str(tree).split()))
         self._error_idx = idx_cnt, error_idx
 
         if self._draw_file is None:
@@ -452,8 +353,12 @@ class MultiVis(BaseVis):
             bin_size = None if self.length_bins is None else 10
             _, head_stat = self._headedness_stat
             with open(self._draw_file, 'a+') as fw:
-                for tree, safe, stat in batch_trees(h_token, d_tag, d_label, d_fence, d_segment, d_seg_length, self._i2vs, 'S', 
-                                                    d_weight, d_fence_vote, self._mark_np_without_dt):
+                for eid, args in enumerate(zip(*b_args)):
+                    tree, safe, stat = tensor_to_tree(*a_args, *args, 
+                        None if weight is None else weight[eid], 
+                        None if   vote is None else   vote[eid],
+                        fallback_label           = 'VROOT',
+                        mark_np_without_dt_child = self._mark_np_without_dt)
                     for lb, (lbc, hc) in stat.items():
                         if lb in head_stat:
                             label_cnt, head_cnts = head_stat[lb]
@@ -463,13 +368,13 @@ class MultiVis(BaseVis):
                         else:
                             head_stat[lb] = lbc, hc
                     if not safe:
-                        fw.write('\n[FORCING TREE WITH ROOT = S]\n')
+                        fw.write('\n[*]\n')
                     try:
                         fw.write('\n'.join(draw_str_lines(tree)) + '\n\n')
                     except Exception as err:
                         print('  FAILING DRAWING:', err, file = stderr)
                         fw.write('FAILING DRAWING\n\n')
-        tee_trees(self._join_fn, f'data.{self.epoch}', d_seg_length[:, 0], trees, None, bin_size)
+        tee_trees(self._join_fn, f'data.{self.epoch}', length, str_trees, None, bin_size)
 
     def _after(self):
         # call evalb to data.emm.rpt return the results, and time counted
@@ -515,11 +420,7 @@ class MultiVis(BaseVis):
                     line += f'{h}({c}); '
                 fw.write(line[:-2] + '\n')
 
-        desc = f'({scores["LP"]:.2f}/{scores["LR"]:.2f}/'
-        key_score = f'{scores["F1"]:.2f}'
-        desc_for_screen = desc + byte_style(key_score, underlined = True) + ')'
-        desc_for_logger = f'N: {scores["N"]} {desc}{key_score})'
-        return scores, desc_for_screen, desc_for_logger, self.length_bins
+        return continuous_score_desc_logg(scores)
 
 class ParallelVis(BaseVis):
     def __init__(self, epoch, work_dir, evalb, logger, dm, corp_key):
@@ -531,10 +432,10 @@ class ParallelVis(BaseVis):
     def _before(self):
         self._args[0].timeit()
 
-    def _process(self, batch):
-        batch_id, h_token, d_tag, d_label, d_fence, d_segment, d_seg_length = batch
+    def _process(self, batch_id, batch):
+        (_, _, token, tag, label, chunk, batch_segment, segment, tag_layer) = batch
         dm, _, _, corp_key = self._args
-        dm.batch(batch_id, d_segment, h_token, d_tag, d_label, d_fence, d_seg_length, key = corp_key)
+        dm.batch(batch_id, tag_layer, batch_segment, token, tag, label, chunk, segment, key = corp_key)
     
     def _after(self):
         dm, evalb, logger, _ = self._args
@@ -561,12 +462,7 @@ class ParallelVis(BaseVis):
                 with open(self._join(fname), 'w') as fw:
                     fw.write(report)
                 logger(f'  (Check {fname} for details.)')
-
-        desc = f'({scores["LP"]:.2f}/{scores["LR"]:.2f}/'
-        key_score = f'{scores["F1"]:.2f}'
-        desc_for_screen = desc + byte_style(key_score, underlined = True) + ')'
-        desc_for_logger = f'N: {scores["N"]} {desc}{key_score})'
-        return scores, desc_for_screen, desc_for_logger
+        return continuous_score_desc_logg(scores)
 
     @property
     def save_tensors(self):

@@ -1,18 +1,20 @@
 from data.stutt import DiscoMultiReader
-from data.stutt_types import C_ABSTRACT, xccp_data_config
+from data.stutt_types import xccp_data_config, E_DISCONTINUOUS
 from data.stutt_types import select_and_split_corpus
 from utils.types import M_TRAIN
 from utils.file_io import parpath
 from utils.param_ops import HParams
-from data.backend import pre_word_base, post_word_base
 
 from experiments.t_dm.model import DiscoMultiRnnTree, model_type
 from experiments.t_dm.operator import DiscoMultiOperator, train_type
 
+CORPORA = set(E_DISCONTINUOUS)
+
 def get_configs(recorder = None):
     if recorder is None:
-        return {C_ABSTRACT: xccp_data_config}, model_type, train_type
+        return xccp_data_config, model_type, train_type
     
+    from data.utils import pre_word_base, post_word_base
     data_config, model_config, train_config, _ = recorder.task_specs()
     readers = {}
     chelper = pre_word_base(model_config)

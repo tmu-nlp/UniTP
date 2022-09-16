@@ -35,7 +35,7 @@ continuous_attention_hint = dict(unit       = false_type,
 discontinuous_attention_hint = continuous_attention_hint.copy()
 discontinuous_attention_hint.pop('boundary')
 
-fence_vote = BaseType(0, as_index = True, default_set = (None, 'state.dot', 'unit.dot', 'state.cat', 'unit.cat'))
+chunk_vote = BaseType(0, as_index = True, default_set = (None, 'state.dot', 'unit.dot', 'state.cat', 'unit.cat'))
 
 hinge_bias = lambda x: x - 0.5
 

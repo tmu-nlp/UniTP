@@ -40,6 +40,29 @@ def hinge_score(hinge_logits, inplace):
     if not inplace:
         return hinge_scores
 
+def distance(lhs, rhs):
+    diff = lhs - rhs
+    diff = (diff ** 2).sum(2)
+    return diff.sqrt() / lhs.shape[1]
+
+def cosine(lhs, rhs):
+    lr = (lhs * rhs).sum(2)
+    l2 = (lhs * lhs).sum(2)
+    r2 = (rhs * rhs).sum(2)
+    return lr / (l2 * r2)
+
+def reduce_matrix(lhs, rhs, fn): # [num, dim]
+    return fn(lhs.unsqueeze(1).detach(), rhs.unsqueeze(0).detach()).cpu().numpy()
+
+def get_multilingual(layer):
+    corps = list(layer.keys())
+    for eid, lhs in enumerate(corps):
+        for rhs in corps[eid:]:
+            d = reduce_matrix(layer[lhs].weight, layer[rhs].weight, distance)
+            c = reduce_matrix(layer[lhs].weight, layer[rhs].weight, cosine)
+            yield lhs, rhs, d, c
+
+
 import math
 from torch.nn import Module, Parameter, init
 from torch.nn import Linear, Softmax, Softmin, ModuleDict
@@ -346,44 +369,44 @@ def shuffle_some_from(new_size, base, existence):
     return some, continuous
 
 def blocky_softmax(sections,
-                   logits,
-                   domains = None,
-                   values = None,
+                   src_logits,
+                   dst_logits = None,
+                   final_src_logits = None,
                    pad_first = True,
                    map_pad_weights_to_zero = True,
                    use_ones_as_values = False):
     # 0 in sections indicate a dump
     # [1 2 2 3 0] -> [0 1 2 3]
     idx = sections.unsqueeze(dim = 2)
-    expanded_idx = idx.expand_as(logits)
-    bs, sl, eb = logits.shape
+    expanded_idx = idx.expand_as(src_logits)
+    bs, sl, eb = src_logits.shape
     domain_sl = sections.max() + 1
-    if domains is not None:
-        padded = torch.zeros(bs, 1, eb, device = logits.device)
-        padded = torch.cat([padded, domains] if pad_first else [domains, padded], dim = 1)
+    if dst_logits is not None:
+        padded = torch.zeros(bs, 1, eb, device = src_logits.device)
+        padded = torch.cat([padded, dst_logits] if pad_first else [dst_logits, padded], dim = 1)
         padded = torch.gather(padded, 1, expanded_idx)
-        logits = logits + padded # empty pad section will pollute logits
-    exp_logits = logits.exp()
-    zer_domains = torch.zeros(bs, domain_sl, eb, device = logits.device)
-    exp_domains = zer_domains.scatter_add(1, expanded_idx, exp_logits)
-    exp_domains = torch.gather(exp_domains, 1, expanded_idx)
-    if map_pad_weights_to_zero: # polluted logits yield zero weights
+        src_logits = src_logits + padded # empty pad section will pollute src_logits
+    exp_logits = src_logits.exp()
+    zer_dst_logits = torch.zeros(bs, domain_sl, eb, device = src_logits.device)
+    exp_dst_logits = zer_dst_logits.scatter_add(1, expanded_idx, exp_logits)
+    exp_dst_logits = torch.gather(exp_dst_logits, 1, expanded_idx)
+    if map_pad_weights_to_zero: # polluted src_logits yield zero weights
         if pad_first:
-            section_idx = idx != 0
+            existence = idx != 0
         else:
-            section_idx = idx != sections.max(dim = 1).values[:, None, None]
-        exp_logits = section_idx * exp_logits
-    weights = exp_logits / exp_domains
+            existence = idx != sections.max(dim = 1).values[:, None, None]
+        exp_logits = existence * exp_logits
+    weights = exp_logits / exp_dst_logits
     if use_ones_as_values:
         from utils.shell_io import byte_style
         print(byte_style('[WARNING: use_ones_as_values only for debugging!!!]', '1'))
-        print(byte_style('[+PROMPT: final_domains should have either 0 or 1]', '3'))
-        values = torch.ones_like(weights)
-    if values is None:
+        print(byte_style('[+PROMPT: final_dst_logits should have either 0 or 1]', '3'))
+        final_src_logits = torch.ones_like(weights)
+    if final_src_logits is None:
         return weights
-    final_domains = zer_domains.scatter_add(1, expanded_idx, weights * values)
-    final_domains = final_domains[:, 1:] if pad_first else final_domains[:, :-1]
-    return weights, final_domains
+    final_dst_logits = zer_dst_logits.scatter_add(1, expanded_idx, weights * final_src_logits)
+    final_dst_logits = final_dst_logits[:, 1:] if pad_first else final_dst_logits[:, :-1]
+    return weights, final_dst_logits
 
 def blocky_max(sections, values, has_batch_dim = True):
     m = sections.max() + 1

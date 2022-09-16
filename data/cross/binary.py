@@ -324,11 +324,11 @@ def disco_tree(word, bottom_tag,
                layers_of_right,
                layers_of_joint,
                layers_of_direc,
-               fall_back_root_label = None,
-               perserve_sub         = False):
+               fallback_label = None,
+               perserve_sub   = False):
 
     (NTS, bottom_len, track_nodes, terminals, non_terminals, top_down, track_fall_back,
-     error_layer_id) = bottom_trees(word, bottom_tag, layers_of_label, fall_back_root_label, perserve_sub)
+     error_layer_id) = bottom_trees(word, bottom_tag, layers_of_label, fallback_label, perserve_sub)
 
     for lid, (lr, lj, ld) in enumerate(zip(layers_of_right, layers_of_joint, layers_of_direc)):
         # if not (len(lr) == len(ld) == len(lj) + 1 == len(track_nodes)):
@@ -383,7 +383,7 @@ def disco_tree(word, bottom_tag,
             last_right = right
             last_direc = direc
 
-        # if isinstance(fall_back_root_label, str) and len(word) > 2:
+        # if isinstance(fallback_label, str) and len(word) > 2:
         #     import pdb; pdb.set_trace()
         if len(track_nodes) > 1 and snapshot_track_nodes == track_nodes and track_fall_back: # no action is taken
             if error_layer_id is None:
@@ -394,7 +394,7 @@ def disco_tree(word, bottom_tag,
                     top_down[NTS].update(top_down.pop(pid))
                 else:
                     top_down[NTS].add(pid)
-            non_terminals[NTS] = fall_back_root_label
+            non_terminals[NTS] = fallback_label
             NTS -= 1
             break
 

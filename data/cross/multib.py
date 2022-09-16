@@ -313,12 +313,12 @@ from data.cross import E_SHP, E_CMB, E_LBL, _combine, draw_str_lines, bottom_tre
 def disco_tree(word, bottom_tag, 
                layers_of_label,
                layers_of_space,
-               fall_back_root_label = None,
+               fallback_label = None,
                layers_of_weight     = None,
                perserve_sub         = False):
 
     (NTS, bottom_len, track_nodes, terminals, non_terminals, top_down, track_fall_back,
-     error_layer_id) = bottom_trees(word, bottom_tag, layers_of_label, fall_back_root_label, perserve_sub)
+     error_layer_id) = bottom_trees(word, bottom_tag, layers_of_label, fallback_label, perserve_sub)
 
     add_weight_base = layers_of_weight is not None
     weight_nodes = {}
@@ -336,7 +336,7 @@ def disco_tree(word, bottom_tag,
                     top_down[NTS].update(top_down.pop(pid))
                 else:
                     top_down[NTS].add(pid)
-            non_terminals[NTS] = fall_back_root_label
+            non_terminals[NTS] = fallback_label
             return NTS - 1
 
     for lid, space_layer in enumerate(layers_of_space):
@@ -401,7 +401,7 @@ def disco_tree(word, bottom_tag,
             else:
                 new_track_nodes.append(track_nodes[cids.pop()])
 
-        # if isinstance(fall_back_root_label, str) and len(word) > 2:
+        # if isinstance(fallback_label, str) and len(word) > 2:
         #     import pdb; pdb.set_trace()
         if len(track_nodes) > 1 and new_track_nodes == track_nodes and track_fall_back: # no action is taken
             error_layer_id = lid, E_CMB, bottom_len
@@ -412,9 +412,9 @@ def disco_tree(word, bottom_tag,
 
     if not error_layer_id:
         if not non_terminals:
-            assert fall_back_root_label, 'should provide a fallback root label'
+            assert fallback_label, 'should provide a fallback root label'
             top_down[NTS].update(tid for tid, _, _ in terminals)
-            non_terminals[NTS] = fall_back_root_label
+            non_terminals[NTS] = fallback_label
             NTS -= 1
             error_layer_id = -1, E_LBL, bottom_len
 

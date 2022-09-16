@@ -72,11 +72,10 @@ class BaseType:
         return default_val
 
     def validate(self, val):
-        # valid = self._valid(val)
-        # if not valid and self._fallback is not None:
-        #     return self._fallback.validate(val)
-        # return valid
-        return self._valid(val)
+        try:
+            return self._valid(val)
+        except:
+            return False
 
     # def set_fallback(self, btype):
     #     assert isinstance(btype, BaseType)
@@ -107,6 +106,7 @@ E_MS = (2, 32, 64, 128)
 frac_close     = lambda x: 0 <= x <= 1
 frac_open_1    = lambda x: 0 <= x < 1
 frac_open_0    = lambda x: 0 < x <= 1
+open_pn_ones   = lambda x: -1 < x < 1
 valid_size      = lambda x: isinstance(x, int) and x > 0
 valid_odd_size  = lambda x: valid_size(x) and x % 2 == 1
 valid_even_size = lambda x: valid_size(x) and x % 2 == 0
@@ -123,6 +123,7 @@ frac_7         = BaseType(0.7, validator = frac_open_1)
 frac_25        = BaseType(0.25, validator = frac_open_1)
 frac_06        = BaseType(0.06, validator = frac_open_1)
 rate_5         = BaseType(0.5, validator = frac_close)
+range_pn_ones  = BaseType(0.0, validator = open_pn_ones)
 distance_type  = BaseType(3.1, validator = lambda d: d > 0)
 non0_5         = BaseType(0.5, validator = frac_open_0)
 none_type      = BaseType(None)
@@ -140,9 +141,11 @@ train_bucket_len = BaseType(4, validator = valid_epoch)
 inter_height_2d  = BaseType(7, validator = valid_epoch)
 tune_epoch_type  = BaseType(None, as_exception = True, validator = valid_epoch)
 train_max_len    = BaseType(None, validator = valid_size, as_exception = True)
-trapezoid_height = BaseType(-1, valid_size, (None, 0, 1), as_index = True)
-combine_static = BaseType(0, as_index = True, default_set = (None, 'add', 'scalar_add', 'vector_add'))
+trapezoid_height = BaseType(-1, valid_size, (0, 1), as_index = True)
+combine_emb_and_cxt = BaseType(0, as_index = True, default_set = (None, 'add', 'scalar_add', 'vector_add'))
 fill_placeholder = '//FILL//THIS//'
+
+token_type = BaseType(0, default_set = ('word', 'char'), as_index = True)
 
 from utils.str_ops import strange_to
 def strange_validator(x):
@@ -156,54 +159,77 @@ def strange_validator(x):
 
 str_num_array = BaseType('', validator = strange_validator)
 
-NIL, PAD, UNK, BOS, EOS = '<nil>', '<pad>', '<unk>', '<bos>', '<eos>'
 M_TRAIN = 'train'
 M_DEVEL = 'devel'
 M_TEST  = 'test'
 M_INFER = 'infer'
 E_MODE = (M_TRAIN, M_DEVEL, M_TEST, M_INFER)
-E_ORIF4 = 'left', 'right', 'midin', 'midout'
-O_LFT, O_RGT, O_MIN, O_MOT = E_ORIF4
-O_HEAD = F_DEP = 'head'
-O_M25, O_M50, O_M75 = (O_MIN + str(x) for x in (25, 50, 75))
-E_ORIF5 = O_LFT, O_M25, O_M50, O_M75, O_RGT
-E_ORIF5_HEAD = O_LFT, O_M25, O_M50, O_M75, O_RGT, O_HEAD
-E_ORIF11 = (O_MIN + str(x * 10) for x in range(1, 10))
-E_ORIF11 = (O_LFT,) + tuple(o for o in E_ORIF11 if o != O_M50) + (O_RGT,)
-E_ORIF11_HEAD = E_ORIF11 + (O_HEAD,)
-E_CNF = O_LFT, O_RGT
-F_LEFT, F_RIGHT = E_ORIF4[:2]
-F_RANDOM = 'random'
-F_CON = 'continuous'
-E_FACTOR = F_RANDOM, F_LEFT, F_RIGHT, F_DEP, F_CON
 
-def seg_type(seg_str, typ):
-    for seg in seg_str.split(','):
-        yield typ(seg)
+K_CORP = 'factor'
 
-def beta_tuple(seg_str):
+F_CNF = 'cnf'
+F_DEP = 'head'
+F_LEFT = 'left'      # all -CM
+F_RIGHT = 'right'    # all -CM
+F_RANDOM = 'random'  # all
+F_ESUB = 'esub'
+F_MSUB = 'msub'
+F_CON = 'continuous' # DM
+
+F_SENTENCE = 'sentence'
+F_PHRASE = 'phrase'
+
+# all: esub/msub
+# DM: /random/left/right|continuous
+
+def beta_type(string):
     try:
-        alpha, beta = (seg_type(seg_str, float))
+        if ',' in string:
+            level, left, right = string.split(',')
+            level = level.strip(); left = left.strip()
+        else:
+            level, left, right = string.split()
+        right = float(right)
     except:
         return
-    return alpha, beta
+    if not (level in (F_PHRASE, F_SENTENCE) and 0 <= right <= 1):
+        return
+    if left in (F_CNF, F_CON):
+        if level == F_PHRASE and left == F_CNF:
+            return
+        return level, left, right
+    try:
+        left = float(left)
+    except:
+        return
+    if left > 0 and right > 0:
+        return level, left, right # num, num (beta)
 
-frac_00 = BaseType(0.0, frac_close)
-frac_85 = BaseType(0.85, frac_close)
-frac_15 = BaseType(0.15, frac_close)
-binarization = {O_LFT: frac_85,
-                O_RGT: frac_15,
-                O_MIN: frac_00,
-                O_MOT: frac_00}
-frac_close_0 = BaseType(0.0, frac_close)
-frac_close_2 = BaseType(0.2, frac_close)
-frac_close_1 = BaseType(1.0, frac_close)
-binarization_5_head = {o: frac_close_0 if o == O_HEAD else frac_close_2 for o in E_ORIF5_HEAD}
-F_RAND_CON = F_CON + '_' + F_RANDOM
-F_RAND_CON_SUB = F_RAND_CON + '_balanced'
-F_RAND_CON_MSB = F_RAND_CON + '_more_sub'
-binarization_5_head[F_RAND_CON] = BaseType(True, beta_tuple, E_FT)
-binarization_5_head[F_RAND_CON_SUB] = rate_5
-binarization_5_head[F_RAND_CON_MSB] = frac_25
+make_beta = lambda level, left, right: BaseType(f'{level} {left} {right}', beta_type)
+
+frac_close_pool = {}
+def make_close_frac(x):
+    if x not in frac_close_pool:
+        frac_close_pool[x] = BaseType(x, frac_close)
+    return frac_close_pool[x]
+
+parse_config = dict(batch_size       = train_batch_size,
+                    bucket_len       = train_bucket_len,
+                    max_len          = train_max_len,
+                    unify_sub        = true_type,
+                    sort_by_length   = false_type)
+
+def make_parse_data_config(**extra):
+    extra.update(parse_config)
+    return extra
+
+parse_factor = dict(vocab_size = vocab_size)
+
+def make_parse_factor(msub = 0, esub = 0, **extra):
+    extra.update(parse_factor)
+    extra[F_MSUB] = make_close_frac(msub)
+    extra[F_ESUB] = make_close_frac(esub)
+    return extra
+
 S_ALL, S_EXH = 'all', 'except_head'
 ply_shuffle = BaseType(0, default_set = (None, S_ALL, S_EXH), as_index = True)

@@ -4,10 +4,10 @@ from torch import nn
 from utils.types import chunk_dim, hidden_dim, half_hidden_dim, num_ori_layer, frac_2, frac_4, false_type
 from sys import stderr
 
-from models.types import rnn_module_type, continuous_attention_hint, activation_type, logit_type, fmin, fmax, fence_vote
-stem_config = dict(fence_dim      = chunk_dim,
-                   fence_module   = rnn_module_type,
-                   fence_vote     = fence_vote,
+from models.types import rnn_module_type, continuous_attention_hint, activation_type, logit_type, fmin, fmax, chunk_vote
+stem_config = dict(chunk_dim      = chunk_dim,
+                   chunk_module   = rnn_module_type,
+                   chunk_vote     = chunk_vote,
                    linear_dim     = half_hidden_dim,
                    activation     = activation_type,
                    attention_hint = continuous_attention_hint,
@@ -16,16 +16,17 @@ stem_config = dict(fence_dim      = chunk_dim,
                    rnn_drop_out   = frac_2,
                    trainable_initials = false_type)
 from models.utils import blocky_max, blocky_softmax, condense_helper, condense_left
-from models.backend import PadRNN
+from models.backend import PadRNN, simple_parameters
 from models import StemOutput
 
 class MultiStem(PadRNN):
     def __init__(self,
                  model_dim,
-                 fence_dim,
+                 chunk_dim,
                  linear_dim,
-                 fence_module,
-                 fence_vote,
+                 chunk_module,
+                 chunk_vote,
+                 char_chunk,
                  activation,
                  attention_hint,
                  num_layers,
@@ -36,143 +37,150 @@ class MultiStem(PadRNN):
                          attention_hint,
                          linear_dim,
                          model_dim,
-                         fence_dim,
+                         chunk_dim,
                          drop_out,
                          num_layers,
-                         fence_module,
+                         chunk_module,
                          rnn_drop_out,
                          trainable_initials,
-                         fence_vote,
+                         chunk_vote,
                          activation)
+        self._threshold = 0
         self._sigmoid = nn.Sigmoid()
+        self._char_bias = simple_parameters(1, 1, model_dim) if char_chunk else None
 
-    def forward(self, existence, unit_emb,
-                supervised_fence = None,
+    @property
+    def threshold(self):
+        return self._threshold
+
+    @threshold.setter
+    def set_threshold(self, threshold):
+        self._threshold = threshold
+
+    def chunk(self, logits):
+        return logits > self._threshold
+
+    def forward(self, existence, embedding,
+                n_layers = 0,
+                supervision = None,
+                bottom_supervision = None,
                 keep_low_attention_rate = 1,
                 **kw_args):
-        batch_size, seg_len = existence.shape
+        batch_segment, segment = [], []
+        batch_size, layer_len = existence.shape
         h0c0 = self.get_h0c0(batch_size)
-        max_iter_n = seg_len << 2 # 4 times
-        teacher_forcing = isinstance(supervised_fence, list)
-        segment, seg_length = [], []
-        batch_dim = torch.arange(batch_size, device = unit_emb.device)
+        max_iteration = layer_len + (layer_len >> 1) # 1.5 times
+        chunk_seq = torch.arange(layer_len + 1, device = embedding.device)
+        if not (teacher_forcing := isinstance(supervision, torch.Tensor)):
+            batch_dim = torch.arange(batch_size, device = embedding.device)
+            if bottom_supervision:
+                n_layers, supervision = bottom_supervision
 
-        if self._fence_vote is None:
+        if self._chunk_vote is None:
             layers_of_vote = None
         else:
             layers_of_vote = []
-        
-        layers_of_u_emb = []
-        layers_of_fence = []
-        layers_of_existence = []
+
+        start = 0
+        layers_of_chunk = []
         layers_of_weight = []
-        layers_of_fence_idx = []
+        layers_of_existence = []
+        layers_of_embedding = []
 
-        for l_cnt in range(max_iter_n):
-            seq_len = existence.sum(dim = 1)
-            layers_of_u_emb.append(unit_emb)
+        for l_cnt in range(max_iteration):
+            length = existence.sum(dim = 1)
+            layers_of_embedding.append(embedding)
             layers_of_existence.append(existence)
-            if not teacher_forcing:
-                segment   .append(seg_len)
-                seg_length.append(seq_len)
+            batch_segment.append(layer_len)
+            segment.append(length)
 
-            if seg_len == 1:
-                break # teacher forcing or a good model
-            elif len(seg_length) > 1:
-                prev, curr = seg_length[-2:]
+            if layer_len == 1:
+                break
+            elif len(segment) > 1:
+                prev, curr = segment[-2:]
                 if (prev == curr).all():
                     break
-                elif l_cnt == max_iter_n - 1:
+                elif l_cnt == max_iteration - 1:
                     print(f'WARNING: Action layers overflow maximun {l_cnt}', file = stderr, end = '')
                     break
 
-            fence_hidden, _ = self._fence_emb(unit_emb, h0c0)
-            fw, bw = self.pad_fwbw_hidden(fence_hidden, existence)
-            fence_hidden = self._stem_dp(fence_hidden)
-            fw = self._stem_dp(fw)
-            bw = self._stem_dp(bw)
-            if self._fence_vote is None:
-                fence_logits = self.predict_fence(fw, bw)
+            if l_cnt < n_layers:
+                chunk_hidden, _ = self._chunk_emb(embedding + self._char_bias, h0c0)
             else:
-                from_unit, method = self._fence_vote
-                votes, fence_logits = method(fw, bw, unit_emb if from_unit else fence_hidden, seq_len)
+                chunk_hidden, _ = self._chunk_emb(embedding, h0c0)
+            fw_hidden, bw_hidden = self.pad_fwbw_hidden(chunk_hidden, existence)
+            fw_hidden, bw_hidden = self._stem_dp(fw_hidden), self._stem_dp(bw_hidden)
+            chunk_hidden = self._stem_dp(chunk_hidden)
+            chunk_dim = chunk_seq[None, :layer_len + 1]
+            if self._chunk_vote is None:
+                chunk_logits = self.predict_chunk(fw_hidden, bw_hidden)
+            else:
+                from_unit, method = self._chunk_vote
+                votes, chunk_logits = method(fw_hidden, bw_hidden, embedding if from_unit else chunk_hidden, length)
                 layers_of_vote.append(votes.reshape(batch_size, -1)) # [b, s+1, s]
-            longer_seq_idx = torch.arange(seg_len + 1, device = unit_emb.device)[None, :]
             
-            if teacher_forcing:
-                fence_idx = supervised_fence[l_cnt]
-
-                sections = torch.zeros(batch_size, seg_len + 1, dtype = torch.bool, device = unit_emb.device)
-                sections[batch_dim[:, None], fence_idx] = True
-                sections = sections.cumsum(dim = 1)
+            if teacher_forcing or bottom_supervision and l_cnt < n_layers:
+                end = start + layer_len + 1
+                chunk = supervision[:, start:end]
+                start = end
+                if not teacher_forcing:
+                    chunk_logits = chunk.type(chunk_logits.dtype) - 0.5
+                elif kw_args['batch_segment'][l_cnt] != layer_len:
+                    breakpoint()
             else:
-                fence_logits[:, 0] = fmax
-                fence_logits[batch_dim, seq_len] = fmax
-                fence_logits[longer_seq_idx > seq_len[:, None]] = fmin
-                fence = fence_logits > 0
-                idx = longer_seq_idx * fence
-                helper = condense_helper(fence, as_existence = True)
-                fence_idx = condense_left(idx, helper)
-                layers_of_fence_idx.append(fence_idx)
+                chunk_logits[:, 0] = fmax
+                chunk_logits[batch_dim, length] = fmax
+                chunk_logits[chunk_dim > length[:, None]] = fmin
+                chunk = self.chunk(chunk_logits)
 
-                sections = fence.cumsum(dim = 1)
-            dom_emb, sub_emb = self.domain_and_subject(fw, bw, fence_idx, unit_emb, fence_hidden)
-            sections = torch.where(longer_seq_idx < seq_len[:, None], sections, torch.zeros_like(sections))[:, :-1]
+            space = chunk.cumsum(dim = 1)
+            split_fn = lambda: condense_left(chunk_dim * chunk, condense_helper(chunk, as_existence = True))
+            dom_emb, sub_emb = self.domain_and_subject(fw_hidden, bw_hidden, split_fn, embedding, chunk_hidden)
+            space = torch.where(chunk_dim < length[:, None], space, torch.zeros_like(space))[:, :-1]
 
-            #* self._sigmoid(self._subject_static(unit_emb)) #* 20
+            #* self._sigmoid(self._subject_static(embedding)) #* 20
             if keep_low_attention_rate < 1:
-                max_mask = blocky_max(sections, sub_emb.mean(dim = 2))
-                max_mask |= torch.rand(batch_size, seg_len, device = sub_emb.device) < keep_low_attention_rate
-                max_mask |= torch.rand(batch_size, seg_len, device = sub_emb.device) < self._sigmoid(sub_emb.sum(dim = 2))
+                max_mask = blocky_max(space, sub_emb.mean(dim = 2))
+                max_mask |= torch.rand(batch_size, layer_len, device = sub_emb.device) < keep_low_attention_rate
+                max_mask |= torch.rand(batch_size, layer_len, device = sub_emb.device) < self._sigmoid(sub_emb.sum(dim = 2))
                 sub_emb = torch.where(max_mask[:, :, None], sub_emb, sub_emb - (sub_emb.max() - sub_emb.min()) * 0.7) # max must be kept
                 
-            weights, unit_emb = blocky_softmax(sections, sub_emb, dom_emb, unit_emb)
-            seg_len  = unit_emb.shape[1]
-            existence = fence_idx[:, 1:] > 0
-            layers_of_weight.append(weights)
-            layers_of_fence.append(fence_logits)
+            weights, embedding = blocky_softmax(space, sub_emb, dom_emb, embedding)
+            layer_len = embedding.shape[1]
+            existence = torch.arange(layer_len, device = sub_emb.device)[None] < chunk[:, 1:].sum(dim = 1, keepdim = True)
+            layers_of_weight .append(weights)
+            layers_of_chunk  .append(chunk_logits)
 
-        embeddings = torch.cat(layers_of_u_emb, dim = 1)
-        fence      = torch.cat(layers_of_fence, dim = 1)
-        existence  = torch.cat(layers_of_existence, dim = 1)
+        chunk     = torch.cat(layers_of_chunk, dim = 1)
+        segment   = torch.stack(segment, dim = 1)
+        embedding = torch.cat(layers_of_embedding, dim = 1)
+        existence = torch.cat(layers_of_existence, dim = 1)
         if teacher_forcing:
             weight     = None
-            fence_vote = None
+            chunk_vote = None
         else:
-            weight     = torch.cat(layers_of_weight,    dim = 1)
-            fence_idx  = torch.cat(layers_of_fence_idx, dim = 1)
-            seg_length = torch.stack(seg_length, dim = 1)
-            if self._fence_vote is None:
-                fence_vote = None
+            weight = torch.cat(layers_of_weight, dim = 1)
+            if self._chunk_vote is None:
+                chunk_vote = None
             elif layers_of_vote:
-                fence_vote = torch.cat(layers_of_vote, dim = 1)
+                chunk_vote = torch.cat(layers_of_vote, dim = 1)
             else:
-                fence_vote = torch.zeros(batch_size, 0, dtype = unit_emb.shape, device = unit_emb.device)
+                chunk_vote = torch.zeros(batch_size, 0, dtype = embedding.shape, device = embedding.device)
 
-        return StemOutput(embeddings, existence, (weight, fence, fence_idx, fence_vote, segment, seg_length))
+        return StemOutput(embedding, existence, batch_segment, (weight, chunk, chunk_vote, segment))
 
 multi_class = dict(hidden_dim = hidden_dim,
                    activation = activation_type,
                    logit_type = logit_type,
                    drop_out   = frac_4)
 
-model_type = dict(fence_layer     = stem_config,
+model_type = dict(chunk_layer     = stem_config,
                   tag_label_layer = multi_class)
 
 from models.loss import get_loss
 from models.backend import OutputLayer
 from utils.param_ops import change_key
-class BaseRnnParser(OutputLayer):
+class _CM(OutputLayer):
     def __init__(self, *args, **kwargs):
-        change_key(kwargs, 'fence_layer', 'stem_layer')
+        change_key(kwargs, 'chunk_layer', 'stem_layer')
         super().__init__(MultiStem, *args, **kwargs)
-
-    def get_losses(self, batch, weight_mask, tag_logits, label_logits, key = None):
-        tag_fn = self._tag_layer if key is None else self._tag_layer[key]
-        label_fn = self._label_layer if key is None else self._label_layer[key]
-        height_mask = batch['segment'][None] * (batch['seg_length'] > 0)
-        height_mask = height_mask.sum(dim = 1)
-        tag_loss   = get_loss(tag_fn,   self._logit_max, tag_logits,   batch, 'tag')
-        label_loss = get_loss(label_fn, self._logit_max, label_logits, batch, False, height_mask, weight_mask, 'label')
-        # height mask and weight_mask are both beneficial! (nop, weight_mask by freq is not helping)
-        return tag_loss, label_loss

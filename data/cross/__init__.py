@@ -389,7 +389,7 @@ def explain_error(error_layer, error_id, sent_len):
         error = 'Combine into <nil>'
     return f'len={sent_len}, {error} at layer {error_layer}'
 
-def bottom_trees(word, bottom_tag, layers_of_label, fall_back_root_label, perserve_sub):
+def bottom_trees(word, bottom_tag, layers_of_label, fallback_label, perserve_sub):
     track_nodes = []
     terminals = []
     non_terminals = {}
@@ -410,7 +410,7 @@ def bottom_trees(word, bottom_tag, layers_of_label, fall_back_root_label, perser
                 last_node = NTS
                 NTS -= 1
             track_nodes.append(NTS + 1)
-    return NTS, tid, track_nodes, terminals, non_terminals, top_down, isinstance(fall_back_root_label, str), None
+    return NTS, tid, track_nodes, terminals, non_terminals, top_down, isinstance(fallback_label, str), None
 
 def multi_attachment(top_down):
     children_cnt = Counter()

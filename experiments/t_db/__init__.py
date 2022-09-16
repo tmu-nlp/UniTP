@@ -1,16 +1,18 @@
 from data.stutt import DiscoReader
-from data.stutt_types import C_ABSTRACT, dccp_data_config, select_corpus
-from utils.types import M_TRAIN, E_ORIF5_HEAD
+from data.stutt_types import E_DISCONTINUOUS, dccp_data_config
+from utils.types import M_TRAIN
 from utils.param_ops import HParams
-from data.backend import pre_word_base, post_word_base
 
 from experiments.t_db.model import DiscoRnnTree, model_type
 from experiments.t_db.operator import DiscoOperator, train_type
 
+CORPORA = set(E_DISCONTINUOUS)
+
 def get_configs(recorder = None):
     if recorder is None:
-        return {C_ABSTRACT: dccp_data_config}, model_type, train_type
+        return dccp_data_config, model_type, train_type
     
+    from data.utils import pre_word_base, post_word_base
     data_config, model_config, train_config, _ = recorder.task_specs()
     readers = {}
     chelper = pre_word_base(model_config)
@@ -41,7 +43,7 @@ def get_configs(recorder = None):
                         ply_shuffle = disco.ply_shuffle,
                         sort_by_length = disco.sort_by_length)
                 else:
-                    from data.backend import post_batch
+                    from data.dataset import post_batch
                     train_ds.reset_factors(new_train_cnf)
                     datasets[corp_name] = post_batch(mode, train_ds, disco.sort_by_length, disco.bucket_len, disco.batch_size)
             else:

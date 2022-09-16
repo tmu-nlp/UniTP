@@ -19,9 +19,9 @@ class Operator:
         assert isinstance(recorder, Recorder)
         self._multi_corp = isinstance(i2vs, dict)
         if self._multi_corp:
-            assert all('token' in v._nested for v in i2vs.values())
+            assert all('token' in v._fields for v in i2vs.values())
         else:
-            assert 'token' in i2vs._nested
+            assert 'token' in i2vs._fields
         from utils.types import device
         model.to(device)
         self._model = model

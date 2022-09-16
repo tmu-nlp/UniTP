@@ -49,16 +49,17 @@ E_NER = C_IN
 build_params = {C_IN: {}}
 ft_bin = {C_IN: 'id'}
 
-from data.io import make_call_fasttext, check_fasttext
+from data.io import make_call_fasttext, check_fasttext, check_vocab, save_vocab
 call_fasttext = make_call_fasttext(ft_bin)
 
 
-from data.stan_types import split_files, M_TRAIN, M_DEVEL, M_TEST, NIL # same name
+from data.stan_types import split_files, M_TRAIN, M_DEVEL, M_TEST # same name
 from os.path import join, isfile
 from collections import Counter, defaultdict
-from data.io import check_vocab, save_vocab
 from utils.pickle_io import pickle_dump, pickle_load
 from tqdm import tqdm
+from data import NIL
+
 def build(save_to_dir,
           corp_path,
           corp_name,

@@ -66,8 +66,7 @@ def valid_trans_compound(x): # CT.Tanh.3
     return False
 
 combine_type = BaseType(0, as_index = True, default_set = E_COMBINE, validator = valid_trans_compound)
-combine_static_type = BaseType(0, as_index = True,
-                               default_set = [None] + E_COMBINE,
+combine_static_type = BaseType('Add', default_set = [None] + E_COMBINE,
                                validator = lambda x: x is None or valid_trans_compound(x))
 
 def get_combinator(type_id, in_size = None):

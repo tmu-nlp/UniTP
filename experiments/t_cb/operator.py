@@ -1,15 +1,14 @@
 import torch
 from torch import nn
 from utils.operator import Operator
-from data.continuous.binary import X_RGT, X_DIR, s_index
+from data.continuous.binary import X_RGT, X_DIR
 from utils.param_ops import get_sole_key
 from time import time
 from utils.math_ops import is_bin_times
-from utils.types import M_TRAIN, BaseType, frac_open_0, true_type, false_type, tune_epoch_type, frac_06
+from utils.types import M_TRAIN, K_CORP, F_CNF, BaseType, frac_open_0, true_type, tune_epoch_type, frac_06
 from models.utils import PCA, fraction, hinge_score
 from models.loss import binary_cross_entropy, hinge_loss
-from experiments.helper import WarmOptimHelper
-from utils.shell_io import byte_style
+from experiments.helper import WarmOptimHelper, make_tensors, speed_logg, continuous_score_desc_logg
 
 train_type = dict(loss_weight = dict(tag    = BaseType(0.2, validator = frac_open_0),
                                      label  = BaseType(0.3, validator = frac_open_0),
@@ -19,7 +18,7 @@ train_type = dict(loss_weight = dict(tag    = BaseType(0.2, validator = frac_ope
                   tune_pre_trained = dict(from_nth_epoch = tune_epoch_type,
                                           lr_factor = frac_06))
 
-class PennOperator(Operator):
+class CBOperator(Operator):
     def __init__(self, model, get_datasets, recorder, i2vs, get_dm, evalb, train_config):
         super().__init__(model, get_datasets, recorder, i2vs, get_dm)
         self._init_mode_trees()
@@ -42,7 +41,7 @@ class PennOperator(Operator):
         self._schedule_lr = hp = WarmOptimHelper.adam(self._model, self._train_config.learning_rate)
         if start_epoch > 0:
             fpath = self.recorder.create_join('penn_devel')
-            PennOperator.clean_and_report(fpath, start_epoch)
+            CBOperator.clean_and_report(fpath, start_epoch)
         optim = hp.optimizer
         optim.zero_grad()
         return optim
@@ -56,48 +55,35 @@ class PennOperator(Operator):
 
     def _step(self, mode, ds_name, batch, batch_id = None):
 
-        gold_orients = X_RGT & batch['xtype']
         batch['key'] = corp = ds_name if self.multi_corp else None
         if mode == M_TRAIN:
-            batch['supervised_orient'] = gold_orients
-            #(batch['offset'], batch['length'])
+            batch['supervision'] = gold_orients = (X_RGT & batch['xtype']) > 0
 
         batch_time = time()
-        (batch_size, batch_len, static, top3_label_logits,
-         layers_of_base, existences, _, tag_logits, label_logits,
-         (orient_logits, trapezoid_info)) = self._model(batch['token'], self._tune_pre_trained, **batch)
+        bottom, stem, tag_label = self._model(batch['token'], self._tune_pre_trained, **batch)
         batch_time = time() - batch_time
+        batch_size, batch_len = bottom[:2]
+        existences = stem.existence
+        tag_start, tag_end, tag_logits, label_logits, _ = tag_label
+        orient_logits, batch_segment = stem.extension
 
         orient_logits.squeeze_(dim = 2)
         existences   .squeeze_(dim = 2)
-        if self._train_config.orient_hinge_loss:
-            orients = orient_logits > 0
-        else:
+        orients = self._model.stem.orientation(orient_logits)
+        if not self._train_config.orient_hinge_loss:
             orient_logits = self._sigmoid(orient_logits)
-            orients = orient_logits > 0.5
 
         if mode == M_TRAIN:
             tags    = self._model.get_decision(tag_logits  )
             labels  = self._model.get_decision(label_logits)
-            bottom_existence = existences[:, -batch_len:]
-            orient_weight = X_DIR & batch['xtype']
-            tag_mis       = (tags    != batch['tag'])
-            label_mis     = (labels  != batch['label'])
+            tag_mis       = (   tags != batch['tag'])
+            label_mis     = ( labels != batch['label'])
+            tag_weight    = (   tag_mis | existences[:, tag_start:tag_end])
+            label_weight  = ( label_mis | existences[:, tag_start:])
+            orient_weight = (X_DIR & batch['xtype']) > 0
             orient_match  = (orients == gold_orients) & orient_weight
-            tag_weight    = (   tag_mis | bottom_existence)
-            label_weight  = ( label_mis | existences)
 
-            # if self._train_config.label_freq_as_loss_weight:
-            #     label_mask = self._train_config.label_log_freq_inv[batch['label']]
-            # else:
-            #     label_mask = None
-
-            if trapezoid_info is None:
-                height_mask = s_index(batch_len - batch['length'])[:, None, None]
-            else:
-                height_mask = batch['mask_length'] # ?? negative effect ???
-
-            tag_loss, label_loss = self._model.get_losses(batch, tag_logits, top3_label_logits, label_logits, height_mask, None, corp)
+            tag_loss, label_loss = self._model.get_losses(batch, tag_logits, label_logits, label_weight, corp)
 
             if self._train_config.orient_hinge_loss:
                 orient_loss = hinge_loss(orient_logits, gold_orients, orient_weight)
@@ -122,66 +108,31 @@ class PennOperator(Operator):
                     Label  = label_loss,
                     Orient = orient_loss,
                     Total  = total_loss)
-                batch_kwargs = dict(Length = batch_len, SamplePerSec = batch_len / batch_time)
-                if 'segment' in batch:
-                    batch_kwargs['Height'] = len(batch['segment'])
-                self.recorder.tensorboard(self.global_step, 'Batch/%s', suffix, **batch_kwargs)
+                self.recorder.tensorboard(self.global_step, 'Batch/%s', suffix,
+                    Length = batch_len,
+                    Height = len(stem.segment),
+                    SamplePerSec = batch_len / batch_time)
         else:
-            vis, _, _, serial, c_vis = self._vis_mode
+            vis, _, _, serial = self._vis_mode
+            b_head = [batch['tree'], batch.get('offset'), batch['length'], batch['token']]
             if serial:
-                pca = self._model.get_static_pca(corp) if hasattr(self._model, 'get_static_pca') else None
-                if pca is None:
-                    pca = PCA(layers_of_base.reshape(-1, layers_of_base.shape[2]))
-                mpc_token = pca(static)
-                mpc_label = pca(layers_of_base)
-
-                # if c_vis is not None:
-                #     batch['supervised_orient'] = gold_orients
-                #     (_, _, _, _, gold_base, _, _, _, _, _,
-                #     _) = self._model(batch['token'], False, **batch)
-                #     l_pca = pca(gold_base)
-                #     label_embeddings = {}
-                #     interesting_labels = 'NP PP VP S+VP S'.split()
-                #     for lbl in interesting_labels:
-                #         lid = self.i2vs.label.index(lbl)
-                #         embs = l_pca[torch.where(batch['label'] == lid)]
-                #         label_embeddings[lbl] = embs.type(torch.float16).cpu().numpy()
-                #     c_vis.process(label_embeddings)
-                b_head = tuple(batch[x].type(torch.uint8) if x in ('tag', 'label') else batch[x] for x in 'offset length token tag label'.split())
-                b_head = b_head + (gold_orients,)
+                if (pca := (self._model.get_static_pca(corp) if hasattr(self._model, 'get_static_pca') else None)) is None:
+                    pca = PCA(stem.embedding.reshape(-1, stem.embedding.shape[2]))
+                b_head += [pca(bottom.embedding).type(torch.float16), pca(stem.embedding).type(torch.float16)]
 
                 tag_scores,   tags   = self._model.get_decision_with_value(tag_logits)
                 label_scores, labels = self._model.get_decision_with_value(label_logits)
-                tags = tags.type(torch.uint8)
-                labels = labels.type(torch.uint8)
+                b_data = [tags.type(torch.short), labels.type(torch.short), orients]
                 if self._train_config.orient_hinge_loss: # otherwise with sigmoid
                     hinge_score(orient_logits, inplace = True)
-                b_mpcs = (None if mpc_token is None else mpc_token.type(torch.float16), mpc_label.type(torch.float16))
-                b_scores = (tag_scores.type(torch.float16), label_scores.type(torch.float16), orient_logits.type(torch.float16))
-                b_data = (tags, labels, orients) + b_mpcs + b_scores
-                if trapezoid_info is not None:
-                    d_seg, d_seg_len = trapezoid_info
-                    trapezoid_info = batch['segment'], batch['seg_length'], d_seg, d_seg_len.cpu().numpy()
+                b_data += [tag_scores.type(torch.float16), label_scores.type(torch.float16), orient_logits.type(torch.float16)]
             else:
-                b_head = tuple(batch[x] for x in 'offset length token'.split())
-                tags   = self._model.get_decision(tag_logits  ).type(torch.uint8)
-                labels = self._model.get_decision(label_logits).type(torch.uint8)
-                if self.dm:
-                    b_data = (tags, labels, orients)
-                    if trapezoid_info is not None:
-                        d_seg, d_seg_len = trapezoid_info
-                        trapezoid_info = d_seg, d_seg_len.cpu().numpy()
-                else:
-                    b_head = b_head + (None, None, None)
-                    b_data = (tags, labels, orients, None, None, None, None, None)
-                    if trapezoid_info is not None:
-                        d_seg, d_seg_len = trapezoid_info
-                        trapezoid_info = batch['segment'], batch['seg_length'], d_seg, d_seg_len.cpu().numpy()
+                tags   = self._model.get_decision(tag_logits  )
+                labels = self._model.get_decision(label_logits)
+                b_data = [tags.type(torch.short), labels.type(torch.short), orients]
 
-            b_size = (batch_id, batch_size, batch_len)
-            tensors = b_size + b_head + b_data
-            tensors = tuple(x.cpu().numpy() if isinstance(x, torch.Tensor) else x for x in tensors)
-            vis.process(tensors, trapezoid_info)
+            tensors = make_tensors(batch_id, batch_size, batch_len, *b_head, *b_data)
+            vis.process(tensors, None if batch_segment is None else (stem.segment, batch_segment.cpu().numpy()))
         return batch_size, batch_len
 
     def _before_validation(self, ds_name, epoch, use_test_set = False, final_test = False):
@@ -242,18 +193,16 @@ class PennOperator(Operator):
             vis = ParallelVis(epoch, work_dir, self._evalb, self.recorder.log, self.dm, m_corp)
         vis = VisRunner(vis, async_ = async_) # wrapper
         vis.before()
-        if final_test:
-            c_vis = ScatterVis(epoch, work_dir)
-            c_vis = VisRunner(c_vis, async_ = True)
-            c_vis.before()
-        else:
-            c_vis = None
-        self._vis_mode = vis, use_test_set, final_test, serial, c_vis
+        self._vis_mode = vis, use_test_set, final_test, serial
 
     def _after_validation(self, ds_name, count, seconds):
-        vis, use_test_set, final_test, serial, c_vis = self._vis_mode
+        vis, use_test_set, final_test, serial = self._vis_mode
         scores, desc, logg = vis.after()
-        desc = (ds_name.upper() if self.multi_corp else 'Evalb') + desc
+        if self.multi_corp:
+            desc = ds_name.upper() + desc
+            logg = ds_name + ' ' + logg
+        else:
+            desc = 'Evalb' + desc
         length_bins = vis.length_bins
         devel_bins, test_bins = self._mode_length_bins
         if length_bins is not None:
@@ -267,21 +216,7 @@ class PennOperator(Operator):
                     self._mode_length_bins = devel_bins, length_bins # change test
                 else:
                     self._mode_length_bins = length_bins, test_bins # change devel
-        speed_outer = float(f'{count / seconds:.1f}')
-        speed_inner = float(f'{count / vis.proc_time:.1f}') # unfolded with multiprocessing
-        if vis.is_async:
-            rate = vis.proc_time / seconds
-        else:
-            rate = vis.proc_time / (seconds - vis.proc_time)
-        if serial:
-            dmt = speed_dm = ''
-        else:
-            dmt = self.dm.duration
-            speed_dm = f' ◇ {count / dmt:.1f}'
-            dmt = f' ◇ {dmt:.3f}'
-            desc += byte_style(speed_dm + 'sps.', '2')
-
-        logg += f' @{speed_outer} ◇ {speed_inner}{speed_dm} sps. (sym:nn {rate:.2f}; {seconds:.3f}{dmt} sec.)'
+        _desc, _logg, speed_outer, speed_dm = speed_logg(count, seconds, None if serial else self._dm)
         scores['speed'] = speed_outer
         if not final_test and self.recorder._writer is not None:
             prefix = 'TestSet' if use_test_set else 'DevelSet'
@@ -290,9 +225,7 @@ class PennOperator(Operator):
                                       F1 = scores.get('F1', 0),
                                       SamplePerSec = None if serial else speed_dm)
         self._vis_mode = None
-        if c_vis is not None:
-            c_vis.after()
-        return scores, desc, logg
+        return scores, desc + _desc, logg + _logg
 
     def combine_scores_and_decide_key(self, epoch, ds_scores):
         if self.multi_corp:
@@ -323,11 +256,56 @@ class PennOperator(Operator):
                     content = f'{len(removed)} files'
                 Operator.msg(f' [{start_epoch:.2f}:] {content} removed in folder penn_test_with_devel.')
 
+    def _get_optuna_fn(self, train_params):
+        from utils.train_ops import train, get_optuna_params
+        from utils.str_ops import height_ratio
+        from utils.math_ops import log_to_frac
+        from utils.types import F_SENTENCE, F_PHRASE
+
+        optuna_params = get_optuna_params(train_params)
+
+        def obj_fn(trial):
+            def spec_update_fn(specs, trial):
+                new_factor = {}
+                desc = []
+                for corp, factor in specs['data'][K_CORP].items():
+                    _, left, _ = factor['binarization'].split()
+                    level = trial.suggest_categorical(corp + '.l', [F_SENTENCE, F_PHRASE])
+                    desc_ = [corp + '.' + level[0]]
+                    if left == F_CNF:
+                        binarization = trial.suggest_float(corp + '.cnf', 0.0, 1.0)
+                        factor['binarization'] = f'{level} {left} {binarization}'
+                        desc_.append(height_ratio(binarization))
+                        binarization = level, F_CNF, binarization
+                    else:
+                        beta_l = trial.suggest_float(corp + '.beta_l', 1e-2, 1e2, log = True)
+                        beta_r = trial.suggest_float(corp + '.beta_r', 1e-2, 1e2, log = True)
+                        factor['binarization'] = f'{level} {beta_l} {beta_r}'
+                        binarization = level, beta_l, beta_r
+                        desc_.append('β' + height_ratio(log_to_frac(beta_l, 1e-2, 1e2)) + height_ratio(log_to_frac(beta_r, 1e-2, 1e2)))
+                    factor['esub'] = esub = trial.suggest_float(corp + '.e', 0.0, 1.0)
+                    desc_.append('s' + height_ratio(esub))
+                    if (msub := factor['msub']) or isinstance(binarization[1], float):
+                        factor['msub'] = msub = trial.suggest_float(corp + '.m', 0.0, 1 if msub == 0 else msub)
+                        desc_.append(height_ratio(msub))
+                    new_factor[corp] = binarization, esub, msub
+                    desc.append(''.join(desc_))
+                self._train_materials = new_factor, self._train_materials[1] # for train/train_initials(max_epoch>0)
+                lr = specs['train']['learning_rate']
+                specs['train']['learning_rate'] = new_lr = trial.suggest_float('learning_rate', 1e-5, lr, log = True)
+                self._train_config._nested.update(specs['train'])
+                desc.append('γ=' + height_ratio(log_to_frac(new_lr, 1e-5, lr)))
+                return '.'.join(desc)
+
+            self._init_mode_trees()
+            self.setup_optuna_mode(spec_update_fn, trial)
+            
+            return train(optuna_params, self)['key']
+        return obj_fn
+
 
 from utils.vis import BaseVis, VisRunner
 from utils.file_io import join, isfile, listdir, remove, isdir
-from utils.pickle_io import pickle_dump
-from utils.param_ops import HParams
 from utils.shell_io import parseval, rpt_summary
 from visualization import ContinuousTensorVis
 class SerialVis(BaseVis):
@@ -365,25 +343,11 @@ class SerialVis(BaseVis):
         self._data_tree = open(dtree, 'w')
 
     def _process(self, batch, trapezoid_info):
-        # process batch to instances, compress
-        # if head is in batch, save it
-        # else check head.emm.pkl
-        # make data.emmb.tree & concatenate to data.emm.tree
-        # make data.emm.rpt
-        (batch_id, _, size, h_offset, h_length, h_token, h_tag, h_label, h_right,
-         d_tag, d_label, d_right, mpc_token, mpc_label,
-         tag_score, label_score, split_score) = batch
-        d_trapezoid_info = None
-        if trapezoid_info:
-            segment, seg_length, d_segment, d_seg_length = trapezoid_info
-            trapezoid_info = segment, seg_length
-            d_trapezoid_info = d_segment, d_seg_length
-
-        # if h_tag is None:
-        #     import pdb; pdb.set_trace()
+        (batch_id, _, size, head_tree, offset, length, token, token_emb, tree_emb,
+         tag, label, orient, tag_score, label_score, orient_score) = batch
 
         if self._head_tree:
-            bins = self._ctvis.set_head(self._head_tree, h_offset, h_length, h_token, h_tag, h_label, h_right, trapezoid_info, batch_id, size, 10)
+            bins = self._ctvis.set_head(self._head_tree, head_tree, batch_id, size, 10, length, token)
             self.length_bins |= bins
 
         if self.save_tensors:
@@ -391,16 +355,15 @@ class SerialVis(BaseVis):
                 bin_width = 10
             else:
                 bin_width = None
-            extended = size, bin_width, self._evalb
+            extra = size, bin_width, self._evalb
         else:
-            extended = None
+            extra = None
 
         self._ctvis.set_data(self._data_tree, self._logger, batch_id, self.epoch,
-                             h_offset, h_length, h_token, d_tag, d_label, d_right,
-                             mpc_token, mpc_label,
-                             tag_score, label_score, split_score,
-                             d_trapezoid_info,
-                             extended) # TODO go async
+                             offset, length, token, token_emb, tree_emb,
+                             tag, label, orient,
+                             tag_score, label_score, orient_score,
+                             trapezoid_info, extra) # TODO go async
 
     def _after(self):
         # call evalb to data.emm.rpt return the results, and time counted
@@ -413,10 +376,9 @@ class SerialVis(BaseVis):
         scores = rpt_summary(report, False, True)
         errors = proc.stderr.decode().split('\n')
         assert errors.pop() == ''
-        num_errors = len(errors)
-        if num_errors:
+        if num_errors := len(errors):
             self._logger(f'  {num_errors} errors from evalb')
-            if num_errors < 10:
+            if num_errors < 100:
                 for e, error in enumerate(errors):
                     self._logger(f'    {e}. ' + error)
                 fname = f'data.{self.epoch}.rpt'
@@ -438,11 +400,7 @@ class SerialVis(BaseVis):
                     remove(fhead)
                     remove(fdata)
 
-        desc = f'({scores["LP"]:.2f}/{scores["LR"]:.2f}/'
-        key_score = f'{scores["F1"]:.2f}'
-        desc_for_screen = desc + byte_style(key_score, underlined = True) + ')'
-        desc_for_logger = f'N: {scores["N"]} {desc}{key_score})'
-        return scores, desc_for_screen, desc_for_logger
+        return continuous_score_desc_logg(scores)
 
 class ScatterVis(BaseVis):
     def __init__(self, epoch, work_dir, dim = 10):
@@ -480,15 +438,17 @@ class ParallelVis(BaseVis):
         self._args[0].timeit()
 
     def _process(self, batch, d_trapezoid_info):
-        (batch_id, _, _, h_offset, h_length, h_token,
-         d_tag, d_label, d_right) = batch
+        (batch_id, _, _, _, offset, length, token,
+         tag, label, orient) = batch
         dm, _, _, corp_key = self._args
+        if offset is None:
+            offset = length * 0
         
         if d_trapezoid_info:
-            d_segment, d_seg_length = d_trapezoid_info
-            dm.batch(batch_id, d_segment, h_offset, h_length, h_token, d_tag, d_label, d_right, d_seg_length, key = corp_key)
+            segment, batch_segment = d_trapezoid_info
+            dm.batch(batch_id, segment, offset, length, token, tag, label, orient, batch_segment, key = corp_key)
         else:
-            dm.batch(batch_id, h_offset, h_length, h_token, d_tag, d_label, d_right, key = corp_key)
+            dm.batch(batch_id, offset, length, token, tag, label, orient, key = corp_key)
     
     def _after(self):
         dm, evalb, logger, _ = self._args
@@ -505,10 +465,10 @@ class ParallelVis(BaseVis):
         scores = rpt_summary(report, False, True)
         errors = proc.stderr.decode().split('\n')
         assert errors.pop() == ''
-        num_errors = len(errors)
-        if num_errors:
+        
+        if num_errors := len(errors):
             logger(f'  {num_errors} errors from evalb')
-            if num_errors < 10:
+            if num_errors < 100:
                 for e, error in enumerate(errors):
                     logger(f'    {e}. ' + error)
                 fname = f'data.{self.epoch}.rpt'
@@ -516,11 +476,7 @@ class ParallelVis(BaseVis):
                     fw.write(report)
                 logger(f'  (Check {fname} for details.)')
 
-        desc = f'({scores["LP"]:.2f}/{scores["LR"]:.2f}/'
-        key_score = f'{scores["F1"]:.2f}'
-        desc_for_screen = desc + byte_style(key_score, underlined = True) + ')'
-        desc_for_logger = f'N: {scores["N"]} {desc}{key_score})'
-        return scores, desc_for_screen, desc_for_logger
+        return continuous_score_desc_logg(scores)
 
     @property
     def save_tensors(self):

@@ -1,5 +1,9 @@
-from torch import optim
 from math import exp
+from torch import optim, Tensor
+from utils.shell_io import byte_style
+
+
+make_tensors = lambda *args: tuple(x.cpu().numpy() if isinstance(x, Tensor) else x for x in args)
 
 class WarmOptimHelper:
     @classmethod
@@ -39,3 +43,28 @@ class WarmOptimHelper:
     @property
     def optimizer(self):
         return self._opt_threshold_damp[0]
+
+def speed_logg(count, seconds, dm):
+    speed_ba = count / seconds
+    speed_dm = None
+    base = f' {speed_ba:.1f}'
+
+    if dm is None:
+        desc = logg = ''
+        base += f' sps. ({seconds:.3f})'
+    else:
+        dm_seconds = dm.duration
+        speed_dm = count / dm_seconds
+        logg = f' ◇ {speed_dm:.1f} sps'
+        desc = byte_style(logg, '2')
+        base += logg + f' ({seconds:.3f} ◇ {dm_seconds:.3f})'
+
+    return desc, logg, speed_ba, speed_dm
+
+def continuous_score_desc_logg(scores):
+    desc = f'P+{pdr:.2f}' if (pdr := (scores["LP"] - scores["LR"])) > 0 else f'R+{-pdr:.2f}'
+    key_score = f'{scores["F1"]:.2f}'
+    desc_for_screen = '(' + byte_style(desc[0], '3' if pdr > 0 else '6')
+    desc_for_screen += desc[1:] + '/' + byte_style(key_score, underlined = True) + ')'
+    desc_for_logger = f'(P{scores["LP"]}/R{scores["LR"]}/F' + key_score + ')'
+    return scores, desc_for_screen, desc_for_logger

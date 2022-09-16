@@ -16,7 +16,6 @@ subs_string = lambda x, y: f'sub({x * 100:.0f}%)  msb({y * 100:.0f}%)'
 
 class BinaryDataset(LengthOrderedDataset):
     def __init__(self,
-                 dir_join,
                  prefix,
                  field_v2is,
                  factors  = None,

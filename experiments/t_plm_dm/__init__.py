@@ -1,6 +1,6 @@
 
 from data.stutt import DiscoMultiReader
-from data.stutt_types import C_ABSTRACT, xccp_data_config, select_and_split_corpus
+from data.stutt_types import E_DISCONTINUOUS, xccp_data_config, select_and_split_corpus
 from utils.types import M_TRAIN
 from utils.param_ops import HParams
 
@@ -9,9 +9,11 @@ from experiments.t_plm_dm.model import DiscoPlmTree, model_type
 from experiments.t_plm_dm.operator import DiscoMultiOperator_lr
 from experiments.t_dm.operator import train_type
 
+CORPORA = set(E_DISCONTINUOUS)
+
 def get_configs(recorder = None):
     if recorder is None:
-        return {C_ABSTRACT: xccp_data_config}, model_type, train_type
+        return xccp_data_config, model_type, train_type
     
     data_config, model_config, train_config, _ = recorder.task_specs()
     corp_name, penn, DatasetHelper, Leaves = get_any_disco(**data_config)
