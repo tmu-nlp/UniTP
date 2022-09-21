@@ -2,16 +2,13 @@
 
 import numpy as np
 from collections import namedtuple, Counter, defaultdict
-from itertools import count
 from os.path import getsize, expanduser
 from os import listdir
 import sys
 from nltk.tree import Tree
+from utils import inf_none_gen, inf_zero_gen
 from utils.file_io import join, isfile, parpath
 from utils.pickle_io import pickle_load, pickle_dump
-
-inf_none_gen = (None for _ in count())
-inf_zero_gen = (0    for _ in count())
 
 IOVocab = namedtuple('IOVocab', 'vocabs, IOHead_fields, IOData_fields, threshold')
 class TensorVis:
@@ -95,7 +92,7 @@ def tee_trees(join_fn, mode, lengths, trees, batch_id, bin_width):
                 print(tree, file = fw)
     return ftrees.keys()
 
-from data import parsing_i2vs
+from copy import deepcopy
 from data.continuous.binary.triangle import data_to_tree as tri_d2t
 from data.continuous.binary.trapezoid import data_to_tree as tra_d2t
 from utils.shell_io import parseval, rpt_summary
@@ -108,6 +105,8 @@ class ContinuousTensorVis(TensorVis):
     def set_head(self, fhtree, trees, *args):
         str_trees = []
         for tree in trees:
+            tree = deepcopy(tree)
+            tree.un_chomsky_normal_form()
             str_tree = ' '.join(str(tree).split())
             str_trees.append(str_tree)
             print(str_tree, file = fhtree)
@@ -126,27 +125,28 @@ class ContinuousTensorVis(TensorVis):
                  tag_score, label_score, orient_score,
                  trapezoid_info, size_bin_width_evalb):
 
-        old_tag   = tag
-        old_tag_s = tag_score
-        if tag is None: tag = inf_none_gen
-        
-        label_  = label_score  if label  is None else label
+        if tag is None:
+            tag_ = inf_none_gen
+            label_ = label
+        else:
+            tag_ = tag
+            label_ = label_score if label is None else label
         offset_ = inf_zero_gen if offset is None else offset
-        i2vs = parsing_i2vs(self.vocabs)
+
         if trapezoid_info is None:
             segment = seg_length = None
-            func_args = zip(offset_, length, token, tag, label_, orient)
-            func_args = (args + i2vs for args in func_args)
+            func_args = zip(offset_, length, token, tag_, label_, orient)
             data_to_tree = tri_d2t
         else:
             segment, seg_length = trapezoid_info
-            func_args = zip(offset_, length, token, tag, label_, orient, seg_length)
-            func_args = (args + (segment,) + i2vs for args in func_args)
+            func_args = zip(offset_, length, token, tag_, label_, orient, seg_length)
+            func_args = (args + (segment,) for args in func_args)
             data_to_tree = tra_d2t
 
         str_trees, batch_warnings, log_warnings = [], [], {}
         for i, dargs in enumerate(func_args):
-            tree, warnings = data_to_tree(*dargs, fallback_label = 'VROOT')
+            tree, warnings = data_to_tree(self.vocabs, *dargs, fallback_label = 'VROOT')
+            tree.un_chomsky_normal_form()
             str_tree = ' '.join(str(tree).split())
             print(str_tree, file = fdtree) # TODO use stack to protect opened file close and delete
             str_trees.append(str_tree)
@@ -159,44 +159,28 @@ class ContinuousTensorVis(TensorVis):
 
         if size_bin_width_evalb:
             size, bin_width, evalb = size_bin_width_evalb
-            if label is None: # unlabeled
-                pickle_dump(self.join(f'data.{batch_id}_{epoch}.pkl'), tuple(self.IOData(
-                    str_trees, offset, length, token_emb, tree_emb, tag, label, orient,
-                    tag_score, label_score, orient_score, trapezoid_info, batch_warnings, None)))
-                return batch_warnings
+            tee_trees(self.join, 'data', length, str_trees, batch_id, bin_width)
 
-            else: # supervised / labeled
-                tee_trees(self.join, 'data', length, str_trees, batch_id, bin_width)
+            fhead = f'head.{batch_id}_{size}.pkl'
+            assert isfile(self.join(fhead)), f"Need a head '{fhead}'"
+            fhead = self.join(f'head.{batch_id}.tree')
+            fdata = self.join(f'data.{batch_id}.tree')
 
-                fhead = f'head.{batch_id}_{size}.pkl'
-                assert isfile(self.join(fhead)), f"Need a head '{fhead}'"
-                fhead = self.join(f'head.{batch_id}.tree')
-                fdata = self.join(f'data.{batch_id}.tree')
+            proc = parseval(evalb, fhead, fdata)
+            idv, smy = rpt_summary(proc.stdout.decode(), True, True)
 
-                if evalb is None: # sentiment
-                    # 52VII
-                    from data.stan_types import calc_stan_accuracy
-                    idv, smy, key_score = calc_stan_accuracy(fhead, fdata, print)
-                else: # constituency
-                    proc = parseval(evalb, fhead, fdata)
-                    idv, smy = rpt_summary(proc.stdout.decode(), True, True)
+            fname = self.join('summary.pkl')
+            if isfile(fname):
+                summary = pickle_load(fname)
+            else:
+                summary = {}
+            summary[(batch_id, epoch)] = smy
+            pickle_dump(fname, summary)
 
-                    fname = self.join('summary.pkl')
-                    if isfile(fname):
-                        summary = pickle_load(fname)
-                    else:
-                        summary = {}
-                    summary[(batch_id, epoch)] = smy
-                    pickle_dump(fname, summary)
-
-                    key_score = smy.get('F1', 0)
-
-                fdata = self.join(f'data.{batch_id}_{epoch}.pkl')
-                data = self.IOData(str_trees, offset, length, token_emb, tree_emb, tag, label, orient,
-                    tag_score, label_score, orient_score, trapezoid_info, batch_warnings, (idv, smy))
-                pickle_dump(fdata, tuple(data))
-
-                return key_score
+            fdata = self.join(f'data.{batch_id}_{epoch}.pkl')
+            data = self.IOData(str_trees, offset, length, token_emb, tree_emb, tag, label, orient,
+                tag_score, label_score, orient_score, trapezoid_info, batch_warnings, (idv, smy))
+            pickle_dump(fdata, tuple(data))
 
 # dpi_value     = master.winfo_fpixels('1i')
 # master.tk.call('tk', 'scaling', '-displayof', '.', dpi_value / 72.272)

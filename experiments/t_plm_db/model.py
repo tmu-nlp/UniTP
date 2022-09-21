@@ -20,7 +20,7 @@ class DiscoPlmTree(BaseRnnParser):
                 word_idx,
                 tune_pre_trained,
                 plm_idx, plm_start, 
-                ingore_logits = False, **kw_args):
+                ignore_logits = False, **kw_args):
         batch_size, batch_len, base_inputs, bottom_existence = self._input_layer(word_idx, 1, plm_idx, plm_start, tune_pre_trained)
-        base_returns = super().forward(base_inputs, bottom_existence.squeeze(dim = 2), ingore_logits, small_endian_tags = True, **kw_args)
+        base_returns = super().forward(base_inputs, bottom_existence.squeeze(dim = 2), ignore_logits, small_endian_tags = True, **kw_args)
         return (batch_size, batch_len, base_inputs, None) + base_returns

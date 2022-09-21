@@ -1,6 +1,5 @@
-from itertools import product
-from utils.param_ops import filter_flatten
 from os import listdir
-from os.path import isdir, join
+from os.path import isfile, join, dirname
 
-types = tuple(f for f in listdir('experiments') if f.startswith('t_') and isdir(join('experiments', f)))
+__dir = dirname(__file__)
+types = tuple(f for f in listdir(__dir) if f.startswith('t_') and (isfile(join(__dir, f, '__init__.py'))))

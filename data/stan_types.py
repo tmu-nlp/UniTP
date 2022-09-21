@@ -1,5 +1,4 @@
 C_SSTB = 'sstb'
-from data.penn_types import C_PTB
 
 
 build_params = {C_SSTB: {}}
@@ -8,20 +7,6 @@ ft_bin = {C_SSTB: 'en'}
 from data.io import make_call_fasttext
 from utils.types import M_TRAIN, M_TEST, M_DEVEL, K_CORP
 call_fasttext = make_call_fasttext(ft_bin)
-
-from utils.types import make_parse_data_config, make_parse_factor, make_beta, F_CNF, F_SENTENCE
-from utils.types import true_type, trapezoid_height
-
-def nccp_factor(*level_left_right):
-    return make_parse_factor(binarization = make_beta(*level_left_right),
-                             condense_per = trapezoid_height)
-
-data_config = make_parse_data_config()
-data_config['nil_pad'] = true_type
-data_config[K_CORP] = {
-    C_PTB: nccp_factor(F_SENTENCE, F_CNF, 0.85),
-    C_SSTB: dict(condense_per = trapezoid_height)
-}
 
 from sys import stderr
 from nltk.tree import Tree
@@ -43,12 +28,14 @@ def get_sstb_trees(fpath):
 VocabCounters = namedtuple('VocabCounters', 'length, word, polar, right')
 build_counters = lambda: VocabCounters(Counter(), Counter(), Counter(), Counter())
 
-def build(save_to_dir, fpath, corp_name, verbose = True, **kwargs):
+def build(save_to_dir, fpath, corp_name, **kwargs):
     assert corp_name == C_SSTB
         
     from data.mp import Rush, Process
 
     class WorkerX(Process):
+        estimate_total = False
+
         def __init__(self, *args):
             Process.__init__(self)
             self._q_jobs = args
@@ -89,7 +76,7 @@ def build(save_to_dir, fpath, corp_name, verbose = True, **kwargs):
                 for dst, src in zip(ds, ss):
                     dst.update(src)
             return t, tc
-    rush.mp_while(True, receive, 'Collecting vocabulary')
+    rush.mp_while(receive, 'Collecting vocabulary')
 
     def field_fn(all_counts, field, fw_rpt):
         cnt = getattr(all_counts, field)
@@ -117,7 +104,7 @@ def check_data(save_dir, valid_sizes):
 
 def neg_pos(head, data, _numerators, _denominators, offset):
     gr = head.label()
-    pr = data.label()
+    pr = data.label().split('-')
     neg_set = '01'
     pos_set = '34'
     neutral = pr[0] == '2'
@@ -132,19 +119,21 @@ def neg_pos(head, data, _numerators, _denominators, offset):
         ternary = True
         binary = None
         
-    _denominators[0 + offset] += 1
+    _denominators[2 + offset] += 1
     _denominators[1 + offset] += 1
     if fine:
-        _numerators[0 + offset] += 1
+        _numerators[2 + offset] += 1
     if ternary:
         _numerators[1 + offset] += 1
     if binary is not None:
-        _denominators[2 + offset] += 1
+        _denominators[0 + offset] += 1
         if binary:
-            _numerators[2 + offset] += 1
+            _numerators[0 + offset] += 1
 
 from nltk.tree import Tree
-import numpy as np
+from collections import namedtuple
+SentimentScore = namedtuple('SentimentScore', 'D, T, Q, d, t, q')
+    # 0: root_fine, 1: root_PnN 2: root_PN, 3: fine, 4: PnN 5: PN
 def calc_stan_accuracy(hfname, dfname, on_error):
     
     numerators   = [0,0,0,0,0,0]
@@ -179,9 +168,4 @@ def calc_stan_accuracy(hfname, dfname, on_error):
                 denominators[i] += d
                 scores.append(n/d*100 if d else float('nan'))
             sents.append(scores)
-
-    scores = []
-    for n,d in zip(numerators, denominators):
-        scores.append(n/d*100 if d else float('nan'))
-    # 0: root_fine, 1: root_PnN 2: root_PN, 3: fine, 4: PnN 5: PN
-    return sents, scores, (np.asarray(numerators), np.asarray(denominators))
+    return sents, SentimentScore(*(n/d*100 if d else float('nan') for n,d in zip(numerators, denominators)))

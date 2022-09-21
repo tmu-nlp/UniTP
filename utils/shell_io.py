@@ -3,23 +3,23 @@ from subprocess import run, PIPE, Popen
 
 from utils.math_ops import inv_sigmoid
 
-def byte_style(content, fg_color = '7', bg_color = '0', bold = False, dim = False, negative = False, underlined = False, blink = False):
-    prefix = '\033['
-    if not (bold or dim or negative or underlined or blink):
-        prefix += '0;'
+def byte_style(content, fg_color = None, bg_color = None, bold = False, dim = False, negative = False, underlined = False, blink = False):
+    prefixes = []
     if bold:
-        prefix += '1;'
+        prefixes.append('1')
     if dim:
-        prefix += '2;'
+        prefixes.append('2')
     if negative:
-        prefix += '3;'
+        prefixes.append('3')
     if underlined:
-        prefix += '4;'
+        prefixes.append('4')
     if blink:
-        prefix += '5;'
-
-    prefix += f'3{fg_color};4{bg_color}m'
-    return prefix + content + '\033[m'
+        prefixes.append('5')
+    if fg_color:
+        prefixes.append(f'3{fg_color}')
+    if bg_color:
+        prefixes.append(f'4{bg_color}')
+    return '\033[' + ';'.join(prefixes) + 'm' + content + '\033[m'
 
 def call_fasttext(fasttext, wfile, vfile, ft_bin, ft_lower): # TODO: async
     # import pdb; pdb.set_trace()

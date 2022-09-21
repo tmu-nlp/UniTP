@@ -23,7 +23,7 @@ class PennReader(ParsingReader):
         super().__init__(penn, unify_sub, nil_as_pads)
 
     def binary(self, mode, condense_per, batch_size, bucket_length,
-               min_len        = 2,
+               min_len        = 0,
                max_len        = None,
                sort_by_length = True,
                new_factor     = None):
@@ -43,7 +43,7 @@ class PennReader(ParsingReader):
         return post_batch(mode, ds, sort_by_length, bucket_length, batch_size)
 
     def multib(self, mode, batch_size, bucket_length,
-               min_len        = 2,
+               min_len        = 0,
                max_len        = None,
                sort_by_length = True,
                new_factor     = None):

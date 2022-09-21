@@ -89,7 +89,8 @@ def signals(factor, tree, loc, lex_paths, length, every_n, l2i = do_nothing, xty
         
     return layers_of_labels, layers_of_xtypes
 
-def get_tree_from_signals(word_layer, tag_layer, label_layers, right_layers, fallback_label = None, word_fn = brackets2RB):
+def get_tree_from_signals(word_layer, tag_layer, label_layers, right_layers,
+                          fallback_label = None, word_fn = brackets2RB, keep_sub = False):
     warnings   = []
     primary, secondary = [], []
     for eid, (word, label) in enumerate(zip(word_layer, label_layers[0])):
@@ -103,7 +104,7 @@ def get_tree_from_signals(word_layer, tag_layer, label_layers, right_layers, fal
                     warnings.append((-1, eid, 0))
             elif label[0] != SUB: # unary
                 leaf = Tree(label, [leaf])
-        primary.append(Node(eid).settle_in(leaf))
+        primary.append(Node(eid).settle_in(leaf, keep_sub))
         secondary.append(Node(eid))
 
     for layer_cnt, (right, label) in enumerate(zip(right_layers, label_layers[1:])):
@@ -126,7 +127,7 @@ def get_tree_from_signals(word_layer, tag_layer, label_layers, right_layers, fal
                     dst = node.sid - (not r)
                 if dst < 0 or dst == next_len:
                     return Tree(fallback_label, flatten_children(n.tree for n in primary[:this_len] if n.tree)), (layer_cnt, node.sid, warnings)
-                secondary[dst].settle_in(tree, label[dst])
+                secondary[dst].settle_in(tree, keep_sub, label[dst])
         for node in primary[:this_len]:
             node.reset()
         primary, secondary = secondary, primary
@@ -199,7 +200,7 @@ class Cell:
                     self._xtype = X_NEW | X_RGT * right | X_DIR | boundary
                     self._goods = Goods(p_path, label, right, loc, loc)
                 else:
-                    self._xtype = X_NEW | X_RGT | X_DIR
+                    self._xtype = X_NEW | X_RGT
             else:
                 if l_label[0] == SUB:
                     label = l_label
@@ -239,12 +240,12 @@ class Node:
     def reset(self):
         self._tree = None
 
-    def settle_in(self, tree, label = None):
+    def settle_in(self, tree, keep_sub, label = None):
         if self._tree is None:
             self._tree = tree
         else:
             tree = as_children(self._tree) + as_children(tree)
-            if label[0] not in SUBS:
+            if keep_sub or label[0] not in SUBS:
                 tree = Tree(label, tree)
             self._tree = tree
         return self

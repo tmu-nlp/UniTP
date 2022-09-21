@@ -52,6 +52,9 @@ class VocabKeeper:
     def loaded_ds(self):
         return self._loaded_ds
 
+    def has_for_model(self, name):
+        return name in self._to_model
+
     def get_to_model(self, name):
         return self._to_model[name]
 

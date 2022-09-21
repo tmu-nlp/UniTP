@@ -39,8 +39,7 @@ xccp_data_config[K_CORP] = {
 
 
 from utils.shell_io import byte_style
-from utils.str_ops import StringProgressBar, linebar
-from time import sleep
+from utils.str_ops import linebar
 def select_and_split_corpus(corp_name, corp_path,
                             train_set, devel_set, test_set):
     from data.cross import Signal
@@ -92,6 +91,8 @@ def build(save_to_dir,
             corpus.append((m, tree))
 
     class WorkerX(Process):
+        estimate_total = False
+
         def __init__(self, *args):
             Process.__init__(self)
             self._args = args
@@ -161,7 +162,7 @@ def build(save_to_dir,
                     dst.update(src)
             errors.extend(er)
             return t, tc
-    rush.mp_while(True, receive, 'Collecting vocabulary')
+    rush.mp_while(receive, 'Collecting vocabulary')
 
     if errors:
         desc = byte_style(f'✗ {len(errors)}', '1')

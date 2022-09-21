@@ -1,8 +1,10 @@
+from data.stan_types import C_SSTB
 C_PTB = 'ptb'
 C_CTB = 'ctb'
 C_KTB = 'ktb'
 C_NPCMJ = 'npcmj'
 E_CONTINUE = C_PTB, C_CTB, C_KTB, C_NPCMJ
+E_BINARY = C_PTB, C_CTB, C_KTB, C_NPCMJ, C_SSTB
 
 from data.io import make_call_fasttext, check_vocab, split_dict
 build_params = {C_PTB: split_dict('2-21',             '22',      '23'    ),
@@ -13,7 +15,7 @@ build_params = {C_PTB: split_dict('2-21',             '22',      '23'    ),
 ft_bin = {C_PTB: 'en', C_CTB: 'zh', C_KTB: 'ja', C_NPCMJ: 'ja'}
 call_fasttext = make_call_fasttext(ft_bin)
 
-from utils.types import make_parse_data_config, make_parse_factor, make_beta, F_CNF, F_SENTENCE
+from utils.types import make_parse_data_config, make_parse_factor, make_beta, F_CNF, F_SENTENCE, make_sentiment_factor
 from utils.types import true_type, trapezoid_height, token_type, K_CORP
 
 def nccp_factor(*level_left_right):
@@ -26,7 +28,8 @@ nccp_data_config[K_CORP] = {
     C_PTB: nccp_factor(F_SENTENCE, F_CNF, 0.15),
     C_CTB: nccp_factor(F_SENTENCE, F_CNF, 0.2),
     C_KTB: nccp_factor(F_SENTENCE, F_CNF, 0.7),
-    C_NPCMJ: nccp_factor(F_SENTENCE, F_CNF, 0.7)
+    C_NPCMJ: nccp_factor(F_SENTENCE, F_CNF, 0.7),
+    C_SSTB: make_sentiment_factor(neutral_nil = true_type),
 }
 
 accp_data_config = make_parse_data_config()
@@ -196,6 +199,8 @@ def build(save_to_dir,
     from utils.types import F_RANDOM
     from data.mp import Rush, Process
     class WorkerX(Process):
+        estimate_total = True
+
         def __init__(self, *args):
             Process.__init__(self)
             self._args = args
@@ -270,7 +275,7 @@ def build(save_to_dir,
                 return i, tc
         else:
             qbar.update(t)
-    rush.mp_while(False, receive, 'Collecting vocabulary')
+    rush.mp_while(receive, 'Collecting vocabulary')
 
     if err_cnf:
         desc = byte_style(f'✗ {len(err_cnf)}', '1')

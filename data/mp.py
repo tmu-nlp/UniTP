@@ -18,11 +18,12 @@ class Rush:
         jobs = distribute_jobs(jobs, num_threads)
         self._args = Queue(), worker_cls, num_threads, jobs, args
 
-    def mp_while(self, stable_total, receive_fn = None, prefix = 'Load'):
+    def mp_while(self, receive_fn = None, prefix = 'Load'):
         from utils.str_ops import StringProgressBar
         from utils.file_io import DelayedKeyboardInterrupt
         if receive_fn is None:
             receive_fn = self.receive
+        assert callable(receive_fn)
         start_time = time()
         tree_count = thread_join_count = 0
         q, worker_cls, num_threads, jobs, args = self._args
@@ -30,7 +31,7 @@ class Rush:
         with StringProgressBar.segs(num_threads, prefix = desc, suffix = ']') as qbar:
             try:
                 for i in range(num_threads):
-                    if stable_total:
+                    if not worker_cls.estimate_total:
                         qbar.update(i, total = len(jobs[i]))
                     jobs[i] = w = worker_cls(i, q, jobs[i], *args)
                     w.start()

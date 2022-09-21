@@ -6,6 +6,7 @@ class MultibDM(DM):
     def tree_gen_fn(i2b, i2t, i2l, tag_layer, batch_segment, token, tag, label, chunk, segment):
         for args in zip(token, tag, label, chunk, segment):
             tree, _ = tensor_to_tree(i2b, i2t, i2l, tag_layer, batch_segment, *args, fallback_label = 'ROOT')
+            tree.un_chomsky_normal_form()
             yield ' '.join(str(tree).split())
 
     @staticmethod

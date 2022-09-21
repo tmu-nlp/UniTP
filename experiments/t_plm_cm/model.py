@@ -26,7 +26,7 @@ class ContinuousXLNetTree(_CM):
                 word_idx,
                 tune_pre_trained,
                 plm_idx, plm_start, 
-                ingore_logits = False, **kw_args):
+                ignore_logits = False, **kw_args):
         batch_size, batch_len, base_inputs, bottom_existence = self._input_layer(word_idx, 0, plm_idx, plm_start, tune_pre_trained)
-        base_returns = super().forward(base_inputs, bottom_existence.squeeze(2), ingore_logits, **kw_args)
+        base_returns = super().forward(base_inputs, bottom_existence.squeeze(2), ignore_logits, **kw_args)
         return (batch_size, batch_len, base_inputs, None) + base_returns

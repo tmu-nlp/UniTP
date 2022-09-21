@@ -169,7 +169,7 @@ class CMOperator(CBOperator):
         work_dir = self.recorder.create_join(folder)
         serial = draw_weights or flush_heads or self.dm is None
         if serial:
-            async_ = False
+            async_ = True
             vis = MultiVis(epoch,
                           work_dir,
                           self._evalb,
@@ -195,9 +195,12 @@ class CMOperator(CBOperator):
                 with open(join(work_dir, 'label.' + corp), 'w') as fw:
                     fw.write('\n'.join(i2vs.label))
             # save Tag/Label
-            for get_label in (False, True):
-                prefix = ('tag', 'label')[get_label] + '.'
-                for lhs, rhs, dst, cos in (self._model.get_multilingual_tag_matrices(), self._model.get_multilingual_tag_matrices()):
+            for prefix in ('tag', 'label'):
+                if get_label := prefix == 'label':
+                    fn = self._model.get_multilingual_label_matrices
+                else:
+                    fn = self._model.get_multilingual_tag_matrices
+                for lhs, rhs, dst, cos in fn():
                     # save matrix
                     #  # 'a+' if get_label else 'w' lhv, rhv = self.i2vs[lhs], self.i2vs[rhs]
                     if lhs == rhs:
@@ -225,7 +228,8 @@ class CMOperator(CBOperator):
         vis, use_test_set, final_test, serial, _ = self._vis_mode
         devel_bins, test_bins = self._mode_length_bins
         if serial:
-            scores, desc, logg, length_bins = vis.after()
+            scores, desc, logg = vis.after()
+            length_bins = vis.length_bins
         else:
             scores, desc, logg = vis.after()
             length_bins = None
@@ -258,24 +262,29 @@ class CMOperator(CBOperator):
         return scores, desc + _desc, logg + _logg
 
     def _get_optuna_fn(self, train_params):
-        assert self.multi_corp
         from utils.train_ops import train, get_optuna_params
         from utils.str_ops import height_ratio
+        from utils.math_ops import log_to_frac
+        from utils.types import K_CORP
 
         optuna_params = get_optuna_params(train_params)
 
         def obj_fn(trial):
             def spec_update_fn(specs, trial):
-                data = specs['data']
-                balanced = {}
-                for corp, data_config in data.items():
-                    balanced[corp] = data_config['balanced'] = trial.suggest_float(corp, 0.0, 1.0)
-                self._train_materials = balanced, self._train_materials[1] # for train/train_initials(max_epoch>0)
+                new_factor = {}
+                desc = []
+                for corp, factor in specs['data'][K_CORP].items():
+                    factor['esub'] = esub = trial.suggest_float(corp + '.e', 0.0, 1.0)
+                    if msub := factor['msub']:
+                        factor['msub'] = msub = trial.suggest_float(corp + '.m', 0.0, 1.0)
+                    new_factor[corp] = esub, msub
+                    desc.append(corp + '.∅' + height_ratio(esub) + height_ratio(msub))
+                self._train_materials = new_factor, self._train_materials[1]
                 lr = specs['train']['learning_rate']
-                specs['train']['learning_rate'] = lr = trial.suggest_float('learning_rate', 1e-6, lr, log = True)
+                specs['train']['learning_rate'] = new_lr = trial.suggest_float('learning_rate', 1e-5, lr, log = True)
                 self._train_config._nested.update(specs['train'])
-                self._train_materials = balanced, self._train_materials[1] # for train/train_initials(max_epoch>0)
-                return ''.join(height_ratio(b) for b in balanced.values()) + f';lr={lr:.1e}'
+                desc.append('γ=' + height_ratio(log_to_frac(new_lr, 1e-5, lr)))
+                return '.'.join(desc)
 
             self._init_mode_trees()
             self.setup_optuna_mode(spec_update_fn, trial)
@@ -291,7 +300,7 @@ from data.continuous.multib.mp import tensor_to_tree
 from data.continuous import draw_str_lines
 from visualization import tee_trees
 from sys import stderr
-
+from copy import deepcopy
 
 class MultiVis(BaseVis):
     def __init__(self, epoch, work_dir, evalb, i2vs, logger,
@@ -332,7 +341,11 @@ class MultiVis(BaseVis):
         (trees, length, token, tag, label, chunk, batch_segment, segment, tag_layer, weight, vote) = batch
 
         if self._is_anew:
-            str_trees = [' '.join(str(tree).split()) for tree in trees]
+            str_trees = []
+            for tree in trees:
+                tree = deepcopy(tree)
+                tree.un_chomsky_normal_form()
+                str_trees.append(' '.join(str(tree).split()))
             self.length_bins |= tee_trees(self._join_fn, 'head', length, str_trees, None, 10)
 
         str_trees = []
@@ -341,6 +354,7 @@ class MultiVis(BaseVis):
         b_args = token, tag, label, chunk, segment
         for args in zip(*b_args):
             tree, safe = tensor_to_tree(*a_args, *args, fallback_label = 'VROOT')
+            tree.un_chomsky_normal_form()
             idx_cnt += 1 # start from 1
             if not safe:
                 error_idx.append(idx_cnt)

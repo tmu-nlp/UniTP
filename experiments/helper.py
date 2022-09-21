@@ -62,9 +62,22 @@ def speed_logg(count, seconds, dm):
     return desc, logg, speed_ba, speed_dm
 
 def continuous_score_desc_logg(scores):
-    desc = f'P+{pdr:.2f}' if (pdr := (scores["LP"] - scores["LR"])) > 0 else f'R+{-pdr:.2f}'
+    pmr = scores["LR"] - scores["LP"]
     key_score = f'{scores["F1"]:.2f}'
-    desc_for_screen = '(' + byte_style(desc[0], '3' if pdr > 0 else '6')
-    desc_for_screen += desc[1:] + '/' + byte_style(key_score, underlined = True) + ')'
-    desc_for_logger = f'(P{scores["LP"]}/R{scores["LR"]}/F' + key_score + ')'
+    desc_for_screen = '(' + byte_style('㏚', '3' if pmr > 0 else '6')
+    desc_for_screen += f'{pmr:+.2f}/' + byte_style(key_score, underlined = True) + ')'
+    desc_for_logger = f'({scores["LP"]}/{scores["LR"]}/' + key_score + ')'
     return scores, desc_for_screen, desc_for_logger
+
+def sentiment_score_desc_logg(scores):
+    logg = '/'.join(k + f'{v:.2f}' for k, v in zip(scores._fields, scores))
+    desc = '('
+    for field, value in zip(scores._fields, scores):
+        if field == 'q':
+            value = byte_style(f'{value:.2f}', '7', underlined = True)
+        else:
+            value = f'{value:.0f}' + "'|"[field == 'Q']
+        desc += byte_style(field, '7') + value
+    desc += ')'
+    scores = {k: v for k, v in zip(scores._fields, scores)}
+    return scores, desc, logg

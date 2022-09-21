@@ -6,7 +6,8 @@ NIL, PAD, UNK, BOS, EOS = '<nil>', '<pad>', '<unk>', '<bos>', '<eos>'
 
 
 from os import listdir
-types = tuple(f[:-3] for f in listdir('data') if f.endswith('_types.py'))
+from os.path import dirname
+types = tuple(f[:-3] for f in listdir(dirname(__file__)) if f.endswith('_types.py'))
 
 def brackets2RB(w):
     return {'(': '-LRB-', ')': '-RRB-'}.get(w, w)
@@ -16,6 +17,9 @@ def RB2brackets(w):
 
 def no_backslash(word):
     return word.replace('\\', '')
+
+def no_slashes(word):
+    return word.replace('\/', '/').replace('\\', '')
 
 def XRB2brackets(word):
     return RB2brackets(word)
@@ -27,13 +31,6 @@ def remove_eq(label, additional = None):
     elif additional:
         label = label[:label.rfind(additional)]
     return label
-
-import numpy as np
-def parsing_i2vs(vocabs):
-    return vocabs.token, vocabs.tag, vocabs.label
-
-def sentiment_i2vs(vocabs):
-    return vocabs.token, vocabs.polar
 
 # def 
 #     if 'tag' in vocabs: # label_mode

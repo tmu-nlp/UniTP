@@ -15,6 +15,7 @@ from data.mp import Process, Rush, Pool
 
 class WorkerX(Process):
     S = 'S'
+    estimate_total = True
 
     def __init__(self, *args):
         Process.__init__(self)
@@ -90,7 +91,7 @@ class ContinuousDataset(LengthOrderedDataset):
                 i, tc, ec = t
                 error_count += ec
                 return i, tc
-        rush.mp_while(False, receive)
+        rush.mp_while(receive)
         if error_count:
             print(error_count, 'error(s)')
 

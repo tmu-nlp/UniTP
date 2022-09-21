@@ -231,5 +231,9 @@ def make_parse_factor(msub = 0, esub = 0, **extra):
     extra[F_ESUB] = make_close_frac(esub)
     return extra
 
+def make_sentiment_factor(**extra):
+    extra.update(parse_factor)
+    return extra
+
 S_ALL, S_EXH = 'all', 'except_head'
 ply_shuffle = BaseType(0, default_set = (None, S_ALL, S_EXH), as_index = True)

@@ -9,7 +9,7 @@ from models.types import act_fasttext
 from models.utils import PCA, get_multilingual
 
 BottomOutput   = namedtuple('BottomOutput', 'batch_size, batch_len, embedding, cell_hidden')
-TagLabelOutput = namedtuple('TagLabelOutput', 'tag_start, tag_end, tags, labels, layers_of_hidden')
+TagLabelOutput = namedtuple('TagLabelOutput', 'tag_start, tag_end, tag, label, hidden')
 input_config = dict(pre_trained = true_type, activation = act_fasttext, drop_out = frac_4)
 
 class InputLeaves(nn.Module):
@@ -226,7 +226,7 @@ class InputLayer(nn.Module):
         self._half_dim_diff = diff >> 1
 
     def forward(self, word_idx, tune_pre_trained,
-                ingore_logits = False, key = None, squeeze_existence = None, 
+                ignore_logits = False, key = None, squeeze_existence = None, 
                 **kw_args):
         assert isinstance(squeeze_existence, bool)
         batch_size, batch_len = word_idx.shape
@@ -245,7 +245,7 @@ class InputLayer(nn.Module):
                 base_inputs = self._combine_static.compose(static, base_inputs, None)
         if squeeze_existence:
             bottom_existence = bottom_existence.squeeze(dim = 2)
-        base_returns = super().forward(base_inputs, bottom_existence, ingore_logits, key, **kw_args)
+        base_returns = super().forward(base_inputs, bottom_existence, ignore_logits, key, **kw_args)
         return (BottomOutput(batch_size, batch_len, static, cell_hidden),) + base_returns
 
     def get_static_pca(self, key = None):
@@ -310,7 +310,7 @@ class InputLayer(nn.Module):
 from models.utils import get_logit_layer
 from models.loss import get_decision, get_decision_with_value
 from models.loss import get_loss, get_label_height_mask
-class OutputLayer(nn.Module):
+class ParsingOutputLayer(nn.Module):
     def __init__(self,
                  stem_fn,
                  model_dim,
@@ -348,15 +348,14 @@ class OutputLayer(nn.Module):
     def forward(self,
                 base_inputs,
                 bottom_existence,
-                ingore_logits = False,
+                ignore_logits = False,
                 key = None,
                 tag_layer = 0,
                 **kw_args):
         if tag_layer: kw_args['n_layers'] = tag_layer
         sout = self._stem_layer(bottom_existence, base_inputs, **kw_args)
         
-        if self._hidden_dim and not ingore_logits: # embedding, existence, segment, extension
-
+        if self._hidden_dim: # embedding, existence, segment, extension
             tag_start = tag_end = 0
             if tag_layer == 0:
                 tag_len = tag_end = sout.segment[0]
@@ -370,16 +369,23 @@ class OutputLayer(nn.Module):
             if self._logit_max:
                 layers_of_hidden = self._activation(layers_of_hidden)
 
+            if ignore_logits:
+                return sout, layers_of_hidden
+
             if self._tag_layer is None:
                 tags = None
             else:
-                tag_fn = self._tag_layer if key is None else self._tag_layer[key]
+                tag_fn = self._tag_layer
+                if isinstance(tag_fn, nn.ModuleDict):
+                    tag_fn = tag_fn[key]
                 tags = tag_fn(layers_of_hidden[:, :tag_len])
             
-            if self._label_layer is None or ingore_logits:
+            if self._label_layer is None:
                 labels = None
             else:
-                label_fn = self._label_layer if key is None else self._label_layer[key]
+                label_fn = self._label_layer
+                if isinstance(label_fn, nn.ModuleDict):
+                    label_fn = label_fn[key]
                 labels = label_fn(layers_of_hidden)
         else:
             tag_start = tag_end = tags = labels = layers_of_hidden = None
@@ -403,15 +409,14 @@ class OutputLayer(nn.Module):
         if weight is not None:
             label_height_mask = label_height_mask * weight
 
-        tag_fn = self._tag_layer if key is None else self._tag_layer[key]
-        label_fn = self._label_layer if key is None else self._label_layer[key]
-        tag_loss   = get_loss(tag_fn,   self._logit_max, tag_logits,   batch['tag'])
-        label_loss = get_loss(label_fn, self._logit_max, label_logits, batch['label'], label_height_mask)
+        if self._logit_max:
+            tag_fn = label_fn = None
+        else:
+            tag_fn = self._tag_layer if key is None else self._tag_layer[key]
+            label_fn = self._label_layer if key is None else self._label_layer[key]
+        tag_loss   = get_loss(tag_fn,   tag_logits,   batch['tag'])
+        label_loss = get_loss(label_fn, label_logits, batch['label'], label_height_mask)
         return tag_loss, label_loss
-        
-    def get_label(self, hidden, key = None):
-        label_fn = self._label_layer if key is None else self._label_layer[key]
-        return label_fn(hidden)
 
     def get_decision(self, logits):
         return get_decision(self._logit_max, logits)

@@ -12,6 +12,7 @@ class TriangularDM(DM):
             label_layers = triangle_to_layers(labels, size, offset, length, i2l)
             right_layers = triangle_to_layers(rights, size, offset, length, None)
             tree, _ = get_tree_from_signals(token_layer, tag_layer, label_layers, right_layers, 'VROOT')
+            tree.un_chomsky_normal_form()
             yield ' '.join(str(tree).split())
 
     @staticmethod
@@ -27,10 +28,11 @@ class TrapezoidalDM(DM):
     def tree_gen_fn(i2w, i2t, i2l, segments, offsets, lengths, token, tag, label, right, seg_length):
         for offset, length, tokens, tags, labels, rights, seg_length in zip(offsets, lengths, token, tag, label, right, seg_length):
             token_layer = tuple(i2w[w] for w in tokens[offset:offset+length])
-            tag_layer   = tuple(i2t[t] for t in tags  [offset:offset+length]) if i2t else None
+            tag_layer   = tuple(i2t[t] for t in tags  [offset:offset+length])
             label_layers = trapezoid_to_layers(labels, segments, seg_length, i2l)
             right_layers = trapezoid_to_layers(rights, segments, seg_length, None)
             tree, _ = get_tree_from_signals(token_layer, tag_layer, label_layers, right_layers, 'VROOT')
+            tree.un_chomsky_normal_form()
             yield ' '.join(str(tree).split())
 
     @staticmethod

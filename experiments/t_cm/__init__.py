@@ -29,22 +29,22 @@ def get_configs(recorder = None):
         Signal.set_char()
     model_config['chunk_layer']['char_chunk'] = any_char_as_token
     
-    def get_datasets(mode, balanced = None):
+    def get_datasets(mode, new_factor = None):
         datasets = {}
         for corp_name, reader in readers.items():
             if mode == M_TRAIN:
-                if train_ds := reader.loaded_ds.get(mode):
-                    from data.dataset import post_batch
-                    train_ds.reset_factors(balanced[corp_name])
-                    datasets[corp_name] = post_batch(
-                        mode, train_ds, penn.sort_by_length, penn.bucket_len, penn.batch_size)
-                else:
+                if (train_ds := reader.loaded_ds.get(mode)) is None:
                     datasets[corp_name] = reader.multib(
                         M_TRAIN,
                         penn.batch_size,
                         penn.bucket_len,
                         max_len = penn.max_len,
-                        sort_by_length = penn.sort_by_length)
+                        sort_by_length = penn.sort_by_length, 
+                        new_factor = new_factor[corp_name] if new_factor else None)
+                else:
+                    from data.dataset import post_batch
+                    train_ds.reset_multib_factor(*new_factor[corp_name])
+                    datasets[corp_name] = post_batch(mode, train_ds, penn.sort_by_length, penn.bucket_len, penn.batch_size)
             else:
                 datasets[corp_name] = reader.multib(mode, penn.batch_size << 1, 0)
         return datasets

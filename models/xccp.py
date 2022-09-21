@@ -525,9 +525,9 @@ model_type = dict(space_layer     = stem_config,
                   tag_label_layer = multi_class)
 
 from models.loss import get_loss
-from models.backend import OutputLayer
+from models.backend import ParsingOutputLayer
 from utils.param_ops import change_key
-class BaseRnnParser(OutputLayer):
+class BaseRnnParser(ParsingOutputLayer):
     def __init__(self, *args, **kwargs):
         change_key(kwargs, 'space_layer', 'stem_layer')
         super().__init__(DiscoMultiStem, *args, **kwargs)

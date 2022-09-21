@@ -6,13 +6,26 @@ def pre_word_base(model_config):
             return CharTextHelper
 
 from utils.param_ops import get_sole_key, change_key
-def post_word_base(model_cls, model_config, data_config, readers):
+parsing_pnames = 'num_tokens', 'weight_fn', 'num_tags', 'num_labels', 'paddings'
+sentiment_pnames = 'num_tokens', 'weight_fn', 'num_polars', 'paddings'
+parsing_sentiment_pnames = set(parsing_pnames) | set(sentiment_pnames)
+def post_word_base(model_cls, model_config, data_config, readers, pnames = parsing_pnames):
     i2vs = {c: r.i2vs for c, r in readers.items()}
     if single_corpus := (len(data_config) == 1):
         single_corpus = get_sole_key(data_config)
         i2vs = i2vs[single_corpus]
-    for pname in ('num_tokens', 'weight_fn', 'num_tags', 'num_labels', 'paddings'):
-        param = {c: r.get_to_model(pname) for c, r in readers.items()}
+    reader_types = len(set(r.__class__ for r in readers.values()))
+    for pname in pnames:
+        param = {}
+        for c, r in readers.items():
+            if reader_types == 1:
+                param[c] = r.get_to_model(pname)
+            elif r.has_for_model(pname):
+                param[c] = r.get_to_model(pname)
+        if reader_types > 1:
+            assert param
+            if single_corpus := (len(param) == 1):
+                single_corpus = get_sole_key(param)
         model_config[pname] = param[single_corpus] if single_corpus else param
     return model_cls(**model_config), i2vs
 

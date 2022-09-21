@@ -45,8 +45,8 @@ def sorted_decisions(argmax, topk, logits):
 def sorted_decisions_with_values(score_fn, topk, logits):
     return score_fn(logits).topk(topk)
 
-def get_loss(net, argmax, logits, gold, weight = None):
-    if argmax:
+def get_loss(net, logits, gold, weight = None):
+    if net is None:
         return cross_entropy(logits, gold, weight)
 
     distance = net.distance(logits, gold)
@@ -55,8 +55,8 @@ def get_loss(net, argmax, logits, gold, weight = None):
 
     return distance.sum() + net.repulsion()
 
-def get_label_height_mask(batch):
-    label = batch['label']
+def get_label_height_mask(batch, key = 'label'):
+    label = batch[key]
     dim = torch.arange(label.shape[1], device = label.device)
     if (segment := batch.get('segment')) is None:
         length = batch['length']

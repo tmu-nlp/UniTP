@@ -4,12 +4,12 @@ import argparse
 import importlib
 import data
 import experiments
-from os import mkdir, listdir, environ
+from os import mkdir, listdir, environ, getcwd
 from os.path import isdir, isfile, join, abspath
 from utils.yaml_io import save_yaml, load_yaml
 from utils.file_io import create_join, DelayedKeyboardInterrupt, link
 from utils.types import fill_placeholder, K_CORP
-from utils.param_ops import zip_nt_params, iter_zipped_nt_params, change_key
+from utils.param_ops import zip_nt_params, iter_zipped_nt_params
 from utils.str_ops import strange_to
 from utils.shell_io import byte_style
 from collections import defaultdict
@@ -248,23 +248,22 @@ class Manager:
             data_type, model_type, train_type = m.get_configs()
             data_config = task_config['data']
             errors = []
+            
+            if not (ready_dpaths.keys() & m.CORPORA):
+                errors.extend(evalb_errors)
+                errors.append('None of \'' + "', '".join(m.CORPORA) + '\' is ready')
+            if all(not check_fasttext(path) for path in ready_dpaths.values()):
+                errors.append('Lack pre-trained embeddings')
 
-            if 'sentiment' in module_name:
-                if 'sstb' not in ready_dpaths:
-                    errors.append('Core data \'sstb\' is not ready')
-            elif 'tokenization' in module_name:
-                if not ready_dpaths:
-                    errors.append('None of the datasets is ready')
-            else:
-                if not (ready_dpaths.keys() & m.CORPORA):
-                    errors.extend(evalb_errors)
-                    errors.append('None of \'' + "', '".join(m.CORPORA) + '\' is ready')
-                if all(not check_fasttext(path) for path in ready_dpaths.values()):
-                    errors.append('Lack pre-trained embeddings')
-                
-            for k, mnp, unp in iter_zipped_nt_params(data_type, data_config):
-                if not mnp.validate(unp):
-                    errors.append(f'Invalid data_config: {k} = {unp}')
+            try:
+                for k, mnp, unp in iter_zipped_nt_params(data_type, data_config):
+                    if not mnp.validate(unp):
+                        errors.append(f'Invalid data_config: {k} = {unp}')
+            except:
+                from utils.param_ops import HParams
+                print(HParams(data_type))
+                print(HParams(data_config))
+                breakpoint()
                 # try:
                 #     if not ( or isinstance(unp, int) and mnp.is_valid(mnp[unp])):
                         
@@ -402,9 +401,8 @@ class Manager:
 
 def get_args():
     parser = argparse.ArgumentParser(
-        prog = 'Manager', usage = '%(prog)s DIR [options]',
+        prog = 'Manager', usage = '%(prog)s DIR [options]', add_help = True,
         description = 'A handy guider and manager for all the data and experiments',
-        add_help    = True,
     )
     parser.add_argument('base', metavar = 'DIR', help = 'working directory', type = str)
     parser.add_argument('-R', '--reset',       help = 'initial manager.yaml', action = 'store_true', default = False)

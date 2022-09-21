@@ -1,4 +1,4 @@
-from data import XRB2brackets, no_backslash, RB2brackets, SUB
+from data import no_slashes, no_backslash, RB2brackets, SUB
 from nltk.tree import Tree
 from data.cross import draw_str_lines as __draw
 from data.cross.dptb import direct_read as __read
@@ -228,9 +228,7 @@ class Signal:
                 sub.append(word)
             else:
                 word = sub[0]
-            if '\/' in word:
-                word = word.replace('\/', '/')
-            if (mord := XRB2brackets(word)) != word:
+            if (mord := no_slashes(word)) != word:
                 sub[0] = mord
         return cls(tree, False)
 

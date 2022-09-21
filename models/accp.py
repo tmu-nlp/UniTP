@@ -178,9 +178,9 @@ model_type = dict(chunk_layer     = stem_config,
                   tag_label_layer = multi_class)
 
 from models.loss import get_loss
-from models.backend import OutputLayer
+from models.backend import ParsingOutputLayer
 from utils.param_ops import change_key
-class _CM(OutputLayer):
+class _CM(ParsingOutputLayer):
     def __init__(self, *args, **kwargs):
         change_key(kwargs, 'chunk_layer', 'stem_layer')
         super().__init__(MultiStem, *args, **kwargs)

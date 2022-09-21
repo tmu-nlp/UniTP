@@ -4,10 +4,15 @@ from models.combine import get_combinator, combine_type
 from models.types import activation_type, logit_type
 from utils.types import hidden_dim, orient_dim, num_ori_layer, frac_2, frac_4, false_type
 
-multi_class = dict(hidden_dim = hidden_dim,
-                   activation = activation_type,
-                   logit_type = logit_type,
-                   drop_out   = frac_4)
+_m_class = dict(hidden_dim = hidden_dim,
+                activation = activation_type,
+                drop_out   = frac_4)
+
+polar_class = _m_class.copy()
+polar_class.update(polar_from_parsing_hidden = false_type)
+
+multi_class = _m_class.copy()
+multi_class.update(logit_type = logit_type)
 
 stem_config = dict(orient_dim   = orient_dim,
                    combine_type = combine_type,
@@ -17,8 +22,9 @@ stem_config = dict(orient_dim   = orient_dim,
                    trainable_initials = false_type)
 
 model_type = dict(orient_layer    = stem_config,
-                  tag_label_layer = multi_class)
-from utils.math_ops import s_index
+                  tag_label_layer = multi_class,
+                  polar_layer     = polar_class)
+
 from itertools import count
 from models.utils import condense_helper, condense_left
 from models import StemOutput
@@ -198,9 +204,45 @@ class Stem(nn.Module):
         return layers_of_unit, layers_of_existence, layers_of_orient, batch_segment, torch.cat(segment, dim = 1)
 
 
-from models.backend import OutputLayer
+from models.backend import ParsingOutputLayer
 from utils.param_ops import change_key
-class _CB(OutputLayer):
+class _CB(ParsingOutputLayer):
     def __init__(self, *args, **kwargs):
         change_key(kwargs, 'orient_layer', 'stem_layer')
         super().__init__(Stem, *args, **kwargs)
+
+
+from models.utils import LinearM2
+class _SentimentCB(nn.Module):
+    def __init__(self, model_dim, num_polars, polar_layer, **kwargs):
+        super().__init__()
+        self._hidden_dim = hidden_dim = polar_layer['hidden_dim']
+        self._stem_layer = Stem(model_dim, **kwargs['orient_layer'])
+        self._polar_layer = LinearM2(model_dim, hidden_dim, num_polars, polar_layer['activation'], polar_layer['drop_out'])
+
+    def forward(self, base_inputs, bottom_existence, ignore_logits = False, key = None, **kwargs):
+        sout = self._stem_layer(bottom_existence, base_inputs, **kwargs)
+        return sout, self._polar_layer(sout.embedding)
+
+    @property
+    def hidden_dim(self):
+        return self._hidden_dim
+
+    @property
+    def stem(self):
+        return self._stem_layer
+
+
+class _SentimentOnSyntacticCB(ParsingOutputLayer):
+    def __init__(self, model_dim, num_polars, polar_layer, *largs, **kwargs):
+        change_key(kwargs, 'orient_layer', 'stem_layer')
+        super().__init__(Stem, model_dim, *largs, **kwargs)
+        self._polar_from_parsing_hidden = pfph = polar_layer['polar_from_parsing_hidden']
+        in_size = (model_dim, self.hidden_dim)[pfph]
+        self._polar_layer = LinearM2(in_size, polar_layer['hidden_dim'], num_polars, polar_layer['activation'], polar_layer['drop_out'])
+
+    def forward(self, base_inputs, bottom_existence, ignore_logits = False, key = None, **kwargs):
+        sout, pout = super().forward(base_inputs, bottom_existence, ignore_logits, key, **kwargs)
+        if ignore_logits:
+            return sout, self._polar_layer(pout if self._polar_from_parsing_hidden else sout.embedding)
+        return sout, pout

@@ -19,9 +19,9 @@ class XLNetCB(_CB):
                 word_idx,
                 tune_pre_trained,
                 offset, plm_idx, plm_start, 
-                ingore_logits = False, **kw_args):
+                ignore_logits = False, **kw_args):
         batch_size, batch_len, base_inputs, bottom_existence = self._input_layer(word_idx, offset, plm_idx, plm_start, tune_pre_trained)
-        base_returns = super().forward(base_inputs, bottom_existence, ingore_logits, **kw_args)
+        base_returns = super().forward(base_inputs, bottom_existence, ignore_logits, **kw_args)
         return (batch_size, batch_len, base_inputs, None) + base_returns
 
     @property

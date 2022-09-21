@@ -1,6 +1,6 @@
 from models.backend import InputLayer, input_config, contextual_config
 from models.combine import combine_static_type
-from models.nccp import _CB, model_type
+from models.nccp import model_type, _CB, _SentimentCB, _SentimentOnSyntacticCB
 from utils.types import word_dim
 
 model_type = model_type.copy()
@@ -10,8 +10,22 @@ model_type['contextualize']  = contextual_config
 model_type['combine_emb_and_cxt'] = combine_static_type
 
 class CB(InputLayer, _CB):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+    def __init__(self, *largs, **kwargs):
+        super().__init__(*largs, **kwargs)
 
-    def forward(self, *args, **kw_args):
-        return super().forward(*args, **kw_args, squeeze_existence = False)
+    def forward(self, *largs, **kwargs):
+        return super().forward(*largs, **kwargs, squeeze_existence = False)
+
+class SentimentCB(InputLayer, _SentimentCB):
+    def __init__(self, *largs, **kwargs):
+        super().__init__(*largs, **kwargs)
+
+    def forward(self, *largs, **kwargs):
+        return super().forward(*largs, **kwargs, squeeze_existence = False)
+
+class SentimentOnSyntacticCB(InputLayer, _SentimentOnSyntacticCB):
+    def __init__(self, *largs, **kwargs):
+        super().__init__(*largs, **kwargs)
+
+    def forward(self, *largs, **kwargs):
+        return super().forward(*largs, **kwargs, squeeze_existence = False)
