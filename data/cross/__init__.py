@@ -37,64 +37,73 @@ from copy import deepcopy
 class Signal:
     @classmethod
     def set_binary(cls):
-        from data.cross.binary import cross_signals
-        def func(factor, more_sub, bottom, node2tag, bottom_unary, top_down, l2i, dep):
-            if factor != F_DEP:
-                if factor == F_RANDOM:
-                    factor = random()
-                dep = None
-            top_down = deepcopy(top_down)
-            if more_sub:
-                top_down = add_subs(top_down, bottom_unary, more_sub)
-            return cross_signals(bottom, node2tag, bottom_unary, top_down, factor, dep, l2i = l2i)
-        cls.__binary = func
+        from data.cross.binary import cross_signals, extend_factor
+        cls.b_factor  = extend_factor
+        cls.b_signals = cross_signals
 
     @classmethod
     def set_multib(cls):
         from data.cross.multib import cross_signals
-        def func(factor, more_sub, bottom, node2tag, bottom_unary, top_down, l2i, dep):
-            if factor == F_DEP:
-                assert isinstance(dep, dict)
-            elif isinstance(factor, dict):
-                dep = factor # check static for cache?
-                factor = F_DEP
-            if factor == F_DEP:
-                # if self._dep_signals is None TODO 
-                return cross_signals(bottom, node2tag, bottom_unary, top_down, factor, l2i, _new_dep(dep))
-            if 0 < more_sub < 1 and factor != F_CON:
-                top_down = add_subs(top_down, bottom_unary, more_sub)
-            return cross_signals(bottom, node2tag, bottom_unary, top_down, factor, l2i)
-        cls.__multib = func
+        def append_space_final_layer(*largs, **kwargs):
+            ll, ls, ld = cross_signals(*largs, **kwargs)
+            la = [[x + 1 for x in l] for l in ls]
+            la.append([1])
+            return ll, ls, ld, la
+        cls.m_signals = cross_signals, append_space_final_layer
 
     @classmethod
-    def from_tiger_graph(cls, graph, *args, **kw_args):
+    def from_tiger_graph(cls, graph, dep = None, *args, **kw_args):
         from data.cross.tiger import read_tree
-        return cls(*read_tree(graph), *args, **kw_args)
+        tree = bottom, top_down = read_tree(graph)
+        top_down_without_unary = deepcopy(top_down)
+        word, bottom_nodes, node2tag, bottom_unary = _pre_proc(bottom, top_down_without_unary, dep)
+        return cls(tree, word, bottom_nodes, top_down_without_unary, bottom_unary, node2tag, dep, *args, **kw_args)
 
     @classmethod
-    def from_disco_penn(cls, tree, *args, **kw_args):
+    def from_disco_penn(cls, tree, dep = None, *args, **kw_args):
         from data.cross.dptb import read_tree
-        # args = replace_args_kwargs(_dep_n_prefix, 1, args, 'dep', kw_args)
-        return cls(*read_tree(tree), *args, **kw_args)
+        tree = bottom, top_down = read_tree(tree)
+        top_down_without_unary = deepcopy(top_down)
+        word, bottom_nodes, node2tag, bottom_unary = _pre_proc(bottom, top_down_without_unary, dep)
+        return cls(tree, word, bottom_nodes, top_down_without_unary, bottom_unary, node2tag, dep, *args, **kw_args)
 
-    def __init__(self, bottom, top_down, v2is = None, dep = None):
-        self._tree = bottom, deepcopy(top_down)
-        word, bottom_nodes, node2tag, bottom_unary = _pre_proc(bottom, top_down, dep = dep)
+    def __init__(self, tree, word, bottom_nodes, top_down, bottom_unary, node2tag, dep = None):
+        self._tree = tree
         self._word = word
+        self._tag  = [node2tag[t] for t in bottom_nodes]
         self._gaps = None
-        if v2is is None:
-            bottom_tag = [node2tag[t] for t in bottom_nodes]
-            l2i = None
-        else:
-            w2i, t2i, l2i = v2is
-            bottom_tag = [t2i(node2tag[t]) for t in bottom_nodes]
-            word = [w2i(w) for w in word]
-        if dep is not None:
-            _pre_dep(dep, node2tag)
+        self._materials = bottom_nodes, top_down, bottom_unary, node2tag, dep
+        self._efficient = None
 
-        self._word_tag = word, bottom_tag
-        self._materials = bottom_nodes, top_down, bottom_unary, node2tag, l2i, dep
-        self._balanced_top_down = None
+    @property
+    def efficient_top_down(self):
+        if self._efficient is None:
+            top_down, bottom_unary = self._materials[1:3]
+            etd = add_efficient_subs(top_down, bottom_unary)
+            self._efficient = etd if etd.keys() - top_down.keys() else top_down
+        return self._efficient
+
+    def serialize(self, efficient = True):
+        data = [self._tree, self._word]
+        data.extend(self._materials)
+        if efficient:
+            etd = self.efficient_top_down
+            if self._materials[1] is etd:
+                data.append(None)
+            else:
+                data.append(etd)
+        return data
+
+    @classmethod
+    def instantiate(cls, largs):
+        signal = cls(*largs[:7])
+        if largs[7:]:
+            signal._efficient = largs[7] if largs[7] else largs[3]
+        return signal
+
+    @property
+    def tree(self):
+        return self._tree
 
     @property
     def has_signals(self):
@@ -112,28 +121,57 @@ class Signal:
         return self._gaps
 
     @property
-    def text(self):
+    def word(self):
         return self._word
+    
+    @property
+    def tag(self):
+        return self._tag
 
     @property
-    def word_tag(self):
-        return self._word_tag
-        
-    def binary(self, factor = F_RANDOM, balancing_sub = False, more_sub = 0):
-        bottom_nodes, top_down, bottom_unary, node2tag, l2i, dep = self._stratify(balancing_sub)
-        return Signal.__binary(factor, more_sub, bottom_nodes, node2tag, bottom_unary, top_down, l2i, dep)
+    def max_height(self):
+        return self._blen
 
-    def multib(self, factor = F_LEFT, balancing_sub = False, more_sub = 0):
-        bottom_nodes, top_down, bottom_unary, node2tag, l2i, dep = self._stratify(balancing_sub)
-        return Signal.__multib(factor, more_sub, bottom_nodes, node2tag, bottom_unary, top_down, l2i, dep)
+    def char_to_idx(self, c2i):
+        idx = []
+        for wd in self._word:
+            idx.extend(c2i(w) for w in wd)
+        return idx
+
+    def word_to_idx(self, w2i):
+        return [w2i(w) for w in self._word]
+    
+    def tag_to_idx(self, t2i):
+        return [t2i(t) for t in self._tag]
+        
+    def binary(self, factor = F_RANDOM, esub = False, msub = 0, l2i = None, **kwargs):
+        bottom_nodes, top_down, bottom_unary, node2tag, dep = self._stratify(esub)
+        if factor != F_DEP:
+            factor = Signal.b_factor(factor, top_down)
+            dep = None
+        top_down = deepcopy(top_down)
+        if 0 < msub < 1:
+            top_down = add_subs(top_down, bottom_unary, msub)
+        return Signal.b_signals(bottom_nodes, node2tag, bottom_unary, top_down, factor, l2i, dep, **kwargs)
+
+    def multib(self, factor = F_LEFT, esub = False, msub = 0, l2i = None, append_space = False, **kwargs):
+        bottom_nodes, top_down, bottom_unary, node2tag, dep = self._stratify(esub)
+        if factor == F_DEP:
+            assert isinstance(dep, dict)
+        elif isinstance(factor, dict):
+            dep = factor # check static for cache?
+            factor = F_DEP
+        if factor == F_DEP: # if self._dep_signals is None TODO 
+            return Signal.m_signals[append_space](bottom_nodes, node2tag, bottom_unary, top_down, factor, l2i, _new_dep(dep), **kwargs)
+        if 0 < msub < 1 and factor != F_CON:
+            top_down = add_subs(top_down, bottom_unary, msub)
+        return Signal.m_signals[append_space](bottom_nodes, node2tag, bottom_unary, top_down, factor, l2i, **kwargs)
 
     def _stratify(self, balancing_sub = False):
-        bottom_nodes, top_down, bottom_unary, node2tag, l2i, dep = self._materials
+        bottom_nodes, top_down, bottom_unary, node2tag, dep = self._materials
         if balancing_sub:
-            if self._balanced_top_down is None:
-                self._balanced_top_down = add_efficient_subs(top_down, bottom_unary)
-            top_down = self._balanced_top_down
-        return bottom_nodes, top_down, bottom_unary, node2tag, l2i, dep
+            top_down = self.efficient_top_down
+        return bottom_nodes, top_down, bottom_unary, node2tag, dep
 
 def height_gen(top_down, root_id):
     max_height = -1
@@ -301,14 +339,14 @@ def new_word_label(bottom, top_down, *, word_fn = do_nothing, tag_fn = do_nothin
 #             last_right = right
 #             last_nid = nid
 
-def _pre_proc(bottom_info, top_down, unary_join_mark = '+', dep = None):
+def _pre_proc(bottom_info, top_down, dep = None, unary_join_mark = '+'):
     bu_nodes = [p_node for p_node, (_, children) in top_down.items() if len(children) == 1]
     unary = {}
     while bu_nodes:
         p_node = bu_nodes.pop()
         label, children = top_down.pop(p_node)
         node = get_sole_key(children) # prearg info lost
-        unary[node] = label, p_node
+        unary[node] = label, p_node # ftag is helpless
 
     word = []
     node2tag = {}
@@ -339,23 +377,22 @@ def _pre_proc(bottom_info, top_down, unary_join_mark = '+', dep = None):
         for n, h in dep.items():
             if h in _dep:
                 dep[n] = _dep[h]
+        extra = []
+        for node, bt_head in dep.items():
+            if bt_head not in node2tag and bt_head:
+                extra.append(node)
+        media = set()
+        for node in extra:
+            bt_head = dep.pop(node)
+            while bt_head and bt_head not in node2tag:
+                media.add(bt_head)
+                bt_head = dep[bt_head]
+            dep[node] = bt_head
+        for bt_head in media:
+            dep.pop(bt_head)
 
     return word, new_bottom, node2tag, bottom_unary
 
-def _pre_dep(dep, node2tag):
-    extra = []
-    for node, bt_head in dep.items():
-        if bt_head not in node2tag and bt_head:
-            extra.append(node)
-    media = set()
-    for node in extra:
-        bt_head = dep.pop(node)
-        while bt_head and bt_head not in node2tag:
-            media.add(bt_head)
-            bt_head = dep[bt_head]
-        dep[node] = bt_head
-    for bt_head in media:
-        dep.pop(bt_head)
             # if details:
             #     print('  '.join(n.split('_')[1]+'->'+(h.split('_')[1] if h else '*') for n, h in dep.items()))
                 # if details and not bt_head:
@@ -380,7 +417,7 @@ E_SHP = 0
 E_CMB = 1
 E_LBL = 2
 
-def explain_error(error_layer, error_id, sent_len):
+def explain_error(error_layer, sent_len, error_id):
     if error_id == E_SHP:
         error = 'Bad tensor shape'
     elif error_id == E_CMB:

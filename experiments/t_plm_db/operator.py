@@ -1,6 +1,6 @@
-from experiments.t_db.operator import DiscoOperator
+from experiments.t_db.operator import DBOperator
 
-class DiscoOperator_lr(DiscoOperator):
+class DiscoOperator_lr(DBOperator):
     def _get_optuna_fn(self, train_params):
         from utils.train_ops import train, get_optuna_params
         optuna_params = get_optuna_params(train_params)

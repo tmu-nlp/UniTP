@@ -1,9 +1,9 @@
 from math import exp
 from torch import optim, Tensor
 from utils.shell_io import byte_style
+from utils import do_nothing
 
-
-make_tensors = lambda *args: tuple(x.cpu().numpy() if isinstance(x, Tensor) else x for x in args)
+make_tensors = lambda *args, fn = do_nothing: tuple(fn(x).cpu().numpy() if isinstance(x, Tensor) else x for x in args)
 
 class WarmOptimHelper:
     @classmethod

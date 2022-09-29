@@ -39,7 +39,7 @@ def get_configs(recorder = None):
                         penn.batch_size,
                         penn.bucket_len,
                         max_len = penn.max_len,
-                        sort_by_length = penn.sort_by_length, 
+                        sort_by_length = penn.sort_by_length,
                         new_factor = new_factor[corp_name] if new_factor else None)
                 else:
                     from data.dataset import post_batch

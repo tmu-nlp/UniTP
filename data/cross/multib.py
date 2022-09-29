@@ -309,7 +309,7 @@ def cross_signals(bottom, node2tag, bottom_unary, top_down, factor, # float:midi
     return layers_of_label, layers_of_space, layers_of_disco
 
 
-from data.cross import E_SHP, E_CMB, E_LBL, _combine, draw_str_lines, bottom_trees
+from data.cross import E_SHP, E_CMB, E_LBL, _combine, bottom_trees
 def disco_tree(word, bottom_tag, 
                layers_of_label,
                layers_of_space,
@@ -343,7 +343,7 @@ def disco_tree(word, bottom_tag,
         if track_fall_back:
             next_layer_size = len(layers_of_label[lid + 1])
             if set(range(next_layer_size)) != set(layers_of_space[lid]):
-                error_layer_id = lid, E_LBL, bottom_len
+                error_layer_id = lid, bottom_len, E_LBL
                 if next_layer_size == 1:
                     space_layer = [0 for x in space_layer]
                 else:
@@ -404,7 +404,7 @@ def disco_tree(word, bottom_tag,
         # if isinstance(fallback_label, str) and len(word) > 2:
         #     import pdb; pdb.set_trace()
         if len(track_nodes) > 1 and new_track_nodes == track_nodes and track_fall_back: # no action is taken
-            error_layer_id = lid, E_CMB, bottom_len
+            error_layer_id = lid, bottom_len, E_CMB
             NTS = fallback(NTS)
             break
 
@@ -416,7 +416,7 @@ def disco_tree(word, bottom_tag,
             top_down[NTS].update(tid for tid, _, _ in terminals)
             non_terminals[NTS] = fallback_label
             NTS -= 1
-            error_layer_id = -1, E_LBL, bottom_len
+            error_layer_id = -1, bottom_len, E_LBL
 
     # import pdb; pdb.set_trace()
     for nid, label in non_terminals.items():
@@ -449,36 +449,3 @@ def total_fence(space_layer):
         if lhs != rhs:
             split_layer.append(sid)
     return count, split_layer
-
-
-from data.mp import DM
-from data.cross.evalb_lcfrs import export_string
-
-class MxDM(DM):
-    @staticmethod
-    def tree_gen_fn(i2w, i2t, i2l, bid_offset, segments, *data_gen):
-        for seg_length, word, tag, label, space in zip(*data_gen):
-            layers_of_label = []
-            layers_of_space = []
-            label_start = 0
-            for l_size, l_len in zip(segments, seg_length):
-                label_end = label_start + l_len
-                label_layer = label[label_start: label_end]
-                layers_of_label.append(tuple(i2l(i) for i in label_layer))
-                if l_len == 1:
-                    break
-                layers_of_space.append(space[label_start: label_end])
-                label_start += l_size
-            ln = seg_length[0]
-            wd = [i2w[i] for i in word[:ln]]
-            tg = [i2t[i] for i in  tag[:ln]]
-            bt, td, _ = disco_tree(wd, tg, layers_of_label, layers_of_space, 'VROOT')
-            yield export_string(bid_offset, bt, td)
-            bid_offset += 1
-
-    @staticmethod
-    def arg_segment_fn(seg_id, seg_size, batch_size, t_args):
-        bid_offset, segments = t_args[:2]
-        start = seg_id * seg_size
-        if start < batch_size:
-            return (bid_offset + start, segments) + tuple(x[start: (seg_id + 1) * seg_size] for x in t_args[2:])

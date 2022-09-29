@@ -201,12 +201,12 @@ class Recorder:
     def msg(*args, **kwargs):
         print(*args, **kwargs, file = stderr, flush = True)
 
-    def task_specs(self): # TODO if not training set trainset & develset to {}
+    def task_specs(self, ignore_missing_keys = False):
         from utils.param_ops import HParams
         specs = load_yaml(*self._sv_file_lock, wait = False)
         _, model_type, train_type = self._get_configs()
-        model_config = get_obj_from_config(model_type, specs['model'])
-        train_config = get_obj_from_config(train_type, specs['train'])
+        model_config = get_obj_from_config(model_type, specs['model'], ignore_missing_keys)
+        train_config = get_obj_from_config(train_type, specs['train'], ignore_missing_keys)
         train_config = HParams(train_config)
         return specs['data'], model_config, train_config, specs['results']
 
@@ -420,13 +420,9 @@ class Recorder:
         return self._test_metrics
 
 from utils.param_ops import zip_nt_params, iter_zipped_nt_params
-def get_obj_from_config(types, configs):
-    # import pdb; pdb.set_trace()
+def get_obj_from_config(types, configs, ignore_missing_keys = False):
     model_params = {}
-    for k, vi, vj in iter_zipped_nt_params(types, configs):
-        # if vi.is_valid(vj):
-        #     model_params[k] = vj
-        # else:
+    for k, vi, vj in iter_zipped_nt_params(types, configs, ignore_missing_keys):
         model_params[k] = vi[vj]
     return zip_nt_params(model_params)
 

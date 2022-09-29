@@ -1,10 +1,10 @@
 import torch
 from time import time
 from utils.math_ops import is_bin_times
-from utils.types import M_TRAIN, BaseType, frac_open_0, true_type, tune_epoch_type, frac_06, frac_close
+from utils.types import M_TRAIN, BaseType, frac_open_0, true_type, tune_epoch_type, frac_06
 from models.utils import fraction, mean_stdev
 from models.loss import binary_cross_entropy, hinge_loss
-from experiments.t_cb.operator import CBOperator
+from experiments.helper.co import CO, CVP
 from experiments.helper import make_tensors, speed_logg, continuous_score_desc_logg
 from data.penn_types import C_PTB
 
@@ -48,10 +48,7 @@ def save_txt(fname, append, lhv, rhv, dst, cos):
         fw.write(f'\nCosine\n  {n}:\n')
         fw.write(sort_matrix(cos, lhv, rhv, True))
 
-class CMOperator(CBOperator):
-    def __init__(self, model, get_datasets, recorder, i2vs, get_dm, evalb, train_config):
-        super().__init__(model, get_datasets, recorder, i2vs, get_dm, evalb, train_config)
-
+class CMOperator(CO):
     def _step(self, mode, ds_name, batch, batch_id = None):
 
         batch['key'] = corp = ds_name if self.multi_corp else None
@@ -167,23 +164,20 @@ class CMOperator(CBOperator):
             m_corp = None
             i2vs = self.i2vs
         work_dir = self.recorder.create_join(folder)
-        serial = draw_weights or flush_heads or self.dm is None
-        if serial:
-            async_ = True
-            vis = MultiVis(epoch,
-                          work_dir,
-                          self._evalb,
-                          i2vs,
-                          self.recorder.log,
-                          ds_name == C_PTB,
-                          draw_weights,
-                          length_bins,
-                          flush_heads)
+        
+        if serial := (draw_weights or flush_heads or self.dm is None):
+            vis = CMVA(epoch,
+                       work_dir,
+                       self._evalb,
+                       i2vs,
+                       self.recorder.log,
+                       ds_name == C_PTB,
+                       draw_weights,
+                       length_bins,
+                       flush_heads)
         else:
-            async_ = False
-            vis = ParallelVis(epoch, work_dir, self._evalb, self.recorder.log, self.dm, m_corp)
-        vis = VisRunner(vis, async_ = async_) # wrapper
-        vis.before()
+            vis = CMVP(epoch, work_dir, self._evalb, self.recorder.log, self.dm, m_corp)
+        vis = VisRunner(vis, async_ = serial) # wrapper
         self._vis_mode = vis, use_test_set, final_test, serial, draw_weights
 
         if final_test and self.multi_corp:
@@ -228,8 +222,7 @@ class CMOperator(CBOperator):
         vis, use_test_set, final_test, serial, _ = self._vis_mode
         devel_bins, test_bins = self._mode_length_bins
         if serial:
-            scores, desc, logg = vis.after()
-            length_bins = vis.length_bins
+            scores, desc, logg, length_bins = vis.after()
         else:
             scores, desc, logg = vis.after()
             length_bins = None
@@ -293,7 +286,7 @@ class CMOperator(CBOperator):
         return obj_fn
 
 
-from utils.vis import BaseVis, VisRunner
+from data.mp import BaseVis, VisRunner
 from utils.file_io import join, isfile, listdir, remove
 from utils.shell_io import parseval, rpt_summary
 from data.continuous.multib.mp import tensor_to_tree
@@ -302,26 +295,25 @@ from visualization import tee_trees
 from sys import stderr
 from copy import deepcopy
 
-class MultiVis(BaseVis):
+class CMVA(BaseVis):
     def __init__(self, epoch, work_dir, evalb, i2vs, logger,
                  mark_np_without_dt,
                  draw_weights   = False,
                  length_bins    = None,
                  flush_heads    = False):
-        super().__init__(epoch)
+        super().__init__(epoch, work_dir, i2vs)
         self._evalb = evalb
-        htree = join(work_dir, 'head.tree')
-        dtree = join(work_dir, f'data.{epoch}.tree')
+        htree = self.join('head.tree')
+        dtree = self.join(f'data.{epoch}.tree')
         self._fnames   = htree, dtree
-        self._join_fn  = lambda x: join(work_dir, x)
         self._is_anew  = not isfile(htree) or flush_heads
-        self._rpt_file = join(work_dir, f'data.{epoch}.rpt')
+        self._rpt_file = self.join(f'data.{epoch}.rpt')
         self._logger   = logger
         self._i2vs     = i2vs.token, i2vs.tag, i2vs.label, 
-        self.register_property('length_bins',  length_bins)
-        self._draw_file = join(work_dir, f'data.{epoch}.art') if draw_weights else None
+        self._length_bins = length_bins
+        self._draw_file = self.join(f'data.{epoch}.art') if draw_weights else None
         self._error_idx = 0, []
-        self._headedness_stat = join(work_dir, f'data.{epoch}.headedness'), {}
+        self._headedness_stat = self.join(f'data.{epoch}.headedness'), {}
         self._mark_np_without_dt = mark_np_without_dt
         for fname in listdir(work_dir):
             if 'bin_' in fname and fname.endswith('.tree'):
@@ -332,7 +324,7 @@ class MultiVis(BaseVis):
         htree, dtree = self._fnames
         if isfile(dtree): remove(dtree)
         if self._is_anew:
-            self.register_property('length_bins', set())
+            self._length_bins = set()
             if isfile(htree): remove(htree)
         if self._draw_file and isfile(self._draw_file):
             remove(self._draw_file)
@@ -346,7 +338,7 @@ class MultiVis(BaseVis):
                 tree = deepcopy(tree)
                 tree.un_chomsky_normal_form()
                 str_trees.append(' '.join(str(tree).split()))
-            self.length_bins |= tee_trees(self._join_fn, 'head', length, str_trees, None, 10)
+            self._length_bins |= tee_trees(self.join, 'head', length, str_trees, None, 10)
 
         str_trees = []
         idx_cnt, error_idx = self._error_idx
@@ -364,7 +356,7 @@ class MultiVis(BaseVis):
         if self._draw_file is None:
             bin_size = None
         else:
-            bin_size = None if self.length_bins is None else 10
+            bin_size = None if self._length_bins is None else 10
             _, head_stat = self._headedness_stat
             with open(self._draw_file, 'a+') as fw:
                 for eid, args in enumerate(zip(*b_args)):
@@ -388,7 +380,7 @@ class MultiVis(BaseVis):
                     except Exception as err:
                         print('  FAILING DRAWING:', err, file = stderr)
                         fw.write('FAILING DRAWING\n\n')
-        tee_trees(self._join_fn, f'data.{self.epoch}', length, str_trees, None, bin_size)
+        tee_trees(self.join, f'data.{self.epoch}', length, str_trees, None, bin_size)
 
     def _after(self):
         # call evalb to data.emm.rpt return the results, and time counted
@@ -416,12 +408,12 @@ class MultiVis(BaseVis):
                 self._logger(f'  (Check {self._rpt_file} for details.)')
                 fw.write('\n\n' + '\n'.join(errors))
 
-        if self.length_bins is not None and self._draw_file is not None:
-            with open(self._join_fn(f'{self.epoch}.scores'), 'w') as fw:
+        if self._length_bins is not None and self._draw_file is not None:
+            with open(self.join(f'{self.epoch}.scores'), 'w') as fw:
                 fw.write('wbin,num,lp,lr,f1,ta\n')
-                for wbin in self.length_bins:
-                    fhead = self._join_fn(f'head.bin_{wbin}.tree')
-                    fdata = self._join_fn(f'data.{self.epoch}.bin_{wbin}.tree')
+                for wbin in self._length_bins:
+                    fhead = self.join(f'head.bin_{wbin}.tree')
+                    fdata = self.join(f'data.{self.epoch}.bin_{wbin}.tree')
                     proc = parseval(self._evalb, fhead, fdata)
                     smy = rpt_summary(proc.stdout.decode(), False, True)
                     fw.write(f"{wbin},{','.join(str(smy.get(x, 0)) for x in ('N', 'LP', 'LR', 'F1', 'TA'))}\n")
@@ -434,54 +426,10 @@ class MultiVis(BaseVis):
                     line += f'{h}({c}); '
                 fw.write(line[:-2] + '\n')
 
-        return continuous_score_desc_logg(scores)
+        return continuous_score_desc_logg(scores) + (self._length_bins,)
 
-class ParallelVis(BaseVis):
-    def __init__(self, epoch, work_dir, evalb, logger, dm, corp_key):
-        super().__init__(epoch)
-        self._join = lambda fname: join(work_dir, fname)
-        self._fdata = self._join(f'data.{self.epoch}.tree')
-        self._args = dm, evalb, logger, corp_key
-
-    def _before(self):
-        self._args[0].timeit()
-
+class CMVP(CVP):
     def _process(self, batch_id, batch):
         (_, _, token, tag, label, chunk, batch_segment, segment, tag_layer) = batch
         dm, _, _, corp_key = self._args
         dm.batch(batch_id, tag_layer, batch_segment, token, tag, label, chunk, segment, key = corp_key)
-    
-    def _after(self):
-        dm, evalb, logger, _ = self._args
-        fhead = self._join(f'head.tree')
-        fdata = self._fdata
-
-        tree_text = dm.batched()
-        if tree_text: # none mean text concat without a memory travel
-            with open(fdata, 'w') as fw:
-                fw.write(tree_text)
-
-        proc = parseval(evalb, fhead, fdata)
-        report = proc.stdout.decode()
-        scores = rpt_summary(report, False, True)
-        errors = proc.stderr.decode().split('\n')
-        assert errors.pop() == ''
-        num_errors = len(errors)
-        if num_errors:
-            logger(f'  {num_errors} errors from evalb')
-            if num_errors < 10:
-                for e, error in enumerate(errors):
-                    logger(f'    {e}. ' + error)
-                fname = f'data.{self.epoch}.rpt'
-                with open(self._join(fname), 'w') as fw:
-                    fw.write(report)
-                logger(f'  (Check {fname} for details.)')
-        return continuous_score_desc_logg(scores)
-
-    @property
-    def save_tensors(self):
-        return False
-
-    @property
-    def length_bins(self):
-        return None

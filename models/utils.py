@@ -163,16 +163,16 @@ class LinearM2(Module):
     def __init__(self, in_dim, hidden_dim, out_dim, act, drop_out):
         super().__init__()
         self._hidden_dim = hidden_dim
-        if hidden_dim:
+        if hidden_dim > 1:
             self._l0 = Linear(in_dim, hidden_dim)
             self._l1 = Linear(hidden_dim, out_dim)
             self._act = act()
             self._dp = Dropout(drop_out)
         else:
-            self._l0
+            self._l0 = Linear(in_dim, out_dim)
 
     def forward(self, emb):
-        if self._hidden_dim:
+        if self._hidden_dim > 1:
             hidden = self._l0(emb)
             hidden = self._dp(hidden)
             hidden = self._act(hidden)

@@ -4,3 +4,6 @@ PyYAML
 torch
 tqdm
 Unidecode
+tensorboard
+optuna
+bidict

@@ -1,41 +1,28 @@
-
-from data.stutt import DiscoMultiReader
-from data.stutt_types import E_DISCONTINUOUS, xccp_data_config, select_and_split_corpus
-from utils.types import M_TRAIN
-from utils.param_ops import HParams
-
-from experiments.t_plm_db import get_any_disco
-from experiments.t_plm_dm.model import DiscoPlmTree, model_type
-from experiments.t_plm_dm.operator import DiscoMultiOperator_lr
-from experiments.t_dm.operator import train_type
+from data.stutt_types import xccp_data_config, E_DISCONTINUOUS
 
 CORPORA = set(E_DISCONTINUOUS)
 
 def get_configs(recorder = None):
+    from experiments.t_dm.model import DM, model_type
+    from experiments.t_dm.operator import DMOperater, train_type
     if recorder is None:
         return xccp_data_config, model_type, train_type
     
+    from data.stutt import DTreeReader
+    from utils.types import M_TRAIN, K_CORP
+    from utils.param_ops import HParams
+
     data_config, model_config, train_config, _ = recorder.task_specs()
-    corp_name, penn, DatasetHelper, Leaves = get_any_disco(**data_config)
-    penn = HParams(penn, fallback_to_none = True)
-
-    model = HParams(model_config)
-    data_splits = select_and_split_corpus(corp_name,
-                                          penn.source_path,
-                                          penn.data_splits.train_set,
-                                          penn.data_splits.devel_set,
-                                          penn.data_splits.test_set,
-                                          False, False) # TODO dep
-
-    reader = DiscoMultiReader(penn.data_path,
-                              penn.medium_factor.balanced > 0,
-                              penn.unify_sub,
-                              penn.continuous_fence_only,
-                              data_splits,
-                              penn.vocab_size,
-                              None,
-                              DatasetHelper)
+    stutt = HParams(data_config)
+    readers = {}
     
+    for corp_name, dc in data_config[K_CORP].items():
+        dc['token'] = 'word'
+        readers[corp_name] = DTreeReader(corp_name,
+            HParams(dc),
+            stutt.unify_sub,
+            stutt.nil_pad)
+            
     def get_datasets(mode, new_configs = None):
         datasets = {}
         if mode == M_TRAIN:

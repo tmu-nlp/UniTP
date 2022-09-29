@@ -4,7 +4,7 @@ from collections import namedtuple
 from models.types import activation_type, logit_type
 from utils.types import orient_dim, hidden_dim, num_ori_layer, true_type, frac_2, frac_4, frac_5, BaseWrapper, BaseType
 
-DiscoThresholds = namedtuple('DiscoThresholds', 'orient, joint, direct')
+DiscoThresholds = namedtuple('DiscoThresholds', 'right, joint, direc')
 
 def disco_orient_to_dict(x):
     comps = {}
@@ -78,12 +78,12 @@ joint_type = BaseType('iadd', validator = parse_joint_type)
 
 from models.utils import condense_splitter, condense_left
 def diff_integer_indice(right_layer, joint_layer, existence, direc_layer = None, test = False):
-    lhs_helper, rhs_helper, _, swap, bool_pads = condense_splitter(right_layer, joint_layer, existence)
+    lhs_helper, rhs_helper, _, swapping_spot, bool_pads = condense_splitter(right_layer, joint_layer, existence)
     if direc_layer is not None:
-        swap &= direc_layer[:, 1:] | direc_layer[:, :-1]
-    lhs_diff = torch.cat([swap, bool_pads, bool_pads], dim = 1)
-    mid_diff = torch.cat([bool_pads, swap, bool_pads], dim = 1)
-    rhs_diff = torch.cat([bool_pads, bool_pads, swap], dim = 1)
+        swapping_spot &= direc_layer[:, 1:] | direc_layer[:, :-1]
+    lhs_diff = torch.cat([swapping_spot, bool_pads, bool_pads], dim = 1)
+    mid_diff = torch.cat([bool_pads, swapping_spot, bool_pads], dim = 1)
+    rhs_diff = torch.cat([bool_pads, bool_pads, swapping_spot], dim = 1)
     diff_indices = 1 * lhs_diff - 2 * mid_diff + 1 * rhs_diff
     # assert diff_indices.sum() == 0 # TODO: CHECKED
     diff_indices = diff_indices[:, :-1] * existence + existence
@@ -102,14 +102,14 @@ def split(hidden, right_layer, joint_layer, existence, direc_layer = None):
     rhs_hidden = hidden[indices, rhs_indices]
     return lhs_hidden, rhs_hidden, rhs_indices > 0, lhs_indices + rhs_indices
 
-def convert32(left_undirec_right, right_only = False):
-    left_undirec_right = torch.exp(left_undirec_right)
-    right = left_undirec_right[:, :, 2]
-    direc = left_undirec_right[:, :, 1]  + right
+def convert32(undirec_left_right, right_only = False):
+    undirec_left_right = torch.exp(undirec_left_right)
+    right = undirec_left_right[:, :, 2]
+    direc = undirec_left_right[:, :, 1]  + right
     right = right / direc
     if right_only:
         return right
-    direc = direc / (direc + 2 * left_undirec_right[:, :, 0]) # this is a 2 to 1 battle, make it fair
+    direc = direc / (direc + undirec_left_right[:, :, 0]) # this is a 2 to 1 battle, make it fair
     return right, direc # all in sigmoid range
 
 def convert23_gold(right, direc):
@@ -133,7 +133,7 @@ from models.loss import cross_entropy, hinge_loss, binary_cross_entropy
 from models.utils import hinge_score as hinge_score_
 from models import StemOutput
 
-class DiscoStem(nn.Module):
+class DBStem(nn.Module):
     def __init__(self,
                  model_dim,
                  orient_dim,
@@ -282,12 +282,11 @@ class DiscoStem(nn.Module):
     def forward(self,
                 existence,
                 unit_emb,
-                swap = None,
-                supervised_right = None,
-                supervised_joint = None,
+                supervision = None,
+                ply_shuffle = None,
                 **kw_args):
-        batch_size, seg_len = existence.shape
-        max_iter_n = seg_len << 1 # 2 times
+        batch_size, batch_len = existence.shape
+        max_iter_n = batch_len << 1 # 2 times
         h0c0 = self.get_h0c0(batch_size)
         # existence.squeeze_(dim = 2) # in-place is a pandora box
 
@@ -297,33 +296,36 @@ class DiscoStem(nn.Module):
         layers_of_existence = []
         layers_of_shuffled_right_direc = []
         layers_of_shuffled_joint = []
-        teacher_forcing = isinstance(supervised_right, Tensor)
-        if teacher_forcing:
-            assert isinstance(supervised_joint, Tensor)
+        
+        if teacher_forcing := isinstance(supervision, tuple):
+            supervised_right, supervised_joint, supervised_direc = supervision
             ori_start = 0
             jnt_start = 0
-        segment, seg_length = [], []
+        batch_segment, segment = [], []
         history = []
         jnt_fn, local_joint = self._jnt_fn_local_flag
 
         for l_cnt in range(max_iter_n): # max_iter | max_tree_high (unit_emb ** 2).sum().backward()
-            # existence = unit_idx > 0
+            batch_segment.append(batch_len)
             seq_len = existence.sum(dim = 1)
-            if not teacher_forcing:
-                segment   .append(seg_len)
-                seg_length.append(seq_len)
+            segment.append(seq_len)
+            if teacher_forcing:
+                ori_end   = ori_start + batch_len
+                jnt_end   = jnt_start + batch_len - 1
 
             right_direc, rd_hidden = self.predict_orient_direc(unit_emb, h0c0, seq_len)
+            joint = jnt_fn(unit_emb if local_joint else rd_hidden)
+            layers_of_joint.append(joint)
             layers_of_u_emb.append(unit_emb)
             layers_of_right_direc.append(right_direc)
             layers_of_existence.append(existence)
-            if teacher_forcing and swap is not None:
+            if teacher_forcing and ply_shuffle is not None:
                 if l_cnt == 0:# or random() < 0.1:
-                    base = torch.zeros_like(unit_emb)
-                    base = base.scatter(1, swap[l_cnt].unsqueeze(2).expand_as(unit_emb), unit_emb)
-                shuffled_right_direc, shuffled_rd_hidden = self.predict_orient_direc(base, h0c0, seq_len)
+                    shuffled_emb = torch.zeros_like(unit_emb).scatter(1, ply_shuffle[:, ori_start:ori_end].unsqueeze(2).expand_as(unit_emb), unit_emb)
+                shuffled_right_direc, shuffled_rd_hidden = self.predict_orient_direc(shuffled_emb, h0c0, seq_len)
+                layers_of_shuffled_joint.append(jnt_fn(shuffled_emb if local_joint else shuffled_rd_hidden))
                 layers_of_shuffled_right_direc.append(shuffled_right_direc)
-            if seg_len == 2:
+            if batch_len == 2:
                 break # teacher forcing or a good model
             elif len(history) > 1:
                 if len(history) > 2:
@@ -337,28 +339,23 @@ class DiscoStem(nn.Module):
                     from sys import stderr
                     print(f'WARNING: Action layers overflow maximun {l_cnt}', file = stderr, end = '')
                     break
-            joint = jnt_fn(unit_emb if local_joint else rd_hidden)
-            layers_of_joint.append(joint)
 
             if teacher_forcing:
-                ori_end   = ori_start + seg_len
-                jnt_end   = jnt_start + seg_len - 1
                 right = supervised_right[:, ori_start:ori_end]
                 joint = supervised_joint[:, jnt_start:jnt_end]
+                direc = supervised_direc[:, ori_start:ori_end] if self._orient_bits > 1 else None
+
+                if ply_shuffle is not None:
+                    lhs, rhs, jnt, _ = split(shuffled_emb, right, joint, existence, direc)
+                    shuffled_emb = self.combine(lhs, rhs, jnt.unsqueeze(dim = 2))
                 ori_start = ori_end
                 jnt_start = jnt_end
-                direc = None # not important for
-
-                if swap is not None:
-                    layers_of_shuffled_joint.append(jnt_fn(base if local_joint else shuffled_rd_hidden))
-                    lhs, rhs, jnt, _ = split(base, right, joint, existence, direc)
-                    base = self.combine(lhs, rhs, jnt.unsqueeze(dim = 2))
             else:
                 right, joint, direc = self.get_stem_prediction(right_direc, joint)
 
             lhs, rhs, jnt, ids = split(unit_emb, right, joint, existence, direc)
             unit_emb = self.combine(lhs, rhs, jnt.unsqueeze(dim = 2))
-            seg_len  = unit_emb.shape[1]
+            batch_len  = unit_emb.shape[1]
             existence = ids > 0
 
             if not teacher_forcing:
@@ -366,6 +363,7 @@ class DiscoStem(nn.Module):
                 if len(history) > 3:
                     history.pop(0)
 
+        segment = torch.stack(segment, dim = 1)
         embeddings  = torch.cat(layers_of_u_emb,       dim = 1)
         right_direc = torch.cat(layers_of_right_direc, dim = 1)
         joint       = torch.cat(layers_of_joint,       dim = 1)
@@ -373,16 +371,13 @@ class DiscoStem(nn.Module):
 
         shuffled_right_direc = shuffled_joint = None
         if teacher_forcing:
-            if swap is not None:
+            if ply_shuffle is not None:
                 shuffled_right_direc = torch.cat(layers_of_shuffled_right_direc, dim = 1)
                 shuffled_joint       = torch.cat(layers_of_shuffled_joint,       dim = 1)
             assert joint.shape[1] == supervised_joint.shape[1], f'{joint.shape[1]} vs. {supervised_joint.shape[1]}'
             assert right_direc.shape[1] == supervised_right.shape[1], f'{right_direc.shape[1]} vs. {supervised_right.shape[1]}'
-        else:
-            # segment    = torch.stack(segment,    dim = 0)
-            seg_length = torch.stack(seg_length, dim = 1)
 
-        return StemOutput(embeddings, existence, segment, (right_direc, joint, shuffled_right_direc, shuffled_joint, seg_length))
+        return StemOutput(embeddings, existence, batch_segment, (right_direc, joint, shuffled_right_direc, shuffled_joint, segment))
 
     @property
     def orient_bits(self):
@@ -438,21 +433,9 @@ multi_class = dict(hidden_dim = hidden_dim,
 model_type = dict(orient_layer    = stem_config,
                   tag_label_layer = multi_class)
 
-from models.loss import get_loss
 from models.backend import ParsingOutputLayer
 from utils.param_ops import change_key
-class BaseRnnParser(ParsingOutputLayer):
+class _DB(ParsingOutputLayer):
     def __init__(self, *args, **kwargs):
         change_key(kwargs, 'orient_layer', 'stem_layer')
-        super().__init__(DiscoStem, *args, **kwargs)
-
-    def get_losses(self, batch, weight_mask, tag_logits, top3_label_logits, label_logits, key = None):
-        tag_fn = self._tag_layer if key is None else self._tag_layer[key]
-        label_fn = self._label_layer if key is None else self._label_layer[key]
-        height_mask = batch['segments'][None] * (batch['seq_len'] > 0)
-        height_mask = height_mask.sum(dim = 1)
-        tag_loss   = get_loss(tag_fn,   self._logit_max, tag_logits,   batch, 'tag')
-        label_loss = get_loss(label_fn, self._logit_max, label_logits, batch, False, height_mask, weight_mask, 'label')
-        if top3_label_logits is not None:
-            label_loss += get_loss(label_fn, self._logit_max, top3_label_logits, batch, 'top3_label')
-        return tag_loss, label_loss
+        super().__init__(DBStem, *args, **kwargs)

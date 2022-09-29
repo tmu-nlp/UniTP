@@ -1,0 +1,7 @@
+bidict
+nltk
+numpy
+PyYAML
+torch
+tqdm
+Unidecode

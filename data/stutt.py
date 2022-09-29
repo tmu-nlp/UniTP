@@ -1,131 +1,82 @@
-from utils.types import M_TRAIN, M_DEVEL, M_TEST
+from utils.types import M_TRAIN, M_DEVEL, M_TEST, beta_type
 from data.io import load_i2vs
 from data import USUB
-
 from data.utils import ParsingReader
 from data.dataset import post_batch
+from data.penn_types import E_CONTINUE
+from data.cross import Signal
+from data.cross.dataset import DiscontinuousDataset
+Signal.set_binary()
+Signal.set_multib()
 
-class DiscoReader(ParsingReader):
-    def __init__(self,
-                 vocab_dir,
-                 vocab_size  = None,
+class DTreeReader(ParsingReader):
+    def __init__(self, corp_name, stutt,
                  unify_sub   = True,
+                 nil_as_pads = True,
                  extra_text_helper = None):
-        self._load_options = True, extra_text_helper, False
-        vocabs = 'word tag label'
-        i2vs = load_i2vs(vocab_dir, vocabs.split())
-        oovs = {}
-        if unify_sub:
-            labels = [t for t in i2vs['label'] if t[0] not in '#_']
-            oovs['label'] = len(labels)
-            labels.append(USUB)
-            i2vs['label'] = labels
-        super(DiscoReader, self).__init__(vocab_dir, vocab_size, True, i2vs, oovs)
 
-    def batch(self,
-              mode,
-              batch_size,
-              bucket_length,
-              binarization   = None,
-              ply_shuffle    = None,
-              min_len        = 2, # to prevent some errors
-              max_len        = None,
-              min_gap        = None,
-              sort_by_length = True):
-        load_label, extra_text_helper, train_indexing_cnn = self._load_options
-        assert mode in (M_TRAIN, M_DEVEL, M_TEST)
-
-        if load_label:
-            assert isinstance(binarization, dict)
-            if binarization.get(F_RAND_CON):
-                binarization = {k:beta(k,v) for k,v in binarization.items() if k.startswith(F_RAND_CON)}
-            else:
-                binarization = {k:v for k,v in binarization.items() if not k.startswith(F_RAND_CON) and v > 0}
-                assert abs(sum(binarization.values()) - 1) < 1e-10
+        if corp_name[1:] in E_CONTINUE:
+            from data.penn_types import select_and_split_corpus
+            from_fn = Signal.from_disco_penn
+            reader, corp_split, _ = select_and_split_corpus(
+                corp_name[1:],
+                stutt.source_path,
+                stutt.build_params.train_set,
+                stutt.build_params.devel_set,
+                stutt.build_params.test_set)
         else:
-            assert binarization is None
+            from data.stutt_types import select_and_split_corpus
+            from_fn = Signal.from_tiger_graph
+            reader = None
+            corp_split = select_and_split_corpus(
+                corp_name,
+                stutt.source_path,
+                stutt.build_params.train_set,
+                stutt.build_params.devel_set,
+                stutt.build_params.test_set)
+        
+        self._load_options = reader, corp_split, from_fn, stutt, extra_text_helper
+        super().__init__(stutt, unify_sub, nil_as_pads)
 
-        common_args = dict(field_v2is = self.v2is,
-                           factors = binarization,
-                           min_len = min_len,
-                           max_len = max_len,
-                           min_gap = min_gap,
-                           ply_shuffle = mode == M_TRAIN and ply_shuffle,
-                           extra_text_helper = extra_text_helper,
-                           train_indexing_cnn = train_indexing_cnn)
+    def binary(self, mode, batch_size, bucket_length,
+               min_len        = 0,
+               max_len        = None,
+               sort_by_length = True,
+               new_factor     = None):
+        reader, corp_split, from_fn, stutt, extra_text_helper = self._load_options
+        esub = msub = min_gap = 0
+        binarization = None
+        if mode == M_TRAIN:
+            min_gap = stutt.min_gap
+            if new_factor is None:
+                binarization = beta_type(stutt.binarization)
+                esub, msub = stutt.esub, stutt.msub
+            else:
+                binarization, esub, msub = new_factor
+        b_pad_shuffle = self.paddings, stutt.ply_shuffle
 
-        from data.cross.dataset import BinaryDataset
-        self.loaded_ds[mode] = ds = BinaryDataset(self.dir_join, mode, **common_args)
+        self.loaded_ds[mode] = ds = DiscontinuousDataset(True, reader, corp_split[mode], from_fn, self.v2is,
+            binarization, esub, msub, b_pad_shuffle, min_gap, min_len, max_len, extra_text_helper)
         return post_batch(mode, ds, sort_by_length, bucket_length, batch_size)
 
+    def multib(self, mode, batch_size, bucket_length,
+               continuous_chunk_only,
+               min_len        = 0,
+               max_len        = None,
+               sort_by_length = True,
+               new_factor     = None):
+        reader, corp_split, from_fn, stutt, extra_text_helper = self._load_options
+        esub = msub = min_gap = 0
+        medoid = None
+        if mode == M_TRAIN:
+            min_gap = stutt.min_gap
+            if new_factor is None:
+                medoid = stutt.medoid._nested
+                esub, msub = stutt.esub, stutt.msub
+            else:
+                medoid, esub, msub = new_factor
+        m_fence_2d = continuous_chunk_only, stutt.max_interply, stutt.disco_2d.intra_rate, stutt.disco_2d.inter_rate
 
-from sys import stderr
-from utils.file_io import basename
-class DiscoMultiReader(ParsingReader):
-    def __init__(self,
-                 vocab_dir,
-                 has_greedy_sub,
-                 unify_sub,
-                 continuous_fence_only,
-                 data_splits,
-                 vocab_size = None,
-                 word_trace = False,
-                 extra_text_helper = None):
-        i2vs = load_i2vs(vocab_dir, 'word tag label'.split())
-        oovs = {}
-        labels = i2vs['label']
-        if has_greedy_sub:
-            from utils.shell_io import byte_style
-            print(byte_style(basename(vocab_dir).upper() + ' + balancing subs', '2'), file = stderr)
-        if unify_sub:
-            labels = [t for t in labels if t[0] not in '#_']
-            oovs['label'] = len(labels)
-            labels.append(USUB if has_greedy_sub else '#SUB')
-            i2vs['label'] = labels
-        elif not has_greedy_sub: # MAry does not have binarization
-            i2vs['label'] = [t for t in labels if t[0] != '_']
-            
-        super(DiscoMultiReader, self).__init__(vocab_dir, vocab_size, True, i2vs, oovs)
-
-        v2is = self.v2is
-        c2i = v2is['char'][1] if 'char' in v2is else None
-        v2is = v2is['token'][1], v2is['tag'][1], v2is['label'][1]
-        samples = defaultdict(list)
-        corpus, in_train_set, in_devel_set, in_test_set, from_tree_fns = data_splits
-        for fid, tree, dep in corpus:
-            if in_train_set(fid):
-                samples[M_TRAIN].append((tree, dep))
-            elif in_devel_set(fid):
-                samples[M_DEVEL].append((tree, dep))
-            elif in_test_set(fid):
-                samples[M_TEST].append((tree, dep))
-        self._load_options = from_tree_fns, v2is, has_greedy_sub, continuous_fence_only, word_trace, samples, extra_text_helper, c2i
-
-    def batch(self,
-              mode,
-              batch_size,
-              bucket_length,
-              medium_factors = None,
-              sort_by_length = True,
-              **kwargs):
-        from data.cross.dataset import MultibDataset
-        from tqdm import tqdm
-        (from_tree_fn, v2is, has_greedy_sub, continuous_fence_only, word_trace,
-         samples, extra_text_helper, c2i) = self._load_options
-        signals = []
-        errors = defaultdict(int)
-        for tree, dep in tqdm(samples[mode], f'Load {mode.title()}set'):
-            try:
-                signals.append(from_tree_fn(tree, v2is, dep)) # has_greedy_sub
-            except AssertionError as ae:
-                errors[ae.args[0]] += 1
-        if errors:
-            print(errors)
-        len_sort_ds = MultibDataset(signals,
-                                    medium_factors,
-                                    extra_text_helper,
-                                    c2i,
-                                    continuous_fence_only,
-                                    **kwargs)
-        self.loaded_ds[mode] = len_sort_ds
-        return post_batch(mode, len_sort_ds, sort_by_length, bucket_length, batch_size)
+        self.loaded_ds[mode] = ds = DiscontinuousDataset(False, reader, corp_split[mode], from_fn, self.v2is,
+            medoid, esub, msub, m_fence_2d, min_gap, min_len, max_len, extra_text_helper)
+        return post_batch(mode, ds, sort_by_length, bucket_length, batch_size)

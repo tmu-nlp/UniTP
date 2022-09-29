@@ -93,18 +93,22 @@ def zip_nt_params(nt_params):
 def unzip_nt_params(nt_params):
     return {k:v for k,v in iter_zipped_nt_params(nt_params)}
 
-def iter_zipped_nt_params(nt_params, ya_nt_params = None):
+def iter_zipped_nt_params(nt_params, ya_nt_params = None, ignore_missing_keys = False):
     for k, v in nt_params.items():
         if isinstance(v, dict):
             if ya_nt_params is None:
                 for ki, vi in iter_zipped_nt_params(v):
                     yield k + '.' + ki, vi
+            elif ignore_missing_keys and k not in ya_nt_params:
+                continue
             else:
-                for ki, vi, vj in iter_zipped_nt_params(v, ya_nt_params[k]):
+                for ki, vi, vj in iter_zipped_nt_params(v, ya_nt_params[k], ignore_missing_keys):
                     yield k + '.' + ki, vi, vj
         else:
             if ya_nt_params is None:
                 yield k, v
+            elif ignore_missing_keys and k not in ya_nt_params:
+                continue
             else:
                 yield k, v, ya_nt_params[k]
 

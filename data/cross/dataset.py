@@ -1,436 +1,195 @@
-from data.backend import LengthOrderedDataset, np, torch, token_first
-from utils.file_io import read_data
-from utils.shell_io import byte_style
-from tqdm import tqdm
-from data.binary import E_XDIM
-from data.cross.binary import unzip_xlogit, targets, disco_tree, TreeKeeper
-from data.cross.binary import unzip_and_double_swaps_p1, double_swaps_p1
-from data.binary.trapezoid import trapezoid_to_layers
+import torch
+from data.cross import Signal
+from data.dataset import LengthOrderedDataset, np, read_signals
+from data.dataset import pad_tag_like_nil, pad_tag_like_bos_eos
+from data.dataset import pad_label_like_nil, pad_label_like_bos_eos
+from data.dataset import erect_joint_less, fill_bool_tensor
+from data.dataset import binary_signals, checkin_cache
+from data.cross.multib import total_fence, continuous_fence
+from data.continuous.binary import X_RGT
+from utils.types import F_RANDOM
 from itertools import zip_longest
-from utils.types import O_HEAD, S_EXH, F_RAND_CON, F_RAND_CON_SUB, F_RAND_CON_MSB, device, binary_factors
+from bidict import bidict
 
-simple_fields = 'token', 'tag'
+from collections import namedtuple
+HybridM = namedtuple('HybridM', 'non_random, msub, cache')
 
-beta_string = lambda beta: f'Beta({", ".join(f"{x:.2e}" for x in beta)})'
-subs_string = lambda x, y: f'sub({x * 100:.0f}%)  msb({y * 100:.0f}%)'
+def b_compare(head, data):
+    return head[:3] == data[:3]
 
-class BinaryDataset(LengthOrderedDataset):
+def m_compare(head, data):
+    return head[:2] == data[:2]
+
+class DiscontinuousDataset(LengthOrderedDataset):
     def __init__(self,
-                 prefix,
-                 field_v2is,
-                 factors  = None,
-                 min_len  = 0,
-                 max_len  = None,
-                 min_gap  = 0,
-                 ply_shuffle = None,
-                 extra_text_helper = None,
-                 train_indexing_cnn = False):
-
-        columns = {}
-        factored_indices = {}
-        has_char = 'char' in field_v2is
-        has_label = 'label' in field_v2is
-        if has_char or has_label:
-            field_v2is = field_v2is.copy()
-            c2i = field_v2is.pop('char')[1] if has_char else None
-            if has_label:
-                if train_indexing_cnn:
-                    field_v2is.pop('tag')
-                    field_v2is.pop('label')
-                field_v2is['xtype'] = (len(E_XDIM), int)
-        sub_ratio = factors.pop(F_RAND_CON_SUB, 0)
-        self._more_sub = factors.pop(F_RAND_CON_MSB, 0)
-        if fully_randomize := factors.pop(F_RAND_CON, False):
-            factors = {O_HEAD: 1}
-            _, w2i = field_v2is['token']
-            _, t2i = field_v2is['tag']
-            _, l2i = field_v2is['label']
-            v2is = w2i, t2i, l2i
-        field_v2is = token_first(field_v2is)
-
-        num_fields_left = -1
-        field_names = []
-        for f, _ in field_v2is:
-            if f in simple_fields:
-                field_names.append(f)
-                num_fields_left += 1
-            else:
-                num_factors = len(factors)
-                field_names.append(f + f'({num_factors})')
-                num_fields_left += num_factors
-
-        from utils.str_ops import StringProgressBar
-        sbar = StringProgressBar(field_names, ', ')
-        tqdm_prefix = f"Load {prefix.title().ljust(5, '-')}Set: "
-        with tqdm(desc = tqdm_prefix + str(sbar)) as qbar:
-            for field, v2i in field_v2is:
-                if fully_randomize and field != 'xtype':
-                    v2i = None
-                if field in simple_fields: # token /tag / ftag / finc
-                    if field == 'token':
-                        column, lengths, text = read_data(dir_join(f'{prefix}.word'), v2i, True)
-                        num_samples = len(lengths)
-                        sbar.update(2, total = num_factors * num_samples)
-                        sbar.update(3, total = num_factors * num_samples)
-                        qbar.total = num_fields_left * num_samples
-                    else:
-                        column = read_data(dir_join(f'{prefix}.{field}'), v2i, qbar = qbar)
-                    columns[field] = column
-                    qbar.desc = tqdm_prefix + str(sbar.update(field, 1.0))
-                else:
-                    for factor in factors:
-                        if factor not in factored_indices:
-                            factored_indices[factor] = read_data(dir_join(f'{prefix}.index.{factor}'), (2, int)) # 2-byte/512 > 500
-                        
-                        flatten = read_data(dir_join(f'{prefix}.{field}.{factor}'), v2i)
-                        if field == 'label':
-                            column = []
-                            for line, sizes in zip(flatten, factored_indices[factor]):
-                                column.append(trapezoid_to_layers(line, sizes, sizes, big_endian = False))
-                                qbar.update(1)
-                                qbar.desc = tqdm_prefix + str(sbar.update(2))
-                            columns[(field, factor)] = column
-                        elif field == 'xtype':
-                            c_joint, c_right, c_direc = [], [], []
-                            if train_indexing_cnn:
-                                c_target = []
-                            for line, sizes in zip(flatten, factored_indices[factor]):
-                                lr, lj, ld = unzip_xlogit(sizes, line)
-                                c_right.append(lr)
-                                c_joint.append(lj)
-                                if train_indexing_cnn:
-                                    target = []
-                                    for lri, lji in zip(lr, lj + [[]]):
-                                        target.append(targets(lri, lji))
-                                    c_target.append(target)
-                                else:
-                                    c_direc.append(ld)
-                                qbar.update(1)
-                                qbar.desc = tqdm_prefix + str(sbar.update(3))
-                            columns[('right', factor)] = c_right
-                            columns[('joint', factor)] = c_joint
-                            if train_indexing_cnn:
-                                columns[('target', factor)] = c_target
-                            else:
-                                columns[('direc', factor)] = c_direc
-                        else:
-                            raise ValueError('Unknown field: ' + field)
-        
-        if min_gap:
-            with open(dir_join(f'{prefix}.gap')) as fr:
-                for lid, gap in enumerate(fr):
-                    if int(gap) < min_gap:
-                        lengths[lid] = 0
-            assert num_samples == lid + 1
-        assert all(num_samples == len(col) for col in columns.values())
-
-        for factor, column in factored_indices.items():
-            columns[('seq_len', factor)] = column
-
-        if train_indexing_cnn:
-            heads = 'token', 'seq_len', 'right', 'joint', 'target'
-        else:
-            heads = 'token', 'tag', 'seq_len', 'label', 'right', 'direc', 'joint'
-        if extra_text_helper:
-            extra_text_helper = extra_text_helper(text, c2i)
-        self._swap_cache = None
-        self._except_head = ply_shuffle == S_EXH
-        if fully_randomize:
-            fields = simple_fields + tuple((x, O_HEAD) for x in ('label', 'right', 'joint', 'direc'))
-            keepers = []
-            if isinstance(fully_randomize, tuple):
-                func = beta_string(fully_randomize)
-            else:
-                func = 'Uniform'
-            desc = f'Convert {prefix.title()}Set to {num_samples} dynamic TreeKeepers w/'
-            desc += ' ' if ply_shuffle else 'o '
-            desc += 'ply shuffle.'
-            print(byte_style(func, 6), '|', byte_style(subs_string(sub_ratio, self._more_sub), 3))
-            with StringProgressBar(desc).update(total = num_samples) as sbar:
-                for i in range(num_samples):
-                    btm, tpd, err = disco_tree(*(columns[x][i] for x in fields))
-                    keepers.append(TreeKeeper(btm, tpd, v2is))
-                    sbar.update()
-                    assert err is None
-            columns = keepers
-            factors = binary_factors(sub_ratio, sub_ratio == 1)
-            self._swap = ply_shuffle
-            self._beta = fully_randomize
-        else:
-            self._swap = {}
-            if ply_shuffle:
-                for factor in factors:
-                    swap = []
-                    with open(dir_join(f'{prefix}.swap.{factor}')) as fr:
-                        for line in fr:
-                            swap.append(line)
-                    self._swap[factor] = swap
-                    assert num_samples == len(swap)
-            
-        super().__init__(heads, lengths, factors, min_len, max_len, extra_text_helper)
-        self._columns = columns
-
-    def reset_factors(self, factors):
-        if factors.get(F_RAND_CON):
-            self._more_sub = msb = factors[F_RAND_CON_MSB]
-            self._beta = beta = factors[F_RAND_CON]
-            sub_ratio = factors[F_RAND_CON_SUB]
-            print(byte_style(beta_string(beta), 6), '|', byte_style(subs_string(sub_ratio, msb), 3))
-            factors = binary_factors(sub_ratio, sub_ratio == 1)
-        self._reset_factors(factors)
-
-    def __cache_swap(self, *swap):
-        if self._swap_cache is None:
-            self._swap_cache = [swap]
-        else:
-            self._swap_cache.append(swap)
-
-    def at_idx(self, idx, factor, length, helper_outputs):
-        sample = dict(length = length)
-        if not isinstance(factor, str):
-            tk = self._columns[idx]
-            if isinstance(self._beta, tuple):
-                alpha, beta = self._beta
-                rho = np.random.beta(alpha, beta)
-            else:
-                rho = F_RANDOM
-            sample['token'], sample['tag'] = tk.word_tag
-            (label, sample['right'], sample['joint'], sample['direc'],
-             swap) = tk.stratify(rho, factor, self._more_sub)
-            sample['label'] = label
-            sample['seq_len'] = [len(x) for x in label]
-            if self._swap:
-                self.__cache_swap(factor, double_swaps_p1(swap))
-            return sample
-        for field, column in self._columns.items():
-            if isinstance(field, tuple) and field[1] == factor:
-                sample[field[0]] = column[idx]
-            else:
-                sample[field]    = column[idx]
-
-        if self._swap:
-            swap = self._swap[factor][idx]
-            if isinstance(swap, str):
-                swap = unzip_and_double_swaps_p1(swap)
-                self._swap[factor][idx] = swap # update cache
-            self.__cache_swap(factor, swap)
-        return sample
-
-    def _collate_fn(self, batch):
-        field_columns = {}
-        cat_joint = 'target' in self.heads
-        pad_len = 2 if cat_joint else 1 # for cnn_indexing
-
-        for field, column in zip(self.heads, zip(*batch)):
-            if field == 'length':
-                batch_size = len(column)
-                lengths = np.asarray(column, np.int32)
-                max_len = np.max(lengths) + pad_len # <nil>s as BOS
-                tensor = lengths
-            elif field in simple_fields: # token or tags
-                tensor = np.zeros([batch_size, max_len], np.int32)
-                for i, (values, length) in enumerate(zip(column, lengths)):
-                    tensor[i, pad_len: pad_len + length] = values
-            elif field == 'seq_len':
-                seq_len = zip(*zip_longest(*column, fillvalue = 0))
-                seq_len = np.asarray(list(seq_len))
-                segments = np.max(seq_len, axis = 0)
-                segments += pad_len
-                field_columns['seq_len']  = seq_len
-                field_columns['segments'] = segments
-                continue
-            else:
-                dtype = np.int32 if field in ('label', 'target') else np.bool
-                size_adjust = 0
-                if field != 'joint':
-                    sizes = seq_len
-                    slens = segments
-                elif cat_joint:
-                    sizes = seq_len[:, :-1] - 1
-                    slens = segments
-                    size_adjust -= 1
-                else:
-                    sizes = seq_len[:, :-1] - 1
-                    slens = segments[:-1] - 1
-                tensor = np.zeros([batch_size, np.sum(slens) + size_adjust], dtype)
-                for i, inst_size in enumerate(zip(column, sizes)):
-                    l_start = 0
-                    for (slen, layer, size) in zip(slens, *inst_size):
-                        if size > 0:
-                            start = l_start + pad_len
-                            end   = start + size
-                            tensor[i, start:end] = layer
-                            l_start += slen
-
-            field_columns[field] = tensor
-
-        tensor = np.zeros([batch_size, np.sum(segments)], np.bool)
-        for i, layer_lens in enumerate(seq_len):
-            l_start = 0
-            for (slen, size) in zip(segments, layer_lens):
-                if size > 0:
-                    start = l_start + pad_len
-                    end   = start + size
-                    tensor[i, start:end] = True
-                    l_start += slen
-        field_columns['existence'] = tensor
-
-        for f, column in field_columns.items():
-            if f in ('length', 'target', 'segments', 'seq_len'):
-                dtype = torch.int32
-            elif f in ('token', 'tag', 'label'):
-                dtype = torch.long
-            else:
-                dtype = torch.bool
-            field_columns[f] = torch.as_tensor(column, dtype = dtype, device = device)
-
-        if self._swap_cache: # TODO swap for emb, label
-            swappers = []
-            for size in segments:
-                layer = np.arange(size)
-                layer = np.tile(layer, batch_size)
-                layer.shape = (batch_size, size)
-                swappers.append(layer)
-            for sid, (factor, swap) in enumerate(self._swap_cache):
-                if self._except_head and factor == O_HEAD:
-                    continue
-                for layer, layer_tensor in zip(swap, swappers):
-                    for (group_idx, group_ctn) in layer:
-                        np.random.shuffle(group_ctn)
-                        layer_tensor[sid, group_idx] = group_ctn
-            self._swap_cache = None # clear batch
-            field_columns['swap'] = [torch.as_tensor(x, dtype = torch.long, device = device) for x in swappers]
-        field_columns['offset'] = pad_len
-        return field_columns
-
-from data.io import sorting_order, sort_by_order
-from data.multib.dataset import fill_layers
-from data.cross.multib import total_fence, continuous_fence, F_RANDOM
-class MultibDataset(LengthOrderedDataset):
-    def __init__(self,
-                 tree_keepers,
-                 factors = None,
-                 extra_text_helper = None,
-                 c2i = None,
-                 continuous_fence_only = True,
+                 binary,
+                 reader,
+                 fileids,
+                 from_fn,
+                 v2is,
+                 factor,
+                 esub,
+                 msub,
+                 b_pad_shuffle_or_m_fence_intra_inter,
+                 min_gap = 0,
                  min_len = 0,
                  max_len = None,
-                 min_gap  = 0,
-                 inter_2d = 0):
+                 extra_text_helper = None,
+                 self_check_i2vs = None):
 
-        text = []
-        lengths = []
-        static_signals = []
-        for tk in tree_keepers:
-            assert tk.has_signals
-            tt = tk.text
-            wi, ti = tk.word_tag
-            if None in wi:
-                print('Wrong vocab?')
-                lengths.append(-1)
-            elif None in ti:
-                print('Wrong vocab?')
-                lengths.append(-1)
-            elif min_gap and tk.gaps < min_gap:
-                lengths.append(-1)
-            else:
-                lengths.append(len(tt))
-            if factors is None:
-                static_signals.append((wi, ti) + tk.stratify(F_RANDOM))
-            text.append(tt)
+        w2i, t2i, l2i = v2is
+        (length, token, tag, signals,
+         text) = read_signals(w2i, t2i, fileids, reader, Signal, from_fn, esub, False)
+        if min_gap:
+            for eid, signal in enumerate(signals):
+                if signal.gap >= min_gap:
+                    length[eid] = -1
 
-        heads = 'token', 'tag', 'label', 'space', 'disco'
-        if factors is None:
-            heads = heads[:-1]
-            tree_keepers = static_signals
-            lines = ['Load ' + byte_style('static D.M. treebank', '3')]
-            rate = 0
-        else:
-            factors, lines, rate = self.__reset_and_show_factors(factors, 'Load ')
-        print('\n'.join(lines))
-
-        order = sorting_order(text)
-        lengths, tree_keepers = (sort_by_order(order, x) for x in (lengths, tree_keepers))
-            
-        self._keepers_heads = tree_keepers, heads, rate
-        if extra_text_helper:
-            text = sort_by_order(order, text)
-            extra_text_helper = extra_text_helper(text, c2i)
-        super().__init__(heads, lengths, factors, min_len, max_len, extra_text_helper)
-        self._fence_2d = continuous_fence_only, inter_2d
-        InterLayerDisco.tensor_args.update(device = device)
-
-    def __reset_and_show_factors(self, factors, prefix):
-        balanced_prob = factors['balanced']
-        more_sub_prob = factors['more_sub']
-        original_prob = 1 - balanced_prob
-        train_factors = {}
-        lines = ' F\Balanced'
-        if balanced_prob:
-            lines += '          Yes'
-        if original_prob:
-            lines += '      No (Origin without _SUB)'
-        if more_sub_prob: lines += f' [+{100 * more_sub_prob:.0f}% random _SUB]'
-        lines = [prefix + byte_style('dynamic D.M. treebank', '7'), byte_style(lines, '2')]
-        for factor, o_prob in factors['others'].items():
-            line = ''
-            prob = balanced_prob * o_prob
-            if prob:
-                train_factors['+'+factor] = prob
-                line += f'{prob * 100:.0f}%'.rjust(9)
-            prob = original_prob * o_prob
-            if prob:
-                train_factors['-'+factor] = prob
-                line += f'{prob * 100:.0f}%'.rjust(18)
-            if line:
-                lines.append(f'  ::{ factor}::'.ljust(15) + line)
-        return train_factors, lines, more_sub_prob
-
-    def reset_factors(self, factors, inter_2d = 0):
-        factors, lines, rate = self.__reset_and_show_factors(factors, 'Reset ')
-        self._keepers_heads = self._keepers_heads[:2] + (rate,)
-        self._fence_2d = self._fence_2d[0], inter_2d
-        if inter_2d: lines.append(f'  Max. inter-height: {inter_2d}')
-        print('\n'.join(lines))
-        self._reset_factors(factors)
-
-    def at_idx(self, idx, factor, length, helper_outputs):
-        tree_keepers, heads, rate = self._keepers_heads
-        tk = tree_keepers[idx]
+        heads = 'tree', 'token'
         if factor is None:
-            signals = tk
+            label = extra = signal_kwargs = None
         else:
-            signals = tk.word_tag + tk.stratify(factor[1:], factor[0] == '+', rate)
-        sample = {h:s for h, s  in zip(heads, signals)}
-        sample['length'] = length
-        return sample
-
-    def _collate_fn(self, batch):
-        field_columns = {}
-        continuous_fence_only, inter_2d = self._fence_2d
-        for field, column in zip(self.heads, zip(*batch)):
-            if field == 'length':
-                batch_size = len(column)
-                tensor = lengths = np.asarray(column, np.int32)
-                max_len = np.max(lengths)
-            elif field in ('token', 'tag'):
-                tensor = np.zeros([batch_size, max_len], np.int32)
-                for i, (values, length) in enumerate(zip(column, lengths)):
-                    tensor[i, :length] = values
-            elif field == 'label':
-                segment = []
-                seg_len = []
-                for layer in zip_longest(*column, fillvalue = []):
-                    sl = [len(seq) for seq in layer]
-                    segment.append(max(sl))
-                    seg_len.append(sl)
-                field_columns['segment'] = torch.tensor(segment, device = device)
-                field_columns['seg_length'] = torch.tensor(seg_len, device = device).transpose(0, 1)
-                tensor = fill_layers(column, segment, np.int32)
-            elif field == 'space':
-                tensor = fill_space_layers(batch_size, column, segment[:-1])
-                space_column = column
+            if binary:
+                _heads = 'tag', 'label', 'xtype', 'joint', 'swap'
+                factor, extra = self.reset_binary_factor(factor, esub, msub, initialize = len(length))
+                paddings, ply_shuffle = b_pad_shuffle_or_m_fence_intra_inter
+                ply_shuffle_option = 2 if ply_shuffle else 0
+                signal_kwargs = dict(l2i = l2i, ply_shuffle_option = ply_shuffle_option, ply_shuffle_offset = 1)
+                b_pad_shuffle_or_m_fence_intra_inter = paddings, ply_shuffle
             else:
+                _heads = 'tag', 'label', 'space', 'disco', 'space_'
+                factor, extra = self.reset_multib_factor(factor, esub, msub, initialize = len(length))
+                signal_kwargs = dict(l2i = l2i, append_space = 1)
+            heads = heads + _heads
+            label = 'label'
+
+        if extra_text_helper:
+            extra_text_helper = extra_text_helper(text, w2i)
+
+        super().__init__(heads, label, length, factor, min_len, max_len, extra_text_helper)
+        self._args = token, tag, signals, signal_kwargs, binary, b_pad_shuffle_or_m_fence_intra_inter, self_check_i2vs, extra
+
+    def reset_multib_factor(self, factor, esub, msub, *, initialize = False):
+        non_random = bidict({e:f for e, (f, p) in enumerate(factor.items()) if f != F_RANDOM and p > 0})
+        if has_static_n := (msub in (0, 1) and sum(non_random)):
+            hy_factor = {}
+            for e, f in non_random.items():
+                hy_factor[e] = factor[f] * (1 - esub)
+                hy_factor[e + has_static_n] = factor[f] * esub
+            if rand_p := factor.get(F_RANDOM):
+                hy_factor[-1] = rand_p * (1 - esub)
+                hy_factor[-2] = rand_p * esub
+
+        if initialize:
+            if has_static_n:
+                cache_fn = lambda n: tuple([None] * (has_static_n << 1) for _ in range(n))
+            else: # pure random
+                return {0: 1 - esub, 1: esub}, msub
+
+            return hy_factor, HybridM(non_random, msub, cache_fn(initialize))
+            
+        if not has_static_n:
+            self._args = self._args[:-1] + (msub,)
+        elif isinstance((old := self._args[-1]), HybridM):
+            if old.non_random == non_random:
+                cache = old.cache
+            else:
+                cache = cache_fn(len(self._args[0]))
+            self._args = self._args[:-1] + (HybridM(non_random, msub, cache),)
+
+    def at_idx(self, idx, factor, helper_outputs):
+        token, tag, signals, signal_kwargs, binary, _, _, extra = self._args
+        signal = signals[idx]
+        sample = [signal.tree, token[idx]]
+        if extra is not None:
+            sample.append(tag[idx])
+            if binary:
+                sample.extend(binary_signals(factor, idx, extra, lambda frac, esub, msub = 0: signal.binary(frac, esub, msub, **signal_kwargs), b_compare))
+            elif isinstance(extra, HybridM):
+                breakpoint()
+                if factor < 0:
+                    sample.extend(signal.multib(F_RANDOM, factor == -2, extra.msub, **signal_kwargs))
+                else:
+                    cache = extra.cache[idx]
+                    if cache[factor] is None:
+                        n = len(extra.non_random)
+                        if esub := (idx >= n):
+                            f = extra.non_random[idx - n]
+                        else:
+                            f = extra.non_random[idx]
+                        checkin_cache(cache, factor, signal.multib(f, esub, extra.msub, **signal_kwargs), m_compare)
+                    sample.extend(cache[factor])
+            else:
+                sample.extend(signal.multib(F_RANDOM, factor, extra, **signal_kwargs))
+        return tuple(sample)
+
+    def _collate_fn(self, batch, length, segment):
+        _, _, _, _, binary, b_pad_shuffle_or_m_fence_intra_inter, self_check_i2vs, extra = self._args
+        indice_args = dict(device = self.device, dtype = torch.long)
+        field_columns = dict(length = length)
+        max_token_len = length.max()
+
+        if binary:
+            paddings, ply_shuffle = b_pad_shuffle_or_m_fence_intra_inter
+        else:
+            paddings = None
+
+        if paddings:
+            max_token_len += 2 # BOS and EOS
+            offset = (max_token_len - length) // 2
+            field_columns['offset'] = torch.as_tensor(offset, **indice_args)
+            field_columns['token'] = torch.as_tensor(pad_tag_like_bos_eos(batch.token, max_token_len, offset, *paddings['token']), **indice_args)
+        else:
+            field_columns['token'] = torch.as_tensor(pad_tag_like_nil(batch.token, max_token_len, int(binary)), **indice_args) # binary need 1 for engineering
+
+        if extra is None:
+            field_columns['tree'] = batch.tree
+        else:
+            max_tag_len = length.max()
+            batch_size  = len(length)
+            field_columns['segment'] = segment
+            field_columns['batch_segment'] = batch_segment = segment.max(0)
+            bool_args = dict(dtype = torch.bool, device = self.device)
+
+            if paddings:
+                field_columns['tag'] = torch.as_tensor(pad_tag_like_bos_eos(batch.tag, max_tag_len, offset, *paddings['tag']), **indice_args)
+            else:
+                field_columns['tag'] = torch.as_tensor(pad_tag_like_nil(batch.tag, max_tag_len, int(binary)), **indice_args)
+
+            if paddings:
+                field_columns['label'] = torch.as_tensor(pad_label_like_bos_eos(batch.label, batch_segment, offset, *paddings['label']), **indice_args)
+            else:
+                field_columns['label'] = torch.as_tensor(pad_label_like_nil(batch.label, batch_segment, int(binary)), **indice_args)
+
+            if binary:
+                if paddings:
+                    field_columns['xtype'] = torch.as_tensor(pad_label_like_bos_eos(batch.xtype, batch_segment, offset, X_RGT, 0, X_RGT), dtype = torch.uint8, device = self.device)
+                    breakpoint()
+                else:
+                    field_columns['xtype'] = torch.as_tensor(pad_label_like_nil(batch.xtype, batch_segment, 1), dtype = torch.uint8, device = self.device)
+                    field_columns['joint'] = sig = torch.zeros(batch_size, batch_segment.sum(), **bool_args)
+                    fill_bool_tensor(erect_joint_less(batch.joint, batch_segment, 0), sig, True, indice_args)
+                    if ply_shuffle:
+                        layers_of_swappers = []
+                        for layer_len in batch_segment + 1:
+                            layer = np.tile(np.arange(layer_len), batch_size)
+                            layer.shape = (batch_size, layer_len)
+                            layers_of_swappers.append(layer)
+                        for bid, swap_layers in enumerate(batch.swap):
+                            for swap_layer, layer_tensor in zip(swap_layers, layers_of_swappers):
+                                for group_idx in swap_layer:
+                                    layer_tensor[bid, group_idx] = np.random.permutation(group_idx)
+                        field_columns['ply_shuffle'] = torch.as_tensor(np.concatenate(layers_of_swappers, axis = 1), **indice_args)
+
+                if self_check_i2vs:
+                    pass
+            else:
+                continuous_fence_only, inter_2d, intra_rate, inter_rate = b_pad_shuffle_or_m_fence_intra_inter
+                field_columns['disco_2d_intra_rate'] = intra_rate
+                field_columns['disco_2d_inter_rate'] = inter_rate
+                assert not paddings, 'DM does not cover paddings.'
+                field_columns['space'] = torch.as_tensor(pad_label_like_nil(batch.space_, batch_segment), **indice_args)
+
                 # 1d: space as labels; disco as labels; [b, s+]; fence [b, s-]
                 split_segment = []
                 con_split_column = []
@@ -442,21 +201,19 @@ class MultibDataset(LengthOrderedDataset):
                     condensed_cnt = [0] * batch_size
                     condensed_max_layer_size = []
                     condense_layer = {}
-                    condense_exclude = {bid: None for bid, b in enumerate(column) if sum(bool(l) for l in b) == 1}
+                    condense_exclude = {bid: None for bid, b in enumerate(batch.disco) if sum(bool(l) for l in b) == 1}
                     condense_last_disco = {}
                     condense_kinship = {}
-                for src_lid, (l_space, l_disco) in enumerate(zip(zip_longest(*space_column, fillvalue = []), zip_longest(*column, fillvalue = {}))): # all layer slices [(), ] [(), ]
+                for src_lid, (l_space, l_disco) in enumerate(zip(zip_longest(*batch.space, fillvalue = []), zip_longest(*batch.disco, fillvalue = {}))): # all layer slices [(), ] [(), ]
                     batch_layer_disco = [] # same dim with space
                     batch_layer_split = [] # splitting points for continuous constituents
-                    max_split_len = 0
+                    max_split_len = max_comp_len = max_comp_size = 0
                     for space_layer, disco_set in zip(l_space, l_disco): # every layer for a parse
                         split_count, split_layer = continuous_fence(space_layer, disco_set) if continuous_fence_only else total_fence(space_layer)
                         batch_layer_split.append(split_layer)
                         if split_count > max_split_len:
                             max_split_len = split_count
                     comp_batch = []
-                    max_comp_len = 0
-                    max_comp_size = 0
                     l_condnse_layer = {}
                     for src_bid, disco_set in enumerate(l_disco):
                         disco_children = []
@@ -494,8 +251,8 @@ class MultibDataset(LengthOrderedDataset):
                                                 condense_kinship[src_bid][oid] = kinship = []
                                             else:
                                                 kinship = condense_kinship[src_bid][oid]
-                                            kinship.append(disco_inter_gen(column[src_bid][last_src_lid],
-                                                                           space_column[src_bid][last_src_lid:src_lid],
+                                            kinship.append(disco_inter_gen(batch.disco[src_bid][last_src_lid],
+                                                                           batch.space[src_bid][last_src_lid:src_lid],
                                                                            disco_set,
                                                                            src_lid - last_src_lid > inter_2d))
                                 if src_bid in condense_last_disco:
@@ -518,8 +275,11 @@ class MultibDataset(LengthOrderedDataset):
                     shape.append((len(comp_batch), max_comp_size, max_comp_len))
 
                 field_columns['split_segment'] = split_segment
-                field_columns['dis_disco'] = torch.tensor(fill_bool_layers(batch_size, dis_layer_column, segment), device = device)
-                field_columns['con_split'] = torch.tensor(fill_bool_layers(batch_size, con_split_column, split_segment, True), device = device)
+                field_columns['dis_disco'] = dis_disco = torch.zeros(batch_size, batch_segment.sum(), **bool_args)
+                field_columns['con_split'] = con_split = torch.zeros(batch_size, sum(split_segment), **bool_args)
+
+                fill_bool_tensor(fill_bool_layers(con_split_column, split_segment, True), con_split, True, indice_args)
+                fill_bool_tensor(fill_bool_layers(dis_layer_column, batch_segment),       dis_disco, True, indice_args)
                 if any(components):
                     if inter_2d and any(condensed_cnt):
                         field_columns['inter_disco'] = InterLayerDisco(condensed_cnt, condensed_max_layer_size, condense_layer, condense_exclude, condense_kinship)
@@ -535,57 +295,10 @@ class MultibDataset(LengthOrderedDataset):
                                     cps = cp[bid, cpz]
                                     cps[:, cpz] = True
                                     cp[bid, cpz] = cps
-                            # dis_slice_shape.append((start, end, bz, cl))
                             start = end
-                        # else:
-                        #     dis_slice_shape.append(None)
-                    # size = np.array(shape).prod(1)
-                    # comp = np.zeros(size.sum(), dtype = np.bool)
-                    # start = 0
-                    # for sz, sp, comps in zip(size, shape, components): # layer
-                    #     if sz > 0:
-                    #         end = start + sz # layer -> [b-, c+, s-]
-                    #         cp = comp[start:end].reshape(sp)
-                    #         for bid, bpz in enumerate(comps):
-                    #             for cid, cpz in enumerate(bpz):
-                    #                 cp[bid, cid, cpz] = True
-                    #         start = end
-                    # field_columns['dis_slice'] = component_segment(shape) 
-                    # field_columns['dis_shape'] = shape # [(layer, comp_x, comp_y)] [b, 3]
-                    # field_columns['dis_slice_shape'] = dis_slice_shape
-                    field_columns['dis_component'] = torch.tensor(comp, device = device)
-
-            field_columns[field] = torch.as_tensor(tensor, dtype = torch.long, device = device)
+                    field_columns['dis_component'] = torch.tensor(comp, device = self.device)
         return field_columns
 
-def fill_space_layers(batch_size, space_layers, tensor_seg):
-    tensor = np.zeros([batch_size, sum(tensor_seg)], dtype = np.int32)
-    start = 0
-    for seg_len, layer in zip(tensor_seg, zip_longest(*space_layers, fillvalue = [])):
-        end = start + seg_len
-        for bid, seq in enumerate(layer):
-            if seq:
-                seq_len = len(seq)
-                seq_end = start + seq_len
-                tensor[bid, start:seq_end] = seq
-                tensor[bid, start:seq_end] += 1
-            else:
-                tensor[bid, start] = 1
-        start = end
-    return tensor
-
-def fill_bool_layers(batch_size, sample_layers, tensor_seg, remant = False):
-    tensor = np.zeros([batch_size, sum(tensor_seg)], dtype = np.bool)
-    start = 0
-    for seg_len, layer in zip(tensor_seg, sample_layers):
-        end = start + seg_len
-        for bid, seq in enumerate(layer):
-            if seq:
-                tensor[bid, [start + x for x in seq]] = True
-            elif remant:
-                tensor[bid, [start, start + 1]] = True
-        start = end
-    return tensor
 
 def component_segment(shape):
     shape = np.array([[0, 0, 0]] + shape)
@@ -725,3 +438,16 @@ def disco_inter_gen(bottom_disco, layers_of_space, top_disco, get_all):
                     tk = top_map[bk]
                     for bv in bvs:
                         yield (bottom_map[bv], tk)
+
+def fill_bool_layers(sample_layers, tensor_seg, remant = False):
+    start = 0
+    positive = []
+    for seg_len, layer in zip(tensor_seg, sample_layers):
+        end = start + seg_len
+        for bid, seq in enumerate(layer):
+            if seq:
+                positive += ((bid, start + x) for x in seq)
+            elif remant:
+                positive += [(bid, start), (bid, start + 1)]
+        start = end
+    return positive

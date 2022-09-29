@@ -5,59 +5,67 @@ from time import time, sleep
 from sys import stderr
 from os.path import join, dirname
 from utils.shell_io import concatenate, byte_style
+from utils.file_io import join, create_join
 
 t_sleep_deep = 0.1
 t_sleep_shallow = 0.001
 t_awake = 0.00001
 
-class Rush:
-    def __init__(self, worker_cls, jobs, *args):
-        from data.io import distribute_jobs
-        from utils.types import num_threads
-        num_threads = min(num_threads, len(jobs))
-        jobs = distribute_jobs(jobs, num_threads)
-        self._args = Queue(), worker_cls, num_threads, jobs, args
+def mp_desc(final, *largs):
+    prefix = '['
+    if final:
+        tree_count, total_time, error_count = largs
+        suffix = '] ' + byte_style(f'✔ {tree_count} trees', '2')
+        if error_count:
+            suffix += byte_style(f' (✗ {error_count})', '1')
+        suffix += byte_style(f' ({total_time:.1f} sec.)', '2')
+    else:
+        finished_count, total = largs
+        if finished_count:
+            suffix = f'] {finished_count}/{total} ended'
+        else:
+            suffix = f'] {total} threads'
+    return prefix, suffix
 
-    def mp_while(self, receive_fn = None, prefix = 'Load'):
-        from utils.str_ops import StringProgressBar
-        from utils.file_io import DelayedKeyboardInterrupt
-        if receive_fn is None:
-            receive_fn = self.receive
-        assert callable(receive_fn)
-        start_time = time()
-        tree_count = thread_join_count = 0
-        q, worker_cls, num_threads, jobs, args = self._args
-        desc = prefix + f' from {num_threads} threads ['
-        with StringProgressBar.segs(num_threads, prefix = desc, suffix = ']') as qbar:
-            try:
-                for i in range(num_threads):
-                    if not worker_cls.estimate_total:
-                        qbar.update(i, total = len(jobs[i]))
-                    jobs[i] = w = worker_cls(i, q, jobs[i], *args)
-                    w.start()
-                while True:
-                    if q.empty():
-                        sleep(t_awake)
-                    elif (status := receive_fn(q.get(), qbar)) is not None:
-                        i, tree_cnt = status
-                        jobs[i].join()
-                        thread_join_count += 1
-                        tree_count += tree_cnt
-                        suffix = f'] {thread_join_count} ended.'
-                        qbar.desc = desc, suffix
-                        if thread_join_count == num_threads:
-                            break
-            except (KeyboardInterrupt, Exception) as ex:
-                with DelayedKeyboardInterrupt():
-                    for x in jobs:
-                        x.kill()
-                raise ex
-            suffix = '] ' + byte_style(f'✔ {tree_count} trees. ({time() - start_time:.1f} sec.)', '2')
-            qbar.desc = desc, suffix
-        return tree_count
-
-    def receive(self, t, qbar):
-        raise NotImplementedError()
+def mp_while(worker_cls, jobs, receive_fn, *args, desc_fn = mp_desc):
+    from utils.str_ops import StringProgressBar
+    from utils.file_io import DelayedKeyboardInterrupt
+    from data.io import distribute_jobs
+    from utils.types import num_threads
+    q = Queue()
+    num_threads = min(num_threads, len(jobs))
+    jobs = distribute_jobs(jobs, num_threads)
+    tree_count = error_count = thread_join_count = 0
+    prefix, suffix = desc_fn(False, thread_join_count, num_threads) if callable(desc_fn) else '[]'
+    start_time = time()
+    with StringProgressBar.segs(num_threads, prefix = prefix, suffix = suffix) as qbar:
+        try:
+            for i in range(num_threads):
+                if not worker_cls.estimate_total:
+                    qbar.update(i, total = len(jobs[i]))
+                jobs[i] = w = worker_cls(i, q, jobs[i], *args)
+                w.start()
+            while True:
+                if q.empty():
+                    sleep(t_awake)
+                elif (status := receive_fn(q.get(), qbar)) is not None:
+                    i, tree_cnt, error_cnt = status
+                    error_count += error_cnt
+                    jobs[i].join()
+                    thread_join_count += 1
+                    tree_count += tree_cnt
+                    if callable(desc_fn):
+                        qbar.desc = desc_fn(False, thread_join_count, num_threads)
+                    if thread_join_count == num_threads:
+                        break
+        except (KeyboardInterrupt, Exception) as ex:
+            with DelayedKeyboardInterrupt():
+                for x in jobs:
+                    x.kill()
+            raise ex
+        if callable(desc_fn):
+            qbar.desc = desc_fn(True, tree_count, time() - start_time, error_count)
+    return tree_count
 
 
 class D2T(Process):
@@ -257,3 +265,120 @@ class TR(Process):
                     trees[bid].extend(i_trees[key])
             trees = '\n'.join(trees) if flatten_batch else trees
             out_q.put((trees, end_time))
+
+
+class BaseVis:
+    def __init__(self, epoch, work_dir, i2vs):
+        self._work_dir = work_dir
+        self._epoch = epoch
+        self._i2vs = i2vs
+
+    @property
+    def epoch(self):
+        return self._epoch
+
+    @property
+    def i2vs(self):
+        return self._i2vs
+
+    def join(self, *fname):
+        return join(self._work_dir, *fname)
+
+    def create_folder(self, *fpath):
+        return create_join(self._work_dir, fpath)
+        
+    def _before(self):
+        pass
+
+    def _process(self, *args, **kw_args):
+        raise NotImplementedError()
+
+    def _after(self):
+        raise NotImplementedError()
+
+class VisWorker(Process): # designed for decoding batch
+    def __init__(self, vis, in_q, out_q):
+        super().__init__()
+        self._vio = vis, in_q, out_q
+
+    def run(self):
+        vis, in_q, out_q = self._vio
+        vis._before()
+        proc_time = 0
+        while True:
+            if in_q.empty():
+                sleep(t_sleep_shallow)
+                continue
+            inp = in_q.get()
+            if inp is None:
+                break
+            args, kw_args = inp
+            start      = time()
+            try:
+                vis._process(*args, **kw_args)
+            except Exception as err:
+                if hasattr(vis, 'close'):
+                    vis.close()
+                raise err
+            proc_time += time() - start
+        out_q.put((vis._after(), proc_time))
+
+class VisRunner:
+    def __init__(self, vis, async_ = False):
+        self._vis   = vis
+        self._timer = 0
+        
+        if async_:
+            iq, oq = Queue(), Queue()
+            worker = VisWorker(self._vis, iq, oq)
+            self._async = worker, iq, oq
+            worker.start()
+        else:
+            self._async = None
+            self._vis._before()
+        self._duration = time()
+
+    def process(self, *args, **kw_args):
+        if self._async:
+            _, iq, _ = self._async
+            iq.put((args, kw_args))
+        else:
+            start = time()
+            try:
+                self._vis._process(*args, **kw_args)
+            except Exception as err:
+                if hasattr(self._vis, 'close'):
+                    self._vis.close()
+                raise err
+            
+            self._timer += time() - start
+
+    def after(self):
+        self._duration = time() - self._duration
+        if self._async:
+            worker, iq, oq = self._async
+            iq.put(None) # end while loop | _after
+            out, proc_time = oq.get()
+            worker.join() # this should be after oq.get()
+            self._timer = proc_time
+            return out
+        return self._vis._after()
+
+    def __del__(self):
+        if isinstance(self._async, tuple):
+            self._async[0].terminate()
+
+    @property
+    def proc_time(self):
+        return self._timer
+
+    @property
+    def before_after_duration(self):
+        return self._duration
+
+    @property
+    def is_async(self):
+        return isinstance(self._async, tuple)
+
+    def __getattr__(self, attr_name):
+        return getattr(self._vis, attr_name)

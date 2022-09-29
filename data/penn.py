@@ -2,7 +2,7 @@ from utils.types import M_TRAIN, beta_type
 from data.io import load_i2vs
 from data.dataset import post_batch
 from data.utils import ParsingReader
-from data import NIL, UNK, BOS, EOS
+from data import NIL
 from data.penn_types import select_and_split_corpus
 from data.continuous.dataset import ContinuousDataset
 

@@ -5,60 +5,54 @@ from utils.math_ops import is_bin_times
 from utils.types import M_TRAIN, BaseType, frac_open_0, true_type, tune_epoch_type, frac_06, frac_close
 from models.utils import fraction, mean_stdev
 from models.loss import binary_cross_entropy, hinge_loss
-from experiments.t_db.operator import DiscoOperator, DiscoVis, inner_score, ParallelVis as BinaryParallelVis
+from data.cross.mp import DVA, DVP, inner_score, m_batch_trees as batch_trees
+from experiments.helper import make_tensors
+from experiments.helper.do import DO
 
 train_type = dict(loss_weight = dict(tag   = BaseType(0.2, validator = frac_open_0),
                                      label = BaseType(0.3, validator = frac_open_0),
-                                     fence = BaseType(0.5, validator = frac_open_0),
+                                     chunk = BaseType(0.5, validator = frac_open_0),
                                      disco_1d = BaseType(0.5, validator = frac_open_0),
                                      disco_2d = BaseType(0.5, validator = frac_open_0),
                                      disco_2d_intra = BaseType(0.5, validator = frac_close),
                                      disco_2d_inter = BaseType(0.5, validator = frac_close)),
-                  learning_rate       = BaseType(0.001, validator = frac_open_0),
-                  disco_2d_intra_rate = BaseType(0.01,  validator = frac_close),
-                  disco_2d_inter_rate = BaseType(1,     validator = frac_close),
+                  learning_rate      = BaseType(0.001, validator = frac_open_0),
                   binary_hinge_loss = true_type,
                   tune_pre_trained  = dict(from_nth_epoch = tune_epoch_type,
                                            lr_factor      = frac_06))
 
 
-class DiscoMultiOperator(DiscoOperator):
+class DMOperater(DO):
     def _step(self, mode, ds_name, batch, batch_id = None):
 
-        supervised_signals = {}
-        supervised_signals['key'] = corp = ds_name if self.multi_corp else None
+        batch['key'] = corp = ds_name if self.multi_corp else None
         has_disco_2d = 'dis_component' in batch
         if mode == M_TRAIN:
             all_space = batch['space']
             dis_disco = batch['dis_disco']
-            dis_start = con_start = 0
+            dis_start = 0
             space_layers = []
             disco_layers = []
-            for dis_seg in batch['segment']:
+            for dis_seg in batch['batch_segment']:
                 dis_end = dis_start + dis_seg
                 space_layers.append(all_space[:, dis_start:dis_end])
                 disco_layers.append(dis_disco[:, dis_start:dis_end])
                 dis_start = dis_end
-            if self._train_config.disco_2d_intra_rate:
-                supervised_signals['disco_2d_intra_rate'] = self._train_config.disco_2d_intra_rate
-            if self._train_config.disco_2d_inter_rate:
-                supervised_signals['disco_2d_inter_rate'] = self._train_config.disco_2d_inter_rate
-            supervised_signals['supervision'] = space_layers, disco_layers, batch.get('inter_disco')
-        if 'sub_idx' in batch:
-            supervised_signals['sub_idx'] = batch['sub_idx']
-        if 'sub_fence' in batch:
-            supervised_signals['sub_fence'] = batch['sub_fence']
-        elif 'plm_idx' in batch:
-            for x in ('plm_idx', 'plm_start'):
-                supervised_signals[x] = batch[x]
+            batch['supervision'] = space_layers, disco_layers, batch.get('inter_disco')
+        else:
+            if (vis := self._vis_mode[0])._draw_trees:
+                batch['get_disco_2d'] = True
+
 
         batch_time = time()
-        (batch_size, batch_len, static, top3_label_logits,
-         embeddings, existences, _, tag_logits, label_logits,
-         (weights, disco_1d_logits, fence_logits, disco_2d_logits,
-          disco_2d_positive, disco_2d_negative, inter_2d_negative, space,
-          segment, seg_length)) = self._model(batch['token'], self._tune_pre_trained, **supervised_signals)
+        bottom, stem, tag_label = self._model(batch['token'], self._tune_pre_trained, **batch)
         batch_time = time() - batch_time
+        batch_size, batch_len = bottom[:2]
+        existences = stem.existence
+        (weights, disco_1d_logits, chunk_logits, disco_2d_logits,
+         disco_2d_positive, disco_2d_negative, inter_2d_negative, space,
+         segment) = stem.extension
+        tag_logits, label_logits = tag_label[2:4]
 
         if mode == M_TRAIN:
             tags    = self._model.get_decision(tag_logits  )
@@ -68,9 +62,9 @@ class DiscoMultiOperator(DiscoOperator):
             label_mis    = (labels  != batch['label'])
             tag_weight   = (  tag_mis | bottom_existence)
             label_weight = (label_mis | existences)
-            gold_fences  = batch['con_split']
+            gold_chunks  = batch['con_split']
 
-            fences = fence_logits > 0
+            chunks = chunk_logits > 0
             disco_1d = disco_1d_logits > 0
             if has_disco_2d:
                 disco_2d = disco_2d_logits > 0
@@ -78,7 +72,7 @@ class DiscoMultiOperator(DiscoOperator):
                 assert disco_2d_logits is None
             if not self._train_config.binary_hinge_loss:
                 _sigmoid = self._model.stem._sigmoid
-                fence_logits = _sigmoid(fence_logits)
+                chunk_logits = _sigmoid(chunk_logits)
                 disco_1d_logits = _sigmoid(disco_1d_logits)
                 if has_disco_2d:
                     disco_2d_logits = _sigmoid(disco_2d_logits)
@@ -98,9 +92,9 @@ class DiscoMultiOperator(DiscoOperator):
                 if not self._train_config.binary_hinge_loss:
                     inter_2d_negative = _sigmoid(inter_2d_negative)
                     
-            tag_loss, label_loss = self._model.get_losses(batch, tag_logits, label_logits, corp)
+            tag_loss, label_loss = self._model.get_losses(batch, tag_logits, label_logits, None, corp)
             if self._train_config.binary_hinge_loss:
-                fence_loss = hinge_loss(fence_logits, gold_fences, None)
+                chunk_loss = hinge_loss(chunk_logits, gold_chunks, None)
                 disco_1d_loss = hinge_loss(disco_1d_logits, batch['dis_disco'], None)
                 if has_disco_2d:
                     disco_2d_loss = hinge_loss(disco_2d_logits, batch['dis_component'], None)
@@ -111,7 +105,7 @@ class DiscoMultiOperator(DiscoOperator):
                 if has_inter_2d_negative:
                     inter_2d_negloss = hinge_loss(inter_2d_negative, torch.zeros_like(inter_2d_negative, dtype = torch.bool), None)
             else:
-                fence_loss = binary_cross_entropy(fence_logits, gold_fences, None)
+                chunk_loss = binary_cross_entropy(chunk_logits, gold_chunks, None)
                 disco_1d_loss = binary_cross_entropy(disco_1d_logits, batch['dis_disco'], None)
                 if has_disco_2d:
                     disco_2d_loss = binary_cross_entropy(disco_2d_logits, batch['dis_component'], None)
@@ -124,7 +118,7 @@ class DiscoMultiOperator(DiscoOperator):
 
             total_loss = self._train_config.loss_weight.tag * tag_loss
             total_loss = self._train_config.loss_weight.label * label_loss + total_loss
-            total_loss = self._train_config.loss_weight.fence * fence_loss + total_loss
+            total_loss = self._train_config.loss_weight.chunk * chunk_loss + total_loss
             total_loss = self._train_config.loss_weight.disco_1d * disco_1d_loss + total_loss
             if has_disco_2d:
                 total_loss = self._train_config.loss_weight.disco_2d * disco_2d_loss + total_loss
@@ -141,7 +135,7 @@ class DiscoMultiOperator(DiscoOperator):
                 self.recorder.tensorboard(self.global_step, 'Accuracy/%s', suffix,
                     Tag   = 1 - fraction(tag_mis,     tag_weight),
                     Label = 1 - fraction(label_mis, label_weight),
-                    Fence = fraction(fences == gold_fences),
+                    Fence = fraction(chunks == gold_chunks),
                     Disco_1D = fraction(disco_1d == batch['dis_disco']),
                     Disco_2D = fraction(disco_2d == batch['dis_component']) if has_disco_2d else None,
                     Disco_2D_Intra_P = fraction(disco_2d_positive_accuracy) if has_disco_2d_positive else None,
@@ -150,7 +144,7 @@ class DiscoMultiOperator(DiscoOperator):
                 self.recorder.tensorboard(self.global_step, 'Loss/%s', suffix,
                     Tag   = tag_loss,
                     Label = label_loss,
-                    Fence = fence_loss,
+                    Fence = chunk_loss,
                     Disco_1D = disco_1d_loss,
                     Disco_2D = disco_2d_loss if has_disco_2d else None,
                     Disco_2D_Intra_P = disco_2d_posloss if has_disco_2d_positive else None,
@@ -158,8 +152,8 @@ class DiscoMultiOperator(DiscoOperator):
                     Disco_2D_Inter_N = inter_2d_negloss if has_inter_2d_negative else None,
                     Total = total_loss)
                 batch_kwargs = dict(Length = batch_len, SamplePerSec = batch_len / batch_time)
-                if 'segment' in batch:
-                    batch_kwargs['Height'] = batch['segment'].shape[0]
+                if 'batch_segment' in batch:
+                    batch_kwargs['Height'] = batch['batch_segment'].shape[0]
                 if has_disco_2d_positive:
                     batch_kwargs['Disco_2D_Intra_P'] = disco_2d_positive_accuracy.shape[0]
                 if has_disco_2d_negative:
@@ -170,42 +164,19 @@ class DiscoMultiOperator(DiscoOperator):
                 if hasattr(self._model, 'tensorboard'):
                     self._model.tensorboard(self.recorder, self.global_step)
         else:
-            vis, _, _, pending_heads, _ = self._vis_mode
-
-            tags   = self._model.get_decision(tag_logits  ).type(torch.uint8).cpu().numpy()
-            labels = self._model.get_decision(label_logits).type(torch.uint8).cpu().numpy()
-            seg_length = seg_length.type(torch.int16).cpu().numpy()
-            spaces = (space - 1).type(torch.int16).cpu().numpy() # internal diff: data/model
-
+            # _, token, tag, label, space, weight, disco_2d, batch_segment, segment
+            b_head = [batch['tree'], batch['token']]
             if vis._draw_trees:
-                # _sigmoid = self._model.stem._sigmoid
-                # fence    = _sigmoid(fence_logits)
-                # disco_1d = _sigmoid(disco_1d_logits)
-                # disco_2d = None if disco_2d_logits is None else disco_2d_logits
                 weight = mean_stdev(weights).type(torch.float16).cpu().numpy()
             else:
-                weight = None # = fence = disco_1d = disco_2d
+                weight = disco_2d_logits = None
 
-            if pending_heads:
-                b_size = (batch_len,)
-                b_head = []
-                for fn in ('token', 'tag', 'label', 'space', 'segment', 'seg_length'):
-                    tensor = batch[fn]
-                    if fn == 'space':
-                        tensor -= 1
-                    if fn in ('tag', 'label', 'space'):
-                        tensor = tensor.type(torch.uint8)
-                    b_head.append(tensor.cpu().numpy())
-                b_head = tuple(b_head)
-                b_data = (tags, labels, spaces, weight, disco_2d_logits, segment, seg_length)
-            else:
-                b_size = (batch_len,)
-                b_head = (batch['token'].cpu().numpy(),)
-                b_data = (tags, labels, spaces, weight, disco_2d_logits, segment, seg_length)
+            tags   = self._model.get_decision(tag_logits  ).type(torch.short)
+            labels = self._model.get_decision(label_logits).type(torch.short)
+            spaces = (space - 1).type(torch.short)
+            b_data = (tags, labels, spaces, weight, disco_2d_logits, stem.segment, segment)
 
-            # tag, label, fence, segment, seg_length
-            tensors = b_size + b_head + b_data
-            vis.process(batch_id, tensors)
+            vis.process(batch_id, make_tensors(*b_head, *b_data))
         return batch_size, batch_len
 
     def _before_validation(self, ds_name, epoch, use_test_set = False, final_test = False):
@@ -234,28 +205,20 @@ class DiscoMultiOperator(DiscoOperator):
             i2vs = self.i2vs
             m_corp = None
         work_dir = self.recorder.create_join(folder)
-        serial = draw_trees or not head_trees or self.dm is None
-        if serial:
-            async_ = True
-            vis = DiscoMultiVis(epoch,
-                                work_dir,
-                                i2vs,
-                                head_trees,
-                                self.recorder.log,
-                                self._evalb_lcfrs_kwargs,
-                                self._discodop_prm,
-                                draw_trees)
+        
+        if serial := (draw_trees or not head_trees or self.dm is None):
+            vis = DMVA(epoch, work_dir, i2vs, head_trees,
+                       self.recorder.log,
+                       self._evalb_lcfrs_kwargs,
+                       self._discodop_prm,
+                       draw_trees)
         else:
-            async_ = False
-            vis = ParallelVis(epoch,
-                              work_dir, 
-                              i2vs,
-                              self._evalb_lcfrs_kwargs,
-                              self._discodop_prm,
-                              self.dm, m_corp)
-        vis = VisRunner(vis, async_ = async_) # wrapper
-        vis.before()
-        self._vis_mode = vis, use_test_set, final_test, vis._pending_heads, serial
+            vis = DMVP(epoch, work_dir, i2vs,
+                       self._evalb_lcfrs_kwargs,
+                       self._discodop_prm,
+                       self.dm, m_corp)
+        vis = VisRunner(vis, async_ = serial) # wrapper
+        self._vis_mode = vis, use_test_set, final_test, serial
 
     def _get_optuna_fn(self, train_params):
         import numpy as np
@@ -267,7 +230,7 @@ class DiscoMultiOperator(DiscoOperator):
                 loss_weight = specs['train']['loss_weight']
                 loss_weight['tag']   = t = trial.suggest_float('tag',   0.0, 1.0)
                 loss_weight['label'] = l = trial.suggest_float('label', 0.0, 1.0)
-                loss_weight['fence'] = f = trial.suggest_float('fence', 0.0, 1.0)
+                loss_weight['chunk'] = f = trial.suggest_float('chunk', 0.0, 1.0)
                 loss_weight['disco_1d'] = d1 = trial.suggest_float('disco_1d', 0.0, 1.0)
                 loss_weight['disco_2d'] = d2 = trial.suggest_float('disco_2d', 0.0, 1.0)
                 loss_str = 'L=' + height_ratio(t) + height_ratio(l) + height_ratio(f) + height_ratio(d1) + height_ratio(d2)
@@ -329,82 +292,53 @@ class DiscoMultiOperator(DiscoOperator):
             return train(optuna_params, self)['key']
         return obj_fn
 
-from utils.vis import VisRunner
+from data.mp import VisRunner
 from utils.file_io import remove, isdir, mkdir, listdir, join
-from data.cross.multib import disco_tree, draw_str_lines
-from itertools import count
-
-def batch_trees(b_word, b_tag, b_label, b_space, b_segment, b_seg_length, i2vs, fb_label = None, b_weight = None):
-    add_weight = b_weight is not None
-    for sid, word, tag, label, space, seg_length in zip(count(), b_word, b_tag, b_label, b_space, b_seg_length):
-        layers_of_label = []
-        layers_of_space = []
-        layers_of_weight = [] if add_weight else None
-        label_start = 0
-        for l_size, l_len in zip(b_segment, seg_length):
-            label_end = label_start + l_len
-            label_layer = label[label_start: label_end]
-            layers_of_label.append(tuple(i2vs.label[i] for i in label_layer))
-            if l_len == 1:
-                break
-            layers_of_space.append(space[label_start: label_end])
-            if add_weight:
-                layers_of_weight.append(b_weight[sid, label_start: label_end])
-            label_start += l_size
-        ln = seg_length[0]
-        wd = [i2vs.token[i] for i in word[:ln]]
-        tg = [i2vs.tag  [i] for i in  tag[:ln]]
-        yield disco_tree(wd, tg, layers_of_label, layers_of_space, fb_label, layers_of_weight)
-
-
 from utils.str_ops import cat_lines, height_ratio, space_height_ratio
-class DiscoMultiVis(DiscoVis):
+class DMVA(DVA):
     def __init__(self, epoch, work_dir, i2vs, head_trees, logger, evalb_lcfrs_kwargs, discodop_prm, draw_trees):
-        super().__init__(epoch, work_dir, i2vs, head_trees, logger, evalb_lcfrs_kwargs, discodop_prm, None, False)
+        super().__init__(epoch, work_dir, i2vs, head_trees, logger, evalb_lcfrs_kwargs, discodop_prm)
         if draw_trees:
-            draw_trees = self._dtv.join(f'tree.{epoch}.art')
+            draw_trees = self.join(f'tree.{epoch}.art')
             if isdir(draw_trees):
                 for fname in listdir(draw_trees):
                     remove(join(draw_trees, fname))
             else:
                 mkdir(draw_trees)
         self._draw_trees = draw_trees
-        self._headedness_stat = join(work_dir, f'data.{epoch}.headedness'), {}
-        self._disco_2d_stat = join(work_dir, f'data.{epoch}.2d.csv'), ['threshold,attempt,size,comp\n']
+        self._headedness_stat = self.join(f'data.{epoch}.headedness'), {}
+        self._disco_2d_stat = self.join(f'data.{epoch}.2d.csv'), ['threshold,attempt,size,comp\n']
 
     def _process(self, batch_id, batch):
-        bid_offset, _ = self._evalb.total_missing
+        from data.cross import draw_str_lines
+        tree, token, tag, label, space, weight, disco_2d, batch_segment, segment = batch
 
-        i2vs = self._dtv.vocabs
-        if self._pending_heads:
-            (_, h_token, h_tag, h_label, h_space, h_segment, h_seg_length,
-             d_tag, d_label, d_space, d_weight, d_disco_2d, d_segment, d_seg_length) = batch
-            head_lines = []
-            head_trees_for_scores = []
-            for btm, td, error in batch_trees(h_token, h_tag, h_label, h_space, h_segment, h_seg_length, i2vs):
-                assert not error
-                head_lines.append('\n'.join(draw_str_lines(btm, td, label_fn = lambda i,t: t[i].label if i else f'{t[i].label} (Gold)')))
-                head_trees_for_scores.append(inner_score(btm, td, self._evalb_lcfrs_kwargs, self._xh_writer))
-            self._head_batches.append((head_trees_for_scores, head_lines))
+        if self._xh_writer:
+            head_lines, head_trees_for_scores = [], []
+            for bt, td in tree:
+                head_trees_for_scores.append(
+                    inner_score(bt, td, self._evalb_lcfrs_kwargs, self._xh_writer))
+                head_lines.append(
+                    '\n'.join(draw_str_lines(bt, td, label_fn = lambda i,t: t[i].label if i else f'{t[i].label} (Gold)')))
+            self.save_head_trees(head_trees_for_scores, head_lines)
         else:
-            (_, h_token, d_tag, d_label, d_space, d_weight, d_disco_2d, d_segment, d_seg_length) = batch
-            head_trees_for_scores, head_lines = self._head_batches[self._data_batch_cnt]
-            self._data_batch_cnt += 1
+            head_trees_for_scores, head_lines = self.get_head_trees()
         
         # data_errors = []
+        bid_offset, _ = self._evalb.total_missing
         self._evalb.add_batch_line(batch_id)
         evalb_lines = []
-        for sid, (btm, td, error) in enumerate(batch_trees(h_token, d_tag, d_label, d_space, d_segment, d_seg_length, i2vs, 'VROOT')):
+        for sid, (btm, td, error) in enumerate(batch_trees(token, tag, label, space, batch_segment, segment, self.i2vs, 'VROOT')):
             pred_gold = inner_score(btm, td, self._evalb_lcfrs_kwargs, self._xd_writer) + head_trees_for_scores[sid]
             if self._draw_trees: evalb_lines.append(self._evalb.add(*pred_gold))
             if error: self._v_errors[bid_offset + sid] = error
         if self._draw_trees:
-            has_disco_2d = d_disco_2d is not None and any(l for l in d_disco_2d)
+            has_disco_2d = disco_2d is not None and any(l for l in disco_2d)
             c_lines = d_lines = m_lines = f'Batch #{batch_id} ───────────────────────────────────────────\n'
             c_cnt = d_cnt = m_cnt = 0
             d_has_n_comps = d_has_n_fallback = m_has_n_comps = m_has_n_fallback = 0
             _, head_stat = self._headedness_stat
-            for sid, (btm, td, error, wns, stat) in enumerate(batch_trees(h_token, d_tag, d_label, d_space, d_segment, d_seg_length, i2vs, 'VROOT', d_weight)):
+            for sid, (btm, td, error, wns, stat) in enumerate(batch_trees(token, tag, label, space, batch_segment, segment, self.i2vs, 'VROOT', weight)):
                 for lb, (lbc, hc) in stat.items():
                     if lb in head_stat:
                         label_cnt, head_cnts = head_stat[lb]
@@ -424,7 +358,7 @@ class DiscoMultiVis(DiscoVis):
                         tag_line += ' overdone'
 
                 has_n_comps = has_n_fallback = 0
-                if has_disco_2d and (s_disco_2d := [(lid, d2d[sid]) for lid, d2d in enumerate(d_disco_2d) if sid in d2d]):
+                if has_disco_2d and (s_disco_2d := [(lid, d2d[sid]) for lid, d2d in enumerate(disco_2d) if sid in d2d]):
                     if error and (eid := error[0]) > 0 and any(lid <= eid for lid, _ in s_disco_2d):
                         s_disco_2d = [(lid, s2d) for lid, s2d in s_disco_2d if lid <= eid]
                     base_lines = ['2D ']
@@ -514,11 +448,11 @@ class DiscoMultiVis(DiscoVis):
             fw.writelines(csv_list)
         return super()._after()
 
-class ParallelVis(BinaryParallelVis):
+class DMVP(DVP):
     _draw_trees = False
     
     def _process(self, batch_id, batch):
         dm, _, _, corp_key = self._args
-        (_, h_token, d_tag, d_label, d_space, d_weight, d_disco_2d, d_segment, d_seg_length) = batch
-        dm.batch(batch_id, self._bid_offset, d_segment, d_seg_length, h_token, d_tag, d_label, d_space, key = corp_key)
-        self._bid_offset += h_token.shape[0]
+        (_, token, tag, label, space, _, _, batch_segment, segment) = batch
+        dm.batch(batch_id, self._bid_offset, batch_segment, segment, token, tag, label, space, key = corp_key)
+        self._bid_offset += token.shape[0]

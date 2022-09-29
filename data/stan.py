@@ -7,7 +7,7 @@ from data.dataset import LengthOrderedDataset, post_batch, pad_tag_like_nil, pad
 from data.continuous import Signal
 from utils.param_ops import change_key
 from data import NIL
-from data.mp import Process, Rush
+from data.mp import Process, mp_while
 from nltk.tree import Tree
 Signal.set_binary()
 
@@ -56,7 +56,7 @@ class WorkerX(Process):
             dx = Signal.from_sstb(Tree.fromstring(line))
             px = None if condense_per is None else dx.binary(l2i = p2i, every_n = condense_per)
             q.put((i, dx.serialize(False), px))
-        q.put((i, len(lines)))
+        q.put((i, len(lines), 0))
 
 
 class SentimentDataset(LengthOrderedDataset):
@@ -78,7 +78,6 @@ class SentimentDataset(LengthOrderedDataset):
             label = 'polar'
 
         length, token, signals, text, polar_x = [], [], [], [], []
-        rush = Rush(WorkerX, data, p2i, condense_per)
         def receive(t, qbar):
             if isinstance(t[1], int):
                 return t
@@ -90,7 +89,7 @@ class SentimentDataset(LengthOrderedDataset):
             text   .append(signal.word)
             signals.append(signal)
             polar_x.append(px)
-        rush.mp_while(receive)
+        mp_while(WorkerX, data, receive, p2i, condense_per)
 
         if extra_text_helper:
             extra_text_helper = extra_text_helper(text, w2i)

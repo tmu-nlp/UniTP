@@ -13,7 +13,7 @@ def get_configs(recorder = None):
     from utils.types import M_TRAIN, K_CORP
     from utils.param_ops import HParams
     
-    data_config, model_config, train_config, _ = recorder.task_specs()
+    data_config, model_config, train_config, _ = recorder.task_specs(True)
     readers = {}
     penn = HParams(data_config)
     has_penn = has_sstb = False
@@ -31,9 +31,9 @@ def get_configs(recorder = None):
         readers[corp_name] = reader
 
     if not has_penn:
-        model_config.pop('tag_label_layer')
+        model_config.pop('tag_label_layer', None)
     if not has_sstb:
-        model_config.pop('polar_layer')
+        model_config.pop('polar_layer', None)
                 
     def get_datasets(mode, new_factor = None):
         datasets = {}

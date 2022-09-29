@@ -31,7 +31,7 @@ build_counters = lambda: VocabCounters(Counter(), Counter(), Counter(), Counter(
 def build(save_to_dir, fpath, corp_name, **kwargs):
     assert corp_name == C_SSTB
         
-    from data.mp import Rush, Process
+    from data.mp import mp_while, Process
 
     class WorkerX(Process):
         estimate_total = False
@@ -65,7 +65,6 @@ def build(save_to_dir, fpath, corp_name, **kwargs):
             corpus.append((line, mode))
                 
     counters = defaultdict(build_counters)
-    rush = Rush(WorkerX, corpus)
     def receive(t, qbar):
         if isinstance(t, int):
             qbar.update(t)
@@ -75,8 +74,8 @@ def build(save_to_dir, fpath, corp_name, **kwargs):
                 ds = counters[ds]
                 for dst, src in zip(ds, ss):
                     dst.update(src)
-            return t, tc
-    rush.mp_while(receive, 'Collecting vocabulary')
+            return t, tc, 0
+    mp_while(WorkerX, corpus, receive)
 
     def field_fn(all_counts, field, fw_rpt):
         cnt = getattr(all_counts, field)

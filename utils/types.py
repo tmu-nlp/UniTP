@@ -182,13 +182,18 @@ F_PHRASE = 'phrase'
 # all: esub/msub
 # DM: /random/left/right|continuous
 
+is_roughly_zero = lambda x, eps = 1e-10: abs(x) < eps
+
 def beta_type(string):
     try:
-        if ',' in string:
-            level, left, right = string.split(',')
-            level = level.strip(); left = left.strip()
-        else:
-            level, left, right = string.split()
+        level, left, right = string.split(None, 2)
+        if level == F_SENTENCE and left == F_CON and \
+            ((single := right.isdigit()) or all(x[x.index('.') + 1:].isdigit() for x in right.split())):
+            if single and (right := int(right)) > 1:
+                return level, left, right
+            elif not single and is_roughly_zero(sum(right := tuple(float(x) for x in right.split())) - 1):
+                return level, left, right
+            return
         right = float(right)
     except:
         return

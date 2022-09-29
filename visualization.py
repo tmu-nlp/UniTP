@@ -59,8 +59,8 @@ class TensorVis:
 from contextlib import ExitStack
 class DiscontinuousTensorVis(TensorVis):
     def __init__(self, fpath, vocabs, thresholds):
-        IOHead_fields = 'token, tree'
-        IOData_fields = 'tag, label, right, joint, direc, tree, segment, seg_length, mpc_word, mpc_phrase, warning, scores, tag_score, label_score, right_score, joint_score, direc_score'
+        IOHead_fields = 'tree, token'
+        IOData_fields = 'tree, tag, label, right, joint, direc, batch_segment, segment, mpc_word, mpc_phrase, warning, scores, tag_score, label_score, right_score, joint_score, direc_score'
         super().__init__(fpath, vocabs, IOHead_fields, IOData_fields, thresholds)
 
     def set_head(self, batch_id, size, *args):

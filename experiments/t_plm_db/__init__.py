@@ -1,4 +1,3 @@
-from data.stutt import DiscoReader
 from data.stutt_types import E_DISCONTINUOUS, C_DPTB, C_TIGER
 from data.stutt_types import dccp_data_config
 from utils.types import M_TRAIN

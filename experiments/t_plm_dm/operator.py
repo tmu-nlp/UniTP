@@ -1,6 +1,6 @@
-from experiments.t_dm.operator import DiscoMultiOperator
+from experiments.t_dm.operator import DMOperater
 
-class DiscoMultiOperator_lr(DiscoMultiOperator):
+class DiscoMultiOperator_lr(DMOperater):
     def _get_optuna_fn(self, train_params):
         from utils.train_ops import train, get_optuna_params
         optuna_params = get_optuna_params(train_params)

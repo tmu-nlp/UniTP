@@ -190,14 +190,10 @@ def build(save_to_dir,
           **kwargs):
 
     (reader, fileid_split, from_corpus) = select_and_split_corpus(corp_name, corp_path, train_set, devel_set, test_set)
-    corpus = []
-    for n, fs in fileid_split.items():
-        for f in fs:
-            corpus.append((n, f))
 
     from utils import do_nothing
     from utils.types import F_RANDOM
-    from data.mp import Rush, Process
+    from data.mp import mp_while, Process
     class WorkerX(Process):
         estimate_total = True
 
@@ -255,9 +251,9 @@ def build(save_to_dir,
 
             q.put((i, inst_cnt, dict(counters), err_cnf, err_conversion))
 
+    corpus = [(n, f) for n, fs in fileid_split.items() for f in fs]
     err_cnf, err_conversion = [], []
     counters = defaultdict(build_counters)
-    rush = Rush(WorkerX, corpus, reader)
     def receive(t, qbar):
         if isinstance(t, tuple):
             if len(t) == 2:
@@ -272,10 +268,10 @@ def build(save_to_dir,
                         dst.update(src)
                 err_cnf.extend(erc)
                 err_conversion.extend(erv)
-                return i, tc
+                return i, tc, 0 # explain below
         else:
             qbar.update(t)
-    rush.mp_while(receive, 'Collecting vocabulary')
+    mp_while(WorkerX, corpus, receive, reader)
 
     if err_cnf:
         desc = byte_style(f'✗ {len(err_cnf)}', '1')

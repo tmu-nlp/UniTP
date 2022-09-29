@@ -4,12 +4,12 @@ from utils.types import M_TRAIN, M_DEVEL, M_TEST, E_ORIF5_HEAD, num_threads, E_O
 from sys import argv
 from collections import defaultdict, Counter
 from tqdm import tqdm
-from data.delta import xtype_to_logits, get_dir, get_rgt, get_jnt
+from data.binary import xtype_to_logits, get_dir, get_rgt, get_jnt
 from data.trapezoid.dataset import distribute_jobs, Queue, PennWorker, PennTreeKeeper, Tree
 from data.multib.dataset import MAryWorker
 from data.cross.multib import TreeKeeper, total_fence
 from data.penn_types import CorpusReader, C_CTB, C_PTB, C_KTB
-from data.disco_types import C_DPTB, C_TIGER
+from data.stutt_types import C_DPTB, C_TIGER
 from data.mp import mp_workers
 from nltk.corpus import BracketParseCorpusReader
 from data.io import load_i2vs, encapsulate_vocabs
@@ -219,7 +219,7 @@ def live_dm_layer_stat(*keeper_factor):
     return sent_line, layer_lines, orif_line, ratio_count
 
 def disco_multib(corp_name, data_specs, factors):
-    from data.disco_types import select_and_split_corpus
+    from data.stutt_types import select_and_split_corpus
     corp_spec = data_spec[corp_name]
     build_params = corp_spec['build_params']
     (corpus, _, _, _,
