@@ -109,16 +109,15 @@ class Signal:
     def has_signals(self):
         return any(self._materials[1:3])
 
-    @property
-    def gap(self):
-        return max(self.gaps.values())
+    def gaps(self, prm_args = None):
+        if prm_args is None:
+            return gap_degree(self._materials[:2], None, True)
 
-    @property
-    def gaps(self):
-        if self._gaps is None:
-            bottom_nodes, top_down = self._materials[:2]
-            self._gaps = gap_degree(bottom_nodes, top_down, None, True)
-        return self._gaps
+        bt, td = self._tree
+        bt, td = new_word_label(bt, deepcopy(td), word_fn = prm_args.word_fn, label_fn = prm_args.label_fn)
+        filter_words(bt, td, prm_args.DELETE_WORD)
+        return gap_degree(bt, td, None)
+            
 
     @property
     def word(self):
@@ -147,7 +146,7 @@ class Signal:
     def binary(self, factor = F_RANDOM, esub = False, msub = 0, l2i = None, **kwargs):
         bottom_nodes, top_down, bottom_unary, node2tag, dep = self._stratify(esub)
         if factor != F_DEP:
-            factor = Signal.b_factor(factor, top_down)
+            factor = Signal.b_factor(factor)
             dep = None
         top_down = deepcopy(top_down)
         if 0 < msub < 1:
@@ -279,7 +278,8 @@ def bit_gen(bottom, top_down, nid):
             for something in bit_gen(bottom, top_down, cid):
                 bit_coverage |= something[1]
                 yield something
-    yield nid, bit_coverage
+    if bit_coverage:
+        yield nid, bit_coverage
 
 from utils.math_ops import bit_fanout
 def gap_degree(bottom, top_down, reduce_for_nid = 0, bottom_is_bid = False):

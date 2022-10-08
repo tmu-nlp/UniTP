@@ -5,9 +5,9 @@ from utils.math_ops import is_bin_times
 from utils.types import M_TRAIN, BaseType, frac_open_0, true_type, tune_epoch_type, frac_06, frac_close
 from models.utils import fraction, mean_stdev
 from models.loss import binary_cross_entropy, hinge_loss
-from data.cross.mp import DVA, DVP, inner_score, m_batch_trees as batch_trees
+from data.cross.mp import m_batch_trees as batch_trees
 from experiments.helper import make_tensors
-from experiments.helper.do import DO
+from experiments.helper.do import DVA, DVP, DO
 
 train_type = dict(loss_weight = dict(tag   = BaseType(0.2, validator = frac_open_0),
                                      label = BaseType(0.3, validator = frac_open_0),
@@ -222,11 +222,52 @@ class DMOperater(DO):
 
     def _get_optuna_fn(self, train_params):
         import numpy as np
+        from utils.types import K_CORP
+        from utils.str_ops import height_ratio
+        from utils.math_ops import log_to_frac
         from utils.train_ops import train, get_optuna_params
         optuna_params = get_optuna_params(train_params)
 
         def obj_fn(trial):
             def spec_update_fn(specs, trial):
+                desc = []
+                new_factor = {}
+                data = specs['data']
+                has_intra = has_inter = False
+                for corp, factor in data[K_CORP].items():
+                    desc_ = [corp + '.']
+                    factor['esub'] = esub = trial.suggest_float('esub', 0.0, 1.0)
+                    factor['msub'] = msub = trial.suggest_float('msub', 0.0, 1.0)
+                    if esub or msub:
+                        desc_.append(height_ratio(esub) + height_ratio(msub))
+                    
+                    disco_2d = factor['disco_2d']
+                    if inter_rate := disco_2d['inter_rate']:
+                        disco_2d['inter_rate'] = inter_rate = trial.suggest_float('disco_2d_inter_rate', 1e-6, 1, log = True)
+                        desc_.append(height_ratio(log_to_frac(inter_rate, 1e-6, 1)))
+                        has_inter = True
+
+                    if intra_rate := disco_2d['intra_rate']:
+                        old_intra_rate = intra_rate
+                        disco_2d['intra_rate'] = intra_rate = trial.suggest_float('disco_2d_intra_rate', 1e-6, intra_rate, log = True)
+                        desc_.append(height_ratio(log_to_frac(inter_rate, 1e-6, old_intra_rate)))
+                        has_intra = True
+
+                    if any(0 < v < 1 for v in factor['medoid']):
+                        med_k, med_v = [], []
+                        for k, v in factor['medoid'].items():
+                            if v > 0:
+                                med_k.append(k)
+                                med_v.append(trial.suggest_float(k, 1e-6, 1e3, log = True))
+                        med_v = np.array(med_v)
+                        med_v /= np.sum(med_v)
+                        for k, v in zip(med_k, med_v):
+                            factor['medoid'][k] = float(v)
+                        desc_.append('[' + ''.join(height_ratio(v) for v in med_v) + ']')
+                        
+                    new_factor[corp] = factor['medoid'], esub, msub, intra_rate, inter_rate
+                    desc.append(''.join(desc_))
+                    
                 loss_weight = specs['train']['loss_weight']
                 loss_weight['tag']   = t = trial.suggest_float('tag',   0.0, 1.0)
                 loss_weight['label'] = l = trial.suggest_float('label', 0.0, 1.0)
@@ -234,57 +275,23 @@ class DMOperater(DO):
                 loss_weight['disco_1d'] = d1 = trial.suggest_float('disco_1d', 0.0, 1.0)
                 loss_weight['disco_2d'] = d2 = trial.suggest_float('disco_2d', 0.0, 1.0)
                 loss_str = 'L=' + height_ratio(t) + height_ratio(l) + height_ratio(f) + height_ratio(d1) + height_ratio(d2)
-                    
-                if (d_d2a := specs['train']['disco_2d_intra_rate']) > 0:
-                    specs['train']['disco_2d_intra_rate'] = d_d2a = trial.suggest_loguniform('disco_2d_intra_rate', 1e-6, d_d2a)
+                if has_intra:
                     loss_weight['disco_2d_intra'] = l_d2a = trial.suggest_float('disco_2d_intra', 1e-6, 1.0)
-                    loss_str += '.' + height_ratio(l_d2a)
+                    loss_str += 'x' + height_ratio(l_d2a)
                 else:
-                    loss_weight['disco_2d_intra'] = specs['train']['disco_2d_intra_rate'] = 0
+                    loss_weight['disco_2d_intra'] = 0
 
-                if (d_i2b := specs['train']['disco_2d_inter_rate']) > 0:
-                    specs['train']['disco_2d_inter_rate'] = d_i2b = trial.suggest_loguniform('disco_2d_inter_rate', 1e-6, d_i2b)
+                if has_inter:
                     loss_weight['disco_2d_inter'] = d_i2n = trial.suggest_float('disco_2d_inter', 1e-6, 1.0)
-                    loss_str += ':' + height_ratio(d_i2n)
+                    loss_str += 'c' + height_ratio(d_i2n)
                 else:
-                    loss_weight['disco_2d_inter'] = specs['train']['disco_2d_inter_rate'] = 0
+                    loss_weight['disco_2d_inter'] = 0
 
-                medium_factor = specs['data']
-                medium_factor = specs['data'][get_sole_key(medium_factor)]
-                medium_factor['max_inter_height'] = mih = trial.suggest_int('max_inter_height', 0, 9)
-                medium_factor = medium_factor['medium_factor']
-
-                if involve_balanced := medium_factor['balanced'] > 0:
-                    medium_factor['balanced'] = bz = trial.suggest_float('balanced', 0.0, 1.0)
-
-                if involve_more_sub := medium_factor['more_sub'] > 0:
-                    medium_factor['more_sub'] = ms = trial.suggest_float('more_sub', 0.0, 1.0)
-
-                if multi_medoid := any(0 < v < 1 for v in medium_factor['others'].values()):
-                    med_k, med_v = [], []
-                    for k, v in medium_factor['others'].items():
-                        if v > 0:
-                            med_k.append(k)
-                            med_v.append(trial.suggest_loguniform(k, 1e-6, 1e3))
-                    med_v = np.array(med_v)
-                    med_v /= np.sum(med_v)
-                    for k, v in zip(med_k, med_v):
-                        medium_factor['others'][k] = float(v)
-
-                self._train_materials = (medium_factor, mih), self._train_materials[1]
-                lr = specs['train']['learning_rate']
-                specs['train']['learning_rate'] = lr = trial.suggest_loguniform('learning_rate', 1e-6, lr)
+                olr = specs['train']['learning_rate']
+                specs['train']['learning_rate'] = nlr = trial.suggest_loguniform('learning_rate', 1e-6, olr)
+                self._train_materials = new_factor, self._train_materials[1]
                 self._train_config._nested.update(specs['train'])
-                med_str = ''
-                rate_str = []
-                if involve_balanced: med_str += f'{height_ratio(bz)}'
-                if involve_more_sub: med_str += f'{height_ratio(ms)}'
-                if multi_medoid:     med_str += '[' + ''.join(height_ratio(v) for v in med_v) + ']'
-                if med_str:          med_str = 'med=' + med_str
-                if d_d2a > 0:       rate_str.append(f'.={d_d2a:.1e}')
-                if d_i2n > 0:       rate_str.append(f':={d_i2n:.1e}')
-                rate_str.append(f'lr={lr:.1e}')
-                return med_str + f'h{mih};' + loss_str + ';' + ','.join(rate_str)
+                return ''.join(desc) + ';' + loss_str + ';' + height_ratio(log_to_frac(nlr, 1e-6, olr))
 
             self._init_mode_trees()
             self.setup_optuna_mode(spec_update_fn, trial)
@@ -293,52 +300,27 @@ class DMOperater(DO):
         return obj_fn
 
 from data.mp import VisRunner
-from utils.file_io import remove, isdir, mkdir, listdir, join
+from utils.file_io import join
 from utils.str_ops import cat_lines, height_ratio, space_height_ratio
 class DMVA(DVA):
     def __init__(self, epoch, work_dir, i2vs, head_trees, logger, evalb_lcfrs_kwargs, discodop_prm, draw_trees):
-        super().__init__(epoch, work_dir, i2vs, head_trees, logger, evalb_lcfrs_kwargs, discodop_prm)
-        if draw_trees:
-            draw_trees = self.join(f'tree.{epoch}.art')
-            if isdir(draw_trees):
-                for fname in listdir(draw_trees):
-                    remove(join(draw_trees, fname))
-            else:
-                mkdir(draw_trees)
-        self._draw_trees = draw_trees
+        super().__init__(epoch, work_dir, i2vs, head_trees, logger, evalb_lcfrs_kwargs, discodop_prm, draw_trees)
         self._headedness_stat = self.join(f'data.{epoch}.headedness'), {}
         self._disco_2d_stat = self.join(f'data.{epoch}.2d.csv'), ['threshold,attempt,size,comp\n']
 
     def _process(self, batch_id, batch):
-        from data.cross import draw_str_lines
         tree, token, tag, label, space, weight, disco_2d, batch_segment, segment = batch
 
-        if self._xh_writer:
-            head_lines, head_trees_for_scores = [], []
-            for bt, td in tree:
-                head_trees_for_scores.append(
-                    inner_score(bt, td, self._evalb_lcfrs_kwargs, self._xh_writer))
-                head_lines.append(
-                    '\n'.join(draw_str_lines(bt, td, label_fn = lambda i,t: t[i].label if i else f'{t[i].label} (Gold)')))
-            self.save_head_trees(head_trees_for_scores, head_lines)
-        else:
-            head_trees_for_scores, head_lines = self.get_head_trees()
-        
-        # data_errors = []
-        bid_offset, _ = self._evalb.total_missing
-        self._evalb.add_batch_line(batch_id)
-        evalb_lines = []
-        for sid, (btm, td, error) in enumerate(batch_trees(token, tag, label, space, batch_segment, segment, self.i2vs, 'VROOT')):
-            pred_gold = inner_score(btm, td, self._evalb_lcfrs_kwargs, self._xd_writer) + head_trees_for_scores[sid]
-            if self._draw_trees: evalb_lines.append(self._evalb.add(*pred_gold))
-            if error: self._v_errors[bid_offset + sid] = error
+        batch_args = (token, tag, label, space, batch_segment, segment)
+        hdio = self.head_data_io(batch_id, tree, batch_trees, batch_args)
         if self._draw_trees:
+            fpath, draw_str_lines = self._draw_trees
             has_disco_2d = disco_2d is not None and any(l for l in disco_2d)
             c_lines = d_lines = m_lines = f'Batch #{batch_id} ───────────────────────────────────────────\n'
             c_cnt = d_cnt = m_cnt = 0
             d_has_n_comps = d_has_n_fallback = m_has_n_comps = m_has_n_fallback = 0
             _, head_stat = self._headedness_stat
-            for sid, (btm, td, error, wns, stat) in enumerate(batch_trees(token, tag, label, space, batch_segment, segment, self.i2vs, 'VROOT', weight)):
+            for sid, (btm, td, error, wns, stat) in enumerate(batch_trees(*batch_args, self.i2vs, 'VROOT', weight)):
                 for lb, (lbc, hc) in stat.items():
                     if lb in head_stat:
                         label_cnt, head_cnts = head_stat[lb]
@@ -347,8 +329,8 @@ class DMVA(DVA):
                         head_stat[lb] = lbc + label_cnt, head_cnts
                     else:
                         head_stat[lb] = lbc, hc
-                bracket_match, p_num_brackets, g_num_brackets, dbm, pdbc, gdbc, tag_match, g_tag_count = evalb_lines[sid]
-                lines = f'Sent #{sid} | #{bid_offset + sid}: '
+                bracket_match, p_num_brackets, g_num_brackets, dbm, pdbc, gdbc, tag_match, g_tag_count = hdio.evalb_lines[sid]
+                lines = f'Sent #{batch_id}.{sid} | #{hdio.bid_offset + sid}: '
                 tag_line = 'Exact Tagging Match' if tag_match == g_tag_count else f'Tagging: {tag_match}/{g_tag_count}'
                 if pdbc or gdbc:
                     tag_line += ' | DISC.'
@@ -407,7 +389,7 @@ class DMVA(DVA):
                 else:
                     lines += f'Bracketing {p_num_brackets} > {bracket_match} < {g_num_brackets} | '
                     lines += tag_line + '\n\n'
-                    lines += head_lines[sid] + '\n\n'
+                    lines += hdio.head_lines[sid] + '\n\n'
                     lines += '\n'.join(draw_str_lines(btm, td, label_fn = weight_with_height))
                     if pdbc or gdbc:
                         d_lines += lines + disco_2d_lines + '\n\n\n'
@@ -417,7 +399,7 @@ class DMVA(DVA):
                     else:
                         c_lines += lines + disco_2d_lines + '\n\n\n'
                         c_cnt += 1
-            fname_prefix = join(self._draw_trees, f'{batch_id:03d}.')
+            fname_prefix = join(fpath, f'{batch_id:03d}.')
             total = c_cnt + d_cnt + m_cnt
             for suffix, lines, cnt in zip('cdm', (c_lines, d_lines, m_lines), (c_cnt, d_cnt, m_cnt)):
                 if cnt > 0:

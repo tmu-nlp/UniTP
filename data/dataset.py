@@ -396,10 +396,10 @@ class LengthOrderedDataset(Dataset):
         else:
             new_extra = extra
         self._args = self._args[:-1] + (new_extra,)
-        super()._reset_factors(factor)
+        self._reset_factors(factor)
 
 
-from utils.types import device, M_TRAIN
+from utils.types import M_TRAIN
 def post_batch(mode, len_sort_ds, sort_by_length, bucket_length, batch_size):
     if mode != M_TRAIN:
         len_sort_ds.plain_mode()

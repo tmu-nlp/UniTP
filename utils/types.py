@@ -218,11 +218,17 @@ def make_close_frac(x):
         frac_close_pool[x] = BaseType(x, frac_close)
     return frac_close_pool[x]
 
-parse_config = dict(batch_size       = train_batch_size,
-                    bucket_len       = train_bucket_len,
-                    max_len          = train_max_len,
-                    unify_sub        = true_type,
-                    sort_by_length   = false_type)
+common_config = dict(batch_size       = train_batch_size,
+                     bucket_len       = train_bucket_len,
+                     sort_by_length   = false_type)
+
+def make_common_data_config(**extra):
+    extra.update(parse_config)
+    return extra
+
+parse_config = common_config.copy()
+parse_config.update(max_len   = train_max_len,
+                    unify_sub = true_type)
 
 def make_parse_data_config(**extra):
     extra.update(parse_config)

@@ -186,8 +186,7 @@ def build(save_to_dir,
           corp_name,
           train_set,
           devel_set,
-          test_set,
-          **kwargs):
+          test_set):
 
     (reader, fileid_split, from_corpus) = select_and_split_corpus(corp_name, corp_path, train_set, devel_set, test_set)
 

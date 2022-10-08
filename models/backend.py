@@ -404,8 +404,9 @@ class ParsingOutputLayer(nn.Module):
     def stem(self):
         return self._stem_layer
 
-    def get_losses(self, batch, tag_logits, label_logits, weight, key = None):
-        label_height_mask = get_label_height_mask(batch)
+    def get_losses(self, batch, tag_logits, label_logits, weight, key = None, extra_pad = 0):
+        label_height_mask = get_label_height_mask(batch, extra_pad = extra_pad)
+        assert label_height_mask[:, -1].any()
         if weight is not None:
             label_height_mask = label_height_mask * weight
 

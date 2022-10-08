@@ -1,13 +1,14 @@
-import torch
-from time import time
 from utils.math_ops import is_bin_times #, f_score
+from utils.str_ops import height_ratio
 from utils.types import M_TRAIN, BaseType, frac_open_0, frac_06, frac_close, tune_epoch_type
 from models.utils import PCA, fraction
 from experiments.helper import make_tensors
-from experiments.helper.do import DO
-from data.cross.mp import DVA, DVP, inner_score, b_batch_trees as batch_trees
+from experiments.helper.do import DVA, DVP, DO
+from data.cross.mp import b_batch_trees as batch_trees
 from data.cross.binary import X_DIR, X_RGT
-from data.cross.evalb_lcfrs import DiscoEvalb
+from data.cross.evalb_lcfrs import summary_from_add_tuples
+from time import time
+import torch
 
 train_type = dict(loss_weight = dict(tag    = BaseType(0.3, validator = frac_open_0),
                                      label  = BaseType(0.1, validator = frac_open_0),
@@ -46,8 +47,12 @@ class DBOperator(DO):
         if mode == M_TRAIN:
             tags   = self._model.get_decision(tag_logits)
             labels = self._model.get_decision(label_logits)
-            tag_weight   = stem.existence[:, :tag_end]
-            tag_loss, label_loss = self._model.get_losses(batch, tag_logits, label_logits, stem.existence, corp)
+            tag_existence = stem.existence[:, :tag_end]
+            tag_mis      = (tags    != batch['tag'])
+            label_mis    = (labels  != batch['label'])
+            tag_weight   = (  tag_mis | tag_existence)
+            label_weight = (label_mis | stem.existence)
+            tag_loss, label_loss = self._model.get_losses(batch, tag_logits, label_logits, stem.existence, corp, 1)
             rights, joints, direcs = self._model.stem.get_stem_prediction(right_direc_logits, joint_logits)
 
             batch['existence'] = stem.existence
@@ -93,8 +98,8 @@ class DBOperator(DO):
             if self.recorder._writer is not None:
                 suffix = ds_name if self.multi_corp else None
                 self.recorder.tensorboard(self.global_step, 'Accuracy/%s', suffix,
-                    Tag =   fraction(tags   == batch['tag'],   tag_weight),
-                    Label = fraction(labels == batch['label'], stem.existence),
+                    Tag   = 1 - fraction(tag_mis,     tag_weight),
+                    Label = 1 - fraction(label_mis, label_weight),
                     Right = fraction((rights == gold_rights) & gold_direcs, gold_direcs),
                     Direc = fraction(direcs == gold_direcs) if direcs is not None else None,
                     Joint = fraction(joints == gold_joints))
@@ -107,7 +112,7 @@ class DBOperator(DO):
                 self.recorder.tensorboard(self.global_step, 'Batch/%s', suffix,
                     SamplePerSec = batch_len / batch_time,
                     Length = batch_len,
-                    Height = batch['segments'].shape[0])
+                    Height = batch['batch_segment'].shape[0])
                 if hasattr(self._model, 'tensorboard'):
                     self._model.tensorboard(self.recorder, self.global_step)
         else:
@@ -181,9 +186,9 @@ class DBOperator(DO):
         
     def _get_optuna_fn(self, train_params):
         import numpy as np
-        from utils.types import E_ORIF5_HEAD, E_ORIF5, O_HEAD, F_RAND_CON, F_RAND_CON_SUB, F_RAND_CON_MSB
+        from utils.types import K_CORP, F_PHRASE, F_SENTENCE, F_CNF
         from utils.train_ops import train, get_optuna_params
-        from utils.str_ops import height_ratio
+        from utils.math_ops import log_to_frac
 
         optuna_params = get_optuna_params(train_params)
 
@@ -209,8 +214,7 @@ class DBOperator(DO):
                     loss_str += f'S{height_ratio(o)}'
 
                 data = specs['data']
-                data = data['tiger' if 'tiger' in data else 'dptb']
-                if data['ply_shuffle'] is None:
+                if all(dc['ply_shuffle'] is None for dc in data[K_CORP].values()):
                     mute += 'shuffled_joint', 'shuffled_orient', 'shuffled__direc', 'sudirec_strength'
                 else:
                     loss_weight['shuffled_joint']  = sj = trial.suggest_float('shuffled_joint',  0.0, 1.0)
@@ -226,33 +230,37 @@ class DBOperator(DO):
                 for mute in set(mute):
                     loss_weight[mute] = 0
 
-                binarization = data['binarization']
-                if binarization[F_RAND_CON]:
-                    beta_0 = trial.suggest_loguniform('beta_0', 1e-3, 1e3) # even around 1e0!
-                    beta_1 = trial.suggest_loguniform('beta_1', 1e-3, 1e3)
-                    bin_str = f'bin=β{beta_0:.1e},{beta_1:.1e}'
-                    binarization[F_RAND_CON] = f'{beta_0}, {beta_1}'
-                    if sub := binarization[F_RAND_CON_SUB]:
-                        binarization[F_RAND_CON_SUB] = sub = trial.suggest_float('sub', 0.0, 1.0)
-                        bin_str += height_ratio(sub)
-                    if msb := binarization[F_RAND_CON_MSB]:
-                        binarization[F_RAND_CON_MSB] = msb = trial.suggest_float('msb', 0.0, 1.0)
-                        bin_str += height_ratio(msb)
-                    bz = {F_RAND_CON: (beta_0, beta_1), F_RAND_CON_SUB: sub, F_RAND_CON_MSB: msb}
-                else:
-                    involve_head = binarization['head'] > 0
-                    E_ORIF = E_ORIF5_HEAD if involve_head else E_ORIF5
-                    binarization = np.array([trial.suggest_loguniform(x, 1e-6, 1e3) for x in E_ORIF])
-                    binarization /= np.sum(binarization)
-                    bin_str = 'bin=' + ''.join(height_ratio(x) for x in binarization)
-                    bz = {k:float(v) for k, v in zip(E_ORIF, binarization)}
-                    if not involve_head: bz[O_HEAD] = 0
-                    data['binarization'] = bz
+                new_factor = {}
+                desc = []
+                for corp, factor in data[K_CORP].items():
+                    desc_ = [corp + '.']
+                    level, left, _ = factor['binarization'].split()
+                    if level == F_SENTENCE and left == F_CNF:
+                        binarization = trial.suggest_float(corp + '.cnf', 0.0, 1.0)
+                        factor['binarization'] = f'{level} {left} {binarization}'
+                        desc_.append(height_ratio(binarization))
+                        binarization = level, F_CNF, binarization
+                    else:
+                        level = trial.suggest_categorical(corp + '.l', [F_SENTENCE, F_PHRASE])
+                        desc_.append(level[0])
+                        beta_l = trial.suggest_float(corp + '.beta_l', 1e-2, 1e2, log = True)
+                        beta_r = trial.suggest_float(corp + '.beta_r', 1e-2, 1e2, log = True)
+                        factor['binarization'] = f'{level} {beta_l} {beta_r}'
+                        binarization = level, beta_l, beta_r
+                        desc_.append('β' + height_ratio(log_to_frac(beta_l, 1e-2, 1e2)) + height_ratio(log_to_frac(beta_r, 1e-2, 1e2)))
+                    factor['esub'] = esub = trial.suggest_float(corp + '.e', 0.0, 1.0)
+                    desc_.append('∅' + height_ratio(esub))
+                    if (msub := factor['msub']) or isinstance(binarization[1], float):
+                        factor['msub'] = msub = trial.suggest_float(corp + '.m', 0.0, 1 if msub == 0 else msub)
+                        desc_.append(height_ratio(msub))
+                    new_factor[corp] = binarization, esub, msub
+                    desc.append(''.join(desc_))
+
                 lr = specs['train']['learning_rate']
-                specs['train']['learning_rate'] = lr = trial.suggest_loguniform('learning_rate', 1e-6, lr)
+                specs['train']['learning_rate'] = lr = trial.suggest_float('learning_rate', 1e-6, lr, log = True)
                 self._train_config._nested.update(specs['train'])
-                self._train_materials = bz, self._train_materials[1] # for train/train_initials(max_epoch>0)
-                return bin_str + ';' + loss_str + f';lr={lr:.1e}'
+                self._train_materials = new_factor, self._train_materials[1] # for train/train_initials(max_epoch>0)
+                return ''.join(desc) + ';' + loss_str + f';lr={lr:.1e}'
 
             self._init_mode_trees()
             self.setup_optuna_mode(spec_update_fn, trial)
@@ -262,18 +270,18 @@ class DBOperator(DO):
 
 
 from data.mp import VisRunner
-from utils.file_io import isfile
+from utils.file_io import isfile, join
 from utils.pickle_io import pickle_dump, pickle_load
+tag_root_fn = lambda i,t: t[i].label if i else f'{t[i].label} (Predicted)'
 
 from visualization import DiscontinuousTensorVis
 class DBVA(DVA):
     def __init__(self, epoch, work_dir, i2vs, logger, evalb_lcfrs_kwargs, discodop_prm, thresholds, save_tensors, head_trees):
-        super().__init__(epoch, work_dir, i2vs, head_trees, logger, evalb_lcfrs_kwargs, discodop_prm)
+        super().__init__(epoch, work_dir, i2vs, head_trees, logger, evalb_lcfrs_kwargs, discodop_prm, save_tensors)
         self.save_tensors = DiscontinuousTensorVis(work_dir, i2vs, thresholds) if save_tensors else None
 
     def _process(self, batch_id, batch):
 
-        bid_offset, _ = self._evalb.total_missing
         if self.save_tensors:
             (tree, token, batch_segment, segment,
              mpc_word, mpc_phrase, tag, label, xtype, joint, right, direc,
@@ -282,38 +290,67 @@ class DBVA(DVA):
             (tree, token, batch_segment, segment,
              tag, label, xtype, joint, right, direc) = batch
 
-        if self._xh_writer:
-            head_trees_for_scores = [inner_score(bt, td, self._evalb_lcfrs_kwargs, self._xh_writer) for bt, td in tree]
-            self.save_head_trees(head_trees_for_scores)
-            if self.save_tensors:
-                self.save_tensors.set_head(batch_id, token.shape[1], token, tree)
-        else:
-            head_trees_for_scores = self.get_head_trees()
-
-        
-        data_trees = []
-        data_errors = []
-        data_trees_for_scores = []
-        data = zip(segment, token, tag, label, xtype, joint)
-        for sid, (bt, td, error) in enumerate(batch_trees(bid_offset, data, batch_segment, self.i2vs, 'VROOT')):
-            data_trees.append((td, td))
-            data_errors.append(error)
-            data_trees_for_scores.append(inner_score(bt, td, self._evalb_lcfrs_kwargs, self._xd_writer))
-            if error: self._v_errors[sid] = error
-        scores = []
-        evalb = DiscoEvalb()
-        self._evalb.add_batch_line(batch_id)
-        for gold, prediction in zip(head_trees_for_scores, data_trees_for_scores):
-            self._evalb.add(*prediction, *gold)
-            scores.append(evalb.add(*prediction, *gold))
+        batch_args = token, tag, label, xtype, joint, batch_segment, segment
+        hdio = self.head_data_io(batch_id, tree, batch_trees, batch_args)
+        if self.pending_head and self.save_tensors:
+            self.save_tensors.set_head(batch_id, token.shape[1], token, tree)
 
         if self.save_tensors:
             fname = self.join('summary.pkl')
-            _, _, tf, _, _, df = evalb.summary()
+            _, _, tf, _, _, df = summary_from_add_tuples(hdio.evalb_lines)
             smy = pickle_load(fname) if isfile(fname) else {}
             smy[(batch_id, self.epoch)] = dict(F1 = tf, DF = df)
             pickle_dump(fname, smy)
-            self.save_tensors.set_data(batch_id, self.epoch, data_trees, tag, label, right, joint, direc, batch_segment, segment, mpc_word, mpc_phrase, data_errors, scores, tag_score, label_score, right_score, joint_score, direc_score)
+            trees_and_errors = tuple(zip(*hdio.trees_and_errors))
+            data_trees  = trees_and_errors[:2]
+            data_errors = trees_and_errors[2]
+            self.save_tensors.set_data(batch_id, self.epoch, data_trees, 
+                tag, label, right, joint, direc, batch_segment, segment,
+                mpc_word, mpc_phrase, data_errors, hdio.evalb_lines,
+                tag_score, label_score, right_score, joint_score, direc_score)
+            
+            fpath, draw_str_lines = self._draw_trees
+            c_lines = d_lines = m_lines = f'Batch #{batch_id} ───────────────────────────────────────────\n'
+            c_cnt = d_cnt = m_cnt = 0
+
+            for sid, (btm, td, error) in enumerate(batch_trees(*batch_args, self.i2vs, 'VROOT', perserve_sub = True)):
+                bracket_match, p_num_brackets, g_num_brackets, dbm, pdbc, gdbc, tag_match, g_tag_count = hdio.evalb_lines[sid]
+                lines = f'Sent #{batch_id}.{sid} | #{hdio.bid_offset + sid}: '
+                tag_line = 'Exact Tagging Match' if tag_match == g_tag_count else f'Tagging: {tag_match}/{g_tag_count}'
+                if pdbc or gdbc:
+                    tag_line += ' | DISC.'
+                    if not dbm and gdbc:
+                        tag_line += ' failed'
+                    if not gdbc and pdbc:
+                        tag_line += ' overdone'
+
+                if bracket_match == g_num_brackets:
+                    lines += f' > {bracket_match} < | '
+                    if tag_match == g_tag_count:
+                        lines += 'Exact Match\n\n'
+                    else:
+                        lines += 'Exact Bracketing Match | ' + tag_line + '\n\n'
+                    lines += '\n'.join(draw_str_lines(btm, td, label_fn = tag_root_fn))
+                    m_lines += lines + '\n\n\n'
+                    m_cnt += 1
+                else:
+                    lines += f'Bracketing {p_num_brackets} > {bracket_match} < {g_num_brackets} | '
+                    lines += tag_line + '\n\n'
+                    lines += hdio.head_lines[sid] + '\n\n'
+                    lines += '\n'.join(draw_str_lines(btm, td, label_fn = tag_root_fn))
+                    if pdbc or gdbc:
+                        d_lines += lines + '\n\n\n'
+                        d_cnt += 1
+                    else:
+                        c_lines += lines + '\n\n\n'
+                        c_cnt += 1
+            fname_prefix = join(fpath, f'{batch_id:03d}.')
+            total = c_cnt + d_cnt + m_cnt
+            for suffix, lines, cnt in zip('cdm', (c_lines, d_lines, m_lines), (c_cnt, d_cnt, m_cnt)):
+                if cnt > 0:
+                    suffix = '.' + suffix + '.art'
+                    with open(fname_prefix + f'{height_ratio(cnt / total)}' + suffix, 'w') as fw:
+                        fw.write(lines)
 
 
 class DBVP(DVP):

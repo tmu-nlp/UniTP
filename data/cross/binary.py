@@ -279,22 +279,23 @@ def cross_signals(bottom, node2tag, bottom_unary, top_down, factor,
     return layers_of_label, layers_of_xtype, layers_of_joint, layers_of_swaps
 
 
+from collections import defaultdict
 from random import random, betavariate
 from utils.types import F_LEFT, F_RIGHT, F_RANDOM, F_CNF
-def extend_factor(factor, loc):
+def extend_factor(factor):
     if isinstance(factor, str):
         if factor == F_LEFT:
             factor = 0
         elif factor == F_RIGHT:
             factor = 1
         elif factor == F_RANDOM: # F_CON
-            factor = {p: random() for p in loc}
+            factor = defaultdict(random)
     elif isinstance(factor, tuple):
         lhs, rhs = factor
         if lhs == F_CNF:
-            factor = {p: random() < rhs for p in loc}
+            factor = defaultdict(random)
         else:
-            factor = {p: betavariate(lhs, rhs) for p in loc}
+            factor = defaultdict(lambda: betavariate(lhs, rhs))
     return factor
 
 
@@ -323,9 +324,11 @@ def disco_tree(word, bottom_tag,
                     # >j<
                     lhs_node = track_nodes.pop(lhs_nid)
                     rhs_node = track_nodes[lhs_nid]
-                    if fallback_label and (lid + 1 == len(layers_of_label)):
+                    try:
+                        labels = layers_of_label[lid + 1][lhs_nid]
+                    except:
+                        error_layer_id = lid, bottom_len, E_SHP
                         break
-                    labels = layers_of_label[lid + 1][lhs_nid]
                     labels = [labels] if perserve_sub or labels[0] in SUBS else labels.split('+')
                     non_terminals[NTS] = labels.pop()
                     _combine(NTS, lhs_node, non_terminals, top_down, perserve_sub)
@@ -369,4 +372,5 @@ def disco_tree(word, bottom_tag,
     for nid, label in non_terminals.items():
         top_down[nid] = TopDown(label, {x: None for x in top_down.pop(nid)})
     top_down[0] = top_down.pop(NTS + 1)
+
     return terminals, top_down, error_layer_id

@@ -6,8 +6,9 @@ def pre_word_base(model_config):
             return CharTextHelper
 
 from utils.param_ops import get_sole_key, change_key
-parsing_pnames = 'num_tokens', 'weight_fn', 'num_tags', 'num_labels', 'paddings'
-sentiment_pnames = 'num_tokens', 'weight_fn', 'num_polars', 'paddings'
+base_pnames = 'num_tokens', 'weight_fn'
+parsing_pnames = base_pnames + ('num_tags', 'num_labels', 'paddings')
+sentiment_pnames = base_pnames + ('num_polars', 'paddings')
 parsing_sentiment_pnames = set(parsing_pnames) | set(sentiment_pnames)
 def post_word_base(model_cls, model_config, data_config, readers, pnames = parsing_pnames):
     i2vs = {c: r.i2vs for c, r in readers.items()}

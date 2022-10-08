@@ -1,6 +1,5 @@
-import torch
-from data.continuous.binary import X_RGT, X_DIR
 from data.stan_types import C_SSTB
+from data.continuous.binary import X_RGT, X_DIR
 from utils.math_ops import is_bin_times
 from utils.types import M_TRAIN, K_CORP, F_CNF, BaseType, frac_open_0, true_type, tune_epoch_type, frac_06
 from models.utils import PCA, fraction, hinge_score
@@ -8,6 +7,7 @@ from models.loss import binary_cross_entropy, hinge_loss, cross_entropy, get_lab
 from experiments.helper import make_tensors, continuous_score_desc_logg, sentiment_score_desc_logg
 from experiments.helper.co import CO, CVP
 from time import time
+import torch
 
 train_type = dict(loss_weight = dict(tag    = BaseType(0.2, validator = frac_open_0),
                                      label  = BaseType(0.3, validator = frac_open_0),
@@ -182,7 +182,7 @@ class CBOperator(CO):
                         scores_of_bins,
                         flush_heads)
         else:
-            vis = ParallelVis(epoch, work_dir, self._evalb, self.recorder.log, self.dm, m_corp)
+            vis = CBVP(epoch, work_dir, self._evalb, self.recorder.log, self.dm, m_corp)
         vis = VisRunner(vis, async_ = serial) # wrapper
         self._vis_mode = vis, use_test_set, final_test, serial
 
@@ -298,7 +298,7 @@ class CBVA(BaseVis):
                              offset, length, token, token_emb, tree_emb,
                              tag, label, orient,
                              tag_score, label_score, orient_score,
-                             trapezoid_info, extra) # TODO go async
+                             trapezoid_info, extra)
 
 from data.stan_types import calc_stan_accuracy
 class ParsingCBVA(CBVA):

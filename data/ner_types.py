@@ -1,31 +1,38 @@
-def read_dataset(fname):
-    words = []
-    pos_tags = []
-    ner_tags = []
+def read_dataset(fname, n, skip_lines = 0):
+    sent = tuple([] for _ in range(n))
     with open(fname) as fr:
+        for _ in range(skip_lines):
+            next(fr)
         for line in fr:
             if line == '\n':
-                yield (words, pos_tags, ner_tags)
-                words = []
-                pos_tags = []
-                ner_tags = []
+                yield sent
+                sent = tuple([] for _ in range(n))
                 continue
-            word, pos, ner = line.split()
-            words.append(word)
-            pos_tags.append(pos)
-            ner_tags.append(ner)
+            for col, val in zip(sent, line.split()):
+                col.append(val)
+
+def has_o_structure(nid, chunks):
+    if nid == 0 or not chunks:
+        return False
+    lhs = chunks[nid - 1] # O I-NP I-NP B-VP
+    rhs = chunks[nid]
+    if lhs != rhs:
+        if lhs[:2] == 'B-' and lhs[:2] == rhs[:2]:
+            return False
+        return True
+    return False
+    
 
 from random import random
-def remove_bio_prefix(bio_tags):
+def remove_bio_prefix(bio_tags, chunks = None):
     ner_tags, ner_fence = [], []
     last_ner = None
     for nid, ner in enumerate(bio_tags):
-        is_bi_tag = '-' in ner
-        if is_bi_tag:
+        if '-' in ner:
             prefix, ner = ner.split('-')
             if prefix == 'B':
                 last_ner = None
-        if ner != last_ner:
+        if ner != last_ner or ner == 'O' and has_o_structure(nid, chunks):
             ner_fence.append(nid)
             ner_tags.append(ner)
             last_ner = ner
@@ -43,27 +50,41 @@ def recover_bio_prefix(chunk, ner_tags):
     return long_ner_tags
 
 C_IN = 'idner'
-C_ABSTRACT = 'ner'
-E_NER = C_IN
+C_EN = 'conll'
+E_NER = C_IN, C_EN
 
-build_params = {C_IN: {}}
-ft_bin = {C_IN: 'id'}
+from utils.types import make_common_data_config
+from utils.types import true_type, trapezoid_height, token_type, K_CORP
+from utils.types import vocab_size, train_batch_size, train_max_len, train_bucket_len, true_type, false_type
+from utils.types import valid_size, BaseType, rate_5
 
-from data.io import make_call_fasttext, check_fasttext, check_vocab, save_vocab
+augment = dict(a = rate_5, p = rate_5)
+ner_extension  = dict(break_o_chunk = rate_5,
+                      break_whole   = false_type,
+                      delete        = augment,
+                      insert        = augment,
+                      substitute    = augment)
+
+ner_data_config = make_common_data_config(
+    with_bi_prefix = true_type,
+    with_pos_tag   = false_type)
+ner_data_config[K_CORP] = {C_IN: ner_extension, C_EN: ner_extension}
+
+from data.io import make_call_fasttext, check_fasttext, check_vocab, save_vocab, split_dict
+from data.stan_types import sstb_split # same name
+build_params = {C_IN: sstb_split, C_EN: split_dict('eng.train', 'eng.testa', 'eng.testb')}
+ft_bin = {C_IN: 'id', C_EN: 'en'}
 call_fasttext = make_call_fasttext(ft_bin)
 
-
-from data.stan_types import split_files, M_TRAIN, M_DEVEL, M_TEST # same name
-from os.path import join, isfile
+from os.path import join
 from collections import Counter, defaultdict
-from utils.pickle_io import pickle_dump, pickle_load
-from tqdm import tqdm
+from utils.str_ops import StringProgressBar
 from data import NIL
 
 def build(save_to_dir,
           corp_path,
           corp_name,
-          **kwargs):
+          **split_files):
 
     tok_cnt = Counter()
     pos_cnt = Counter()
@@ -71,35 +92,47 @@ def build(save_to_dir,
     ner_cnt = Counter()
     ds_len_cnts = {}
     ds_ner_cnts = {}
-    desc = ''
-    with tqdm(split_files.items()) as qbar:
-        for src, dst in qbar:
-            desc += dst
+    n = {C_IN: 3, C_EN: 4}[corp_name]
+    names = tuple(split_files.keys())
+    with StringProgressBar(names, sep = ', ', prefix = 'Load ') as qbar:
+        for dst, src in split_files.items():
             ds_len_cnt = defaultdict(int)
-            ds_ner_cnt = defaultdict(int)
-            for sid, (wd, pt, nt) in enumerate(read_dataset(join(corp_path, src + '.txt'))):
+            ds_ner_cnt = Counter()
+            for sid, largs in enumerate(read_dataset(join(corp_path, src), n)):
+                if n == 3:
+                    wd, pt, nt = largs
+                else:
+                    wd, pt, _, nt = largs
                 tok_cnt += Counter(wd)
                 pos_cnt += Counter(pt)
                 bio_cnt += Counter(nt)
                 _, nt = remove_bio_prefix(nt)
                 ner_cnt += Counter(nt)
                 ds_len_cnt[len(wd)] += 1
-                ds_ner_cnt[sum(1 for x in nt if x != 'O')] += 1
-                qbar.desc = 'Loading ' + desc + f'({sid})'
-                # TODO should we use nil?
+                ds_ner_cnt.update(t for t in nt if t != 'O')
             ds_len_cnts[dst] = ds_len_cnt
             ds_ner_cnts[dst] = ds_ner_cnt
-            desc += f'({sid}); '
-        qbar.desc = 'Loaded ' + desc
-    pickle_dump(join(save_to_dir, 'info.pkl'), (ds_len_cnts, ds_ner_cnts))
+            qbar.update(names.index(dst), total = 1)
+            qbar.update(names.index(dst))
+            prefix, suffix = qbar.desc
+            qbar.desc = prefix, (suffix[:-1] + f', {sid})') if suffix else (f' ({sid})')
     tok_file = join(save_to_dir, 'vocab.word')
     pos_file = join(save_to_dir, 'vocab.pos')
     ner_file = join(save_to_dir, 'vocab.ner')
     bio_file = join(save_to_dir, 'vocab.bio')
-    _, ts = save_vocab(tok_file, tok_cnt, [NIL])
-    _, ps = save_vocab(pos_file, pos_cnt, [NIL])
-    _, ns = save_vocab(ner_file, ner_cnt, [NIL])
-    _, bs = save_vocab(bio_file, bio_cnt, [NIL])
+    ts = save_vocab(tok_file, tok_cnt, [NIL])
+    ps = save_vocab(pos_file, pos_cnt, [NIL])
+    ns = save_vocab(ner_file, ner_cnt, [NIL])
+    bs = save_vocab(bio_file, bio_cnt, [NIL])
+
+    from utils.str_ops import histo_count
+    with open(join(save_to_dir, 'vocab.rpt'), 'w') as fw:
+        for ds, lc in ds_len_cnts.items():
+            fw.write(f'Length distribution in [ {ds.upper()} set ] ({sum(lc.values())})\n')
+            fw.write(histo_count(lc, bin_size = 10) + '\n')
+        for ds, nc in ds_ner_cnts.items():
+            fw.write(f'NER frequency in [ {ds.upper()} set ] ({sum(nc.values())})\n')
+            fw.write(', '.join(n + f': {c}' for n, c in nc.items()) + '.\n')
     return ts, ps, ns, bs
 
 def check_data(save_dir, valid_sizes):
@@ -110,10 +143,6 @@ def check_data(save_dir, valid_sizes):
     except:
         print('Should check vocab with compatible sizes, even Nones', file = stderr)
         return False
-    fname = join(save_dir, 'info.pkl')
-    if not isfile(fname):
-        print('Not found: info.pkl')
-        return False
     tok_file = join(save_dir, 'vocab.word')
     pos_file = join(save_dir, 'vocab.pos')
     ner_file = join(save_dir, 'vocab.ner')
@@ -122,19 +151,6 @@ def check_data(save_dir, valid_sizes):
     res = res and check_vocab(pos_file, pos_size)
     res = res and check_vocab(ner_file, ner_size)
     res = res and check_vocab(bio_file, bio_size)
-    ds_len_cnts, ds_ner_cnts = pickle_load(fname)
-    print(f'Length distribution in [ Train set ] ({sum(ds_len_cnts[M_TRAIN].values())})', file = stderr)
-    print(histo_count(ds_len_cnts[M_TRAIN], bin_size = 10), file = stderr)
-    print('  #NER per sentence dist.:', file = stderr)
-    print(histo_count(ds_ner_cnts[M_TRAIN], bin_size = 3), file = stderr)
-    print(f'Length distribution in [ Dev set ]   ({sum(ds_len_cnts[M_DEVEL].values())})', file = stderr)
-    print(histo_count(ds_len_cnts[M_DEVEL], bin_size = 10), file = stderr)
-    print('  #NER per sentence dist.:', file = stderr)
-    print(histo_count(ds_ner_cnts[M_DEVEL], bin_size = 3), file = stderr)
-    print(f'Length distribution in [ Test set ]  ({sum(ds_len_cnts[M_TEST].values())})', file = stderr)
-    print(histo_count(ds_len_cnts[M_TEST], bin_size = 10), file = stderr)
-    print('  #NER per sentence dist.:', file = stderr)
-    print(histo_count(ds_ner_cnts[M_TEST], bin_size = 3), file = stderr)
     return res
 
 from random import random

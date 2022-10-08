@@ -1,5 +1,5 @@
 from models.backend import PadRNN, torch, nn
-from models.types import rnn_module_type, fmin, fmax, continuous_attention_hint, activation_type, fence_vote
+from models.types import rnn_module_type, fmin, fmax, continuous_attention_hint, activation_type, chunk_vote
 from models.utils import blocky_softmax
 from utils.types import true_type, false_type, hidden_dim, num_ori_layer, frac_2, frac_4, orient_dim
 from utils.param_ops import HParams
@@ -18,13 +18,13 @@ bio_model_config = dict(hidden_dim = hidden_dim,
 ner_model_config = dict(attention_hint = continuous_attention_hint,
                         fence_activation = activation_type,
                         fence_dim  = hidden_dim, # TODO open for 1
-                        fence_vote = fence_vote)
+                        chunk_vote = chunk_vote)
 
 base_config = dict(base_layer = bio_model_config,
                    ner_extension = ner_model_config,
                    model_dim = hidden_dim)
 
-class RnnNer(PadRNN):
+class _Ner(PadRNN):
     def __init__(self,
                  num_poses,
                  num_bios,
@@ -53,7 +53,7 @@ class RnnNer(PadRNN):
                          module,
                          rnn_drop_out,
                          trainable_initials,
-                         ner_extension.fence_vote,
+                         ner_extension.chunk_vote,
                          ner_extension.fence_activation)
         self._tag_act = act = tag_activation()
         if num_poses:

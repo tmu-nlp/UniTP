@@ -1,72 +1,62 @@
 from data.vocab import VocabKeeper
 from data.dataset import LengthOrderedDataset, post_batch
-from data.ner_types import M_TRAIN, M_DEVEL, M_TEST, split_files, read_dataset, remove_bio_prefix
-from data.io import load_i2vs, join
-from utils.types import vocab_size, train_batch_size, train_max_len, train_bucket_len, true_type, false_type
-from utils.types import valid_size, BaseType, rate_5
+from data.ner_types import read_dataset, remove_bio_prefix
+from data.io import load_i2vs, join, get_fasttext
 import numpy as np
+from tqdm import tqdm
 import torch
 
-split_files = {v:k + '.txt' for k, v in split_files.items()}
-augment_size = BaseType(2, validator = valid_size)
-augment = dict(a = rate_5, p = rate_5)
+def add_char_from_word(i2vs):
+    chars = set()
+    for word in i2vs['word'][1:]:
+        chars.update(word)
+    i2vs['char'] = [NIL, PAD] + sorted(chars)
 
-data_type = dict(vocab_size     = vocab_size,
-                 batch_size     = train_batch_size,
-                 with_bi_prefix = true_type,
-                 with_pos_tag   = false_type,
-                 max_len        = train_max_len,
-                 bucket_len     = train_bucket_len,
-                 sort_by_length = false_type,
-                 ner_extension  = dict(break_o_chunk = rate_5,
-                                       break_whole   = false_type,
-                                       delete        = augment,
-                                       insert        = augment,
-                                       substitute    = augment))
-
-from data import PAD
-from data.utils import CharTextHelper #, add_char_from_word, tqdm
+from data import NIL, PAD
+from data.utils import CharTextHelper
+from utils.param_ops import change_key
 class NerReader(VocabKeeper):
-    def __init__(self,
-                 vocab_dir,
-                 corpus_path,
+    def __init__(self, ner,
                  with_bi_prefix,
                  with_pos_tag,
-                 vocab_size = None,
                  extra_text_helper = None):
         if with_bi_prefix:
-            vocabs = 'word bio'
+            vocabs = ['word', 'bio']
         else:
-            vocabs = 'word ner'
+            vocabs = ['word', 'ner']
         if with_pos_tag:
-            vocabs += ' pos'
-        i2vs = load_i2vs(vocab_dir, vocabs.split())
+            vocabs.append('pos')
+        i2vs = load_i2vs(ner.local_path, *vocabs)
+        change_key(i2vs, 'word', 'token')
+        vocabs[0] = 'token'
+        def token_fn(token_type):
+            weights = get_fasttext(join('token', token_type + '.vec'))
+            weights[0] = 0 # [nil ...]
+            return weights
+        char_vocab = None
+        # if extra_text_helper is CharTextHelper:
         if extra_text_helper is CharTextHelper:
             add_char_from_word(i2vs)
-        super().__init__(vocab_dir, vocab_size, True, i2vs, {})
-        char_vocab = None
-        if extra_text_helper is CharTextHelper:
             char_vocab = {}
             _, t2is = self.v2is['token']
             _, c2is = self.v2is['char']
             pad_idx = c2is(PAD)
             for word in tqdm(self.i2vs.token[1:], 'NER-Wordlist'): # skip pad <nil>
                 char_vocab[t2is(word)] = [c2is(t) for t in word] + [pad_idx]
-        self._load_options = corpus_path, extra_text_helper, char_vocab
+        self._load_options = ner, extra_text_helper, char_vocab
+        super().__init__(vocabs, i2vs, {}, {}, weight_fn = token_fn)
 
     def batch(self,
               mode,
               batch_size,
               bucket_length,
-              ner_extension  = None,
-              min_len        = 2,
+              min_len        = 0,
               max_len        = None,
               sort_by_length = True):
-        assert mode in (M_TRAIN, M_DEVEL, M_TEST)
-        corpus_path, extra_text_helper, char_vocab = self._load_options
+        ner, extra_text_helper, char_vocab = self._load_options
 
-        len_sort_ds = NerDataset(join(corpus_path, split_files[mode]),
-                                 ner_extension,
+        len_sort_ds = NerDataset(join(ner.source_path, ner.build_params._nested[mode + '_set']),
+                                 ner.ner_extension,
                                  char_vocab,
                                  self.v2is,
                                  self.device,

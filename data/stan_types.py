@@ -1,34 +1,33 @@
 C_SSTB = 'sstb'
 
-
-build_params = {C_SSTB: {}}
-ft_bin = {C_SSTB: 'en'}
-
-from data.io import make_call_fasttext
-from utils.types import M_TRAIN, M_TEST, M_DEVEL, K_CORP
-call_fasttext = make_call_fasttext(ft_bin)
-
 from sys import stderr
 from nltk.tree import Tree
 from collections import Counter, namedtuple, defaultdict
 from os.path import join
-from data.io import check_vocab, post_build
+from data.io import check_vocab, post_build, split_dict
 
-split_files = {'train': M_TRAIN, 'dev': M_DEVEL, 'test': M_TEST}
-def get_sstb_trees(fpath):
+sstb_split = split_dict('train.txt', 'dev.txt', 'test.txt')
+build_params = {C_SSTB: sstb_split}
+ft_bin = {C_SSTB: 'en'}
+
+from data.io import make_call_fasttext
+call_fasttext = make_call_fasttext(ft_bin)
+
+def get_sstb_trees(fpath, split_files):
     corpus = {}
-    for src, dst in split_files.items():
+    for dst, src in split_files.items():
         dataset = []
-        with open(join(fpath, f'{src}.txt')) as fr:
+        with open(join(fpath, src)) as fr:
             for line in fr:
                 dataset.append(line)
-        corpus[dst] = dataset
+        corpus[dst[:-4]] = dataset
     return corpus
 
 VocabCounters = namedtuple('VocabCounters', 'length, word, polar, right')
 build_counters = lambda: VocabCounters(Counter(), Counter(), Counter(), Counter())
 
-def build(save_to_dir, fpath, corp_name, **kwargs):
+from utils.types import M_TRAIN
+def build(save_to_dir, fpath, corp_name, **split_files):
     assert corp_name == C_SSTB
         
     from data.mp import mp_while, Process
@@ -60,7 +59,7 @@ def build(save_to_dir, fpath, corp_name, **kwargs):
             q.put((i, sum(sum(vc.length.values()) for vc in counters.values()), dict(counters)))
 
     corpus = []
-    for mode, lines in get_sstb_trees(fpath).items():
+    for mode, lines in get_sstb_trees(fpath, split_files).items():
         for line in lines:
             corpus.append((line, mode))
                 

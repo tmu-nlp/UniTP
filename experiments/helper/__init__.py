@@ -62,12 +62,19 @@ def speed_logg(count, seconds, dm):
     return desc, logg, speed_ba, speed_dm
 
 def continuous_score_desc_logg(scores):
-    pmr = scores["LR"] - scores["LP"]
-    key_score = f'{scores["F1"]:.2f}'
-    desc_for_screen = '(' + byte_style('㏚', '3' if pmr > 0 else '6')
-    desc_for_screen += f'{pmr:+.2f}/' + byte_style(key_score, underlined = True) + ')'
-    desc_for_logger = f'({scores["LP"]}/{scores["LR"]}/' + key_score + ')'
+    desc_for_screen = '(' + pmr_f(scores["LR"] - scores["LP"], scores["F1"]) + ')'
+    desc_for_logger = f'({scores["LP"]}/{scores["LR"]}/{scores["F1"]})'
     return scores, desc_for_screen, desc_for_logger
+
+def pmr_f(pmr, f):
+    desc_for_screen = byte_style('㏚', '3' if pmr > 0 else '6')
+    desc_for_screen += f'{pmr:+.2f}/' + byte_style(f'{f:.2f}', underlined = True)
+    return desc_for_screen
+
+def discontinuous_score_desc_logg(tp, tr, tf, dp, dr, df):
+    desc_for_screen = '(' + pmr_f(tr - tp, tf) + '|' + pmr_f(dr - dp, df) + ')'
+    desc_for_logger = f'({tp:.2f}/{tr:.2f}/{tf:.2f}|{dp:.2f}/{dr:.2f}/{df:.2f})'
+    return desc_for_screen, desc_for_logger
 
 def sentiment_score_desc_logg(scores):
     logg = '/'.join(k + f'{v:.2f}' for k, v in zip(scores._fields, scores))

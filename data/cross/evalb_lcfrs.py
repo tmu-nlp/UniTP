@@ -134,6 +134,17 @@ def disco_matches(p_brackets, g_brackets):
         p_num_brackets, p_disc_num_brackets, p_disc_brackets,\
         g_num_brackets, g_disc_num_brackets, g_disc_brackets
 
+def summary_from_add_tuples(t):
+    tm = tp = tg = dm = dp = dg = 0
+    for bracket_match, p_num_brackets, g_num_brackets, disc_bracket_match, p_disc_num_brackets, g_disc_num_brackets, tag_match, g_tag_count in t:
+        tm += bracket_match
+        tp += p_num_brackets
+        tg += g_num_brackets
+        dm += disc_bracket_match
+        dp += p_disc_num_brackets
+        dg += g_disc_num_brackets
+    return _scores(tm, tp, tg) + _scores(dm, dp, dg)
+
 class DiscoEvalb:
     def __init__(self):
         self._tick = 0

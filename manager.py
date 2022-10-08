@@ -199,8 +199,7 @@ class Manager:
             elif build_if_not_yet:
                 print(f"(Re)build vocabulary for '{corp_name}'", file = print_file)
                 # try:
-                sizes = m.build(create_join(self._work_dir, 'data', corp_name), sp, corp_name,
-                                **datum['build_params'], num_thread = num_thread)
+                sizes = m.build(create_join(self._work_dir, 'data', corp_name), sp, corp_name, **datum['build_params'])
                 ft_ready = False
                 ds_ready = True
                 

@@ -55,9 +55,9 @@ def get_loss(net, logits, gold, weight = None):
 
     return distance.sum() + net.repulsion()
 
-def get_label_height_mask(batch, key = 'label'):
+def get_label_height_mask(batch, key = 'label', extra_pad = 0):
     label = batch[key]
-    dim = torch.arange(label.shape[1], device = label.device)
+    s_dim = torch.arange(label.shape[1], device = label.device)
     if (segment := batch.get('segment')) is None:
         length = batch['length']
         if (offset := batch.get('offset')) is None:
@@ -67,5 +67,6 @@ def get_label_height_mask(batch, key = 'label'):
     else: # trapezoid
         segment = torch.as_tensor(segment, device = label.device)
         seg = segment.max(dim = 0).values
-        seq = (seg[None] * ((segment - 1) > 0)).sum(dim = 1) + 1
-    return dim[None] < seq[:, None]
+        if extra_pad: seg += extra_pad
+        seq = (seg[None] * (segment > 0)).sum(dim = 1)
+    return s_dim[None] < seq[:, None]

@@ -61,7 +61,7 @@ def select_and_split_corpus(corp_name, corp_path,
 from collections import Counter, defaultdict, namedtuple
 VocabCounters = namedtuple('VocabCounters', 'length, word, tag, label, sentence_gap, phrase_gap')
 build_counters = lambda: VocabCounters(Counter(), Counter(), Counter(), Counter(), Counter(), Counter())
-from utils.file_io import join
+from utils.file_io import join, parpath
 from sys import stderr
 
 def build(save_to_dir,
@@ -69,11 +69,12 @@ def build(save_to_dir,
           corp_name,
           train_set,
           devel_set,
-          test_set,
-          **kwargs):
+          test_set):
 
     from data.mp import mp_while, Process
-    from data.cross import Signal
+    from data.cross import Signal, draw_str_lines
+    from data.cross.evalb_lcfrs import read_param
+    prm_args = read_param(join(parpath(__file__, 2), 'discodop.prm'))
     Signal.set_binary()
     Signal.set_multib()
     if corp_name == C_TIGER:
@@ -89,11 +90,14 @@ def build(save_to_dir,
                 errors = []
                 i, q, sents = self._args
                 counters = defaultdict(build_counters)
+                gap_lines = defaultdict(list)
 
                 for ds, sent in sents:
-                    sample_process(Signal.from_tiger_graph, sent, errors, counters[ds])
+                    if res := sample_process(Signal.from_tiger_graph, sent, errors, counters[ds], prm_args):
+                        sent_gap, (bt, td) = res
+                        gap_lines[sent_gap].append(draw_str_lines(bt, td))
                     q.put(i)
-                q.put((i, sum(sum(vc.length.values()) for vc in counters.values()), errors, dict(counters)))
+                q.put((i, sum(sum(vc.length.values()) for vc in counters.values()), errors, dict(counters), gap_lines))
         extra = ()
     else:
         from data.penn_types import select_and_split_corpus as sasc
@@ -112,6 +116,7 @@ def build(save_to_dir,
                 n_proceed = l_estimate = 0
                 n_fileid = len(fileids)
                 counters = defaultdict(build_counters)
+                gap_lines = defaultdict(list)
                 errors = []
 
                 for eid, (ds, fn) in enumerate(fileids):
@@ -121,12 +126,15 @@ def build(save_to_dir,
                     counter = counters[ds]
 
                     for tree in trees:
-                        sample_process(Signal.from_disco_penn, tree, errors, counter)
+                        if res := sample_process(Signal.from_disco_penn, tree, errors, counter, prm_args):
+                            sent_gap, (bt, td) = res
+                            gap_lines[sent_gap].append(draw_str_lines(bt, td))
                         q.put((i, n_estimate) if n_estimate != l_estimate else i)
-                q.put((i, sum(sum(vc.length.values()) for vc in counters.values()), errors, dict(counters)))
+                q.put((i, sum(sum(vc.length.values()) for vc in counters.values()), errors, dict(counters), gap_lines))
 
     errors = []
     counters = defaultdict(build_counters)
+    gap_lines = defaultdict(list)
     def receive(t, qbar):
         if isinstance(t, int):
             qbar.update(t)
@@ -135,14 +143,24 @@ def build(save_to_dir,
             qbar.update(i, total = t)
             qbar.update(i)
         else: # summary
-            t, tc, er, vc = t
+            t, tc, er, vc, gl = t
             for ds, ss in vc.items():
                 ds = counters[ds]
                 for dst, src in zip(ds, ss):
                     dst.update(src)
+            for g, l in gl.items():
+                gap_lines[g] += l
             errors.extend(er)
             return t, tc, 0 # explain outside receive
     mp_while(WorkerX, corpus, receive, *extra)
+
+    for sent_gap in sorted(gap_lines):
+        lines = gap_lines[sent_gap]
+        lines.sort(key = lambda x: len(x[0]))
+        with open(join(save_to_dir, f'gap.{sent_gap}.({len(lines)}).art'), 'w') as fw:
+            for eid, lines in enumerate(lines):
+                fw.write(f'{eid}.\n')
+                fw.write('\n'.join(lines) + '\n\n')
 
     if errors:
         desc = byte_style(f'✗ {len(errors)}', '1')
@@ -172,7 +190,7 @@ def check_data(save_dir, valid_sizes):
         ls, tts, ats, ts, lbs, sg, pg = valid_sizes
         if tts > ats:
             raise ValueError(f'Train vocab({tts}) should be less than corpus vocab({ats})')
-        if sg != pg:
+        if sg > pg:
             raise ValueError(f'Gap counts at both sentence ({sg}) and phrase ({pg}) levels should be equal.')
     except Exception as e:
         from sys import stderr
@@ -185,7 +203,7 @@ def check_data(save_dir, valid_sizes):
 from data.cross.evalb_lcfrs import disco_exact_match
 from data.cross.binary import disco_tree as tree_from_binary
 from data.cross.multib import disco_tree as tree_from_multib
-def sample_process(from_corpus, sent, errors, counter):
+def sample_process(from_corpus, sent, errors, counter, prm_args):
     try:
         dx = from_corpus(sent)
     except ValueError as e:
@@ -208,9 +226,12 @@ def sample_process(from_corpus, sent, errors, counter):
         counter.length[len(wd)] += 1
         counter.word.update(wd)
         counter.tag .update(tg)
+        gaps = dx.gaps(prm_args).values()
+        sent_gap = max(gaps)
         for l in bl + ml:
             counter.label.update(l)
-        counter.sentence_gap[dx.gap] += 1
-        counter.phrase_gap.update(dx.gaps.values())
+        counter.sentence_gap[sent_gap] += 1
+        counter.phrase_gap.update(gaps)
+        return sent_gap, dx.tree
     else:
         errors.append('BnM')

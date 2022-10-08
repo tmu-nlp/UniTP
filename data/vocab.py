@@ -33,6 +33,10 @@ class VocabKeeper:
             self._oovs[field] += offset
 
     @property
+    def fields(self):
+        return self._fields._fields
+
+    @property
     def sizes(self):
         return self._sizes
 

@@ -69,7 +69,7 @@ class DiscontinuousDataset(LengthOrderedDataset):
         super().__init__(heads, label, length, factor, min_len, max_len, extra_text_helper)
         self._args = token, tag, signals, signal_kwargs, binary, b_pad_shuffle_or_m_fence_intra_inter, self_check_i2vs, extra
 
-    def reset_multib_factor(self, factor, esub, msub, *, initialize = False):
+    def reset_multib_factor(self, factor, esub, msub, *intra_inter_rates, initialize = False):
         non_random = bidict({e:f for e, (f, p) in enumerate(factor.items()) if f != F_RANDOM and p > 0})
         if has_static_n := (msub in (0, 1) and sum(non_random)):
             hy_factor = {}
@@ -96,6 +96,8 @@ class DiscontinuousDataset(LengthOrderedDataset):
             else:
                 cache = cache_fn(len(self._args[0]))
             self._args = self._args[:-1] + (HybridM(non_random, msub, cache),)
+        f, h, _, _ = self._args[-3]
+        self._args = self._args[:-3] + ((f, h) + intra_inter_rates) + self._args[-2:]
 
     def at_idx(self, idx, factor, helper_outputs):
         token, tag, signals, signal_kwargs, binary, _, _, extra = self._args
