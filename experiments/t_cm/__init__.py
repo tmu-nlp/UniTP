@@ -1,14 +1,15 @@
-from data.penn_types import E_CONTINUE, accp_data_config
+from data.penn_types import E_MULTIB, accp_data_config, E_CONTINUE, E_NER
 from experiments.t_cm.model import CM, model_type
 from experiments.t_cm.operator import CMOperator, train_type
 
-CORPORA = set(E_CONTINUE)
+CORPORA = set(E_MULTIB)
 
 def get_configs(recorder = None):
     if recorder is None:
         return accp_data_config, model_type, train_type
     
     from data.penn import PennReader
+    from data.ner import NerReader
     from data.utils import post_word_base
     from utils.types import M_TRAIN, K_CORP
     from utils.param_ops import HParams
@@ -20,9 +21,13 @@ def get_configs(recorder = None):
     
     for corp_name, dc in data_config[K_CORP].items():
         corp_spec = HParams(dc)
-        readers[corp_name] = PennReader(corp_name, corp_spec, penn.unify_sub)
-        if corp_spec.token == 'char':
-            any_char_as_token = True
+        if corp_name in E_CONTINUE:
+            readers[corp_name] = PennReader(corp_name, corp_spec, penn.unify_sub)
+            if corp_spec.token == 'char':
+                any_char_as_token = True
+        elif corp_name in E_NER:
+            readers[corp_name] = NerReader()
+
 
     if any_char_as_token:
         from data.continuous import Signal

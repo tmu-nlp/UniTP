@@ -68,14 +68,17 @@ class DTreeReader(ParsingReader):
         reader, corp_split, from_fn, stutt, extra_text_helper = self._load_options
         esub = msub = min_gap = 0
         medoid = None
+        intra_rate, inter_rate = stutt.disco_2d.intra_rate, stutt.disco_2d.inter_rate
         if mode == M_TRAIN:
             min_gap = stutt.min_gap
             if new_factor is None:
                 medoid = stutt.medoid._nested
                 esub, msub = stutt.esub, stutt.msub
-            else:
+            elif len(new_factor) == 3:
                 medoid, esub, msub = new_factor
-        m_fence_2d = continuous_chunk_only, stutt.max_interply, stutt.disco_2d.intra_rate, stutt.disco_2d.inter_rate
+            else:
+                medoid, esub, msub, intra_rate, inter_rate = new_factor
+        m_fence_2d = continuous_chunk_only, stutt.max_interply, intra_rate, inter_rate
 
         self.loaded_ds[mode] = ds = DiscontinuousDataset(False, reader, corp_split[mode], from_fn, self.v2is,
             medoid, esub, msub, m_fence_2d, min_gap, min_len, max_len, extra_text_helper)

@@ -62,6 +62,7 @@ class MultiStem(PadRNN):
 
     def forward(self, existence, embedding,
                 n_layers = 0,
+                stop_at_nth_layer = False,
                 supervision = None,
                 bottom_supervision = None,
                 keep_low_attention_rate = 1,
@@ -94,7 +95,7 @@ class MultiStem(PadRNN):
             batch_segment.append(layer_len)
             segment.append(length)
 
-            if layer_len == 1:
+            if layer_len == 1 or stop_at_nth_layer and l_cnt == n_layers:
                 break
             elif len(segment) > 1:
                 prev, curr = segment[-2:]

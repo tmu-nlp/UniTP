@@ -303,8 +303,8 @@ def bracketing(bottom, top_down, bottom_is_bid = False, excluded_labels = None):
             # assert bracket_key not in bracket_mul
             bracket_cnt[bracket_key] += 1
             bracket_mul[bracket_key] = len(top_down[nid].children)
-
-    assert bit + ~bit == -1, 'Discontinuous root'
+    # if top_down:
+    #     assert bit + ~bit == -1, 'Discontinuous root'
     return bracket_cnt, bracket_mul
 
 from data.cross.dag import PathFinder

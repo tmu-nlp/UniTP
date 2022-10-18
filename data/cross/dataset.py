@@ -87,7 +87,7 @@ class DiscontinuousDataset(LengthOrderedDataset):
                 return {0: 1 - esub, 1: esub}, msub
 
             return hy_factor, HybridM(non_random, msub, cache_fn(initialize))
-            
+        old_args = self._args
         if not has_static_n:
             self._args = self._args[:-1] + (msub,)
         elif isinstance((old := self._args[-1]), HybridM):
@@ -96,8 +96,8 @@ class DiscontinuousDataset(LengthOrderedDataset):
             else:
                 cache = cache_fn(len(self._args[0]))
             self._args = self._args[:-1] + (HybridM(non_random, msub, cache),)
-        f, h, _, _ = self._args[-3]
-        self._args = self._args[:-3] + ((f, h) + intra_inter_rates) + self._args[-2:]
+        f, h, _, _ = self._args[-3] # 1, + (2, 3, 4) fails for unary +
+        self._args = self._args[:-3] + (((f, h) + intra_inter_rates),) + self._args[-2:]
 
     def at_idx(self, idx, factor, helper_outputs):
         token, tag, signals, signal_kwargs, binary, _, _, extra = self._args

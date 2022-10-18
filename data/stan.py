@@ -14,7 +14,7 @@ Signal.set_binary()
 
 class StanReader(VocabKeeper):
     def __init__(self, stan, extra_text_helper = None):
-        self._corp = get_sstb_trees(stan.source_path)
+        self._corp = get_sstb_trees(stan.source_path, stan.build_params._nested)
         self._args = stan, extra_text_helper
 
         vocab_path = stan.local_path

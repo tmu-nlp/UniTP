@@ -80,10 +80,10 @@ def concatenate(src_files, dst_file):
 def has_discodop():
     try:
         command = ['discodop', 'eval']
-        run(command, stdout = PIPE, stderr = PIPE)
+        rs = run(command, stdout = PIPE, stderr = PIPE)
     except:
         return False
-    return True
+    return rs.stderr == b'error: Wrong number of arguments.\n'
 
 def discodop_tmp(hds, prm_file = None):
     from tempfile import TemporaryDirectory

@@ -4,7 +4,7 @@ C_CTB = 'ctb'
 C_KTB = 'ktb'
 C_NPCMJ = 'npcmj'
 E_CONTINUE = C_PTB, C_CTB, C_KTB, C_NPCMJ
-E_BINARY = C_PTB, C_CTB, C_KTB, C_NPCMJ, C_SSTB
+E_BINARY = E_CONTINUE + (C_SSTB,)
 
 from data.io import make_call_fasttext, check_vocab, split_dict
 build_params = {C_PTB: split_dict('2-21',             '22',      '23'    ),

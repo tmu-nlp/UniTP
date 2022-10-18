@@ -1,7 +1,7 @@
 from data.stan_types import C_SSTB
 from data.continuous.binary import X_RGT, X_DIR
 from utils.math_ops import is_bin_times
-from utils.types import M_TRAIN, K_CORP, F_CNF, BaseType, frac_open_0, true_type, tune_epoch_type, frac_06
+from utils.types import M_TRAIN, K_CORP, F_CNF, BaseType, frac_open_0, true_type, tune_epoch_type, frac_06, make_close_frac
 from models.utils import PCA, fraction, hinge_score
 from models.loss import binary_cross_entropy, hinge_loss, cross_entropy, get_label_height_mask, sorted_decisions_with_values
 from experiments.helper import make_tensors, continuous_score_desc_logg, sentiment_score_desc_logg
@@ -13,7 +13,7 @@ train_type = dict(loss_weight = dict(tag    = BaseType(0.2, validator = frac_ope
                                      label  = BaseType(0.3, validator = frac_open_0),
                                      orient = BaseType(0.5, validator = frac_open_0),
                                      polar  = BaseType(0.9, validator = frac_open_0),
-                                     polaro = BaseType(0.1, validator = frac_open_0)),
+                                     polaro = make_close_frac(0.1)),
                   learning_rate = BaseType(0.001, validator = frac_open_0),
                   orient_hinge_loss = true_type,
                   tune_pre_trained = dict(from_nth_epoch = tune_epoch_type,
@@ -68,7 +68,8 @@ class CBOperator(CO):
                 polar_weight &= get_label_height_mask(batch, 'polar')
                 polar_loss = cross_entropy(polar_logits, batch['polar'], polar_weight)
                 total_loss = self._train_config.loss_weight.polar * polar_loss
-                total_loss = self._train_config.loss_weight.polaro * orient_loss + total_loss
+                if self._train_config.loss_weight.polaro:
+                    total_loss = self._train_config.loss_weight.polaro * orient_loss + total_loss
 
             total_loss.backward()
             
@@ -337,12 +338,22 @@ class ParsingCBVA(CBVA):
 
         return continuous_score_desc_logg(scores) + (self._length_bins,)
 
+from collections import defaultdict
 class SentimentCBVA(CBVA):
     def _after(self):
         if self._head_tree:
             self._head_tree.close()
         self._data_tree.close()
-        _, smy = calc_stan_accuracy(*self._fnames, self._logger)
+        flip_lines = defaultdict(list) if self.save_tensors else None
+        _, smy = calc_stan_accuracy(*self._fnames, self._logger, flip_lines)
+        if flip_lines:
+            for flip_n, nhd in flip_lines.items():
+                nhd.sort(key = lambda x: x[0] - flip_n)
+                with open(self.join(f'flip.{self.epoch}.{flip_n}.art'), 'w') as fw:
+                    for eid, (n, head, data) in enumerate(nhd):
+                        fw.write(f'{eid}. prediction has {n - flip_n} more flips\n\n')
+                        fw.write('\n'.join(head) + '\n\n')
+                        fw.write('\n'.join(data) + '\n\n')
         return sentiment_score_desc_logg(smy)
 
 

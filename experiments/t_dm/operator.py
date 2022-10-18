@@ -236,29 +236,29 @@ class DMOperater(DO):
                 has_intra = has_inter = False
                 for corp, factor in data[K_CORP].items():
                     desc_ = [corp + '.']
-                    factor['esub'] = esub = trial.suggest_float('esub', 0.0, 1.0)
-                    factor['msub'] = msub = trial.suggest_float('msub', 0.0, 1.0)
+                    factor['esub'] = esub = trial.suggest_float(corp + '.esub', 0.0, 1.0)
+                    factor['msub'] = msub = trial.suggest_float(corp + '.msub', 0.0, 1.0)
                     if esub or msub:
                         desc_.append(height_ratio(esub) + height_ratio(msub))
                     
                     disco_2d = factor['disco_2d']
                     if inter_rate := disco_2d['inter_rate']:
-                        disco_2d['inter_rate'] = inter_rate = trial.suggest_float('disco_2d_inter_rate', 1e-6, 1, log = True)
+                        disco_2d['inter_rate'] = inter_rate = trial.suggest_float(corp + '.disco_2d_inter_rate', 1e-6, 1, log = True)
                         desc_.append(height_ratio(log_to_frac(inter_rate, 1e-6, 1)))
                         has_inter = True
 
                     if intra_rate := disco_2d['intra_rate']:
                         old_intra_rate = intra_rate
-                        disco_2d['intra_rate'] = intra_rate = trial.suggest_float('disco_2d_intra_rate', 1e-6, intra_rate, log = True)
-                        desc_.append(height_ratio(log_to_frac(inter_rate, 1e-6, old_intra_rate)))
+                        disco_2d['intra_rate'] = intra_rate = trial.suggest_float(corp + '.disco_2d_intra_rate', 1e-6, intra_rate, log = True)
+                        desc_.append(height_ratio(log_to_frac(intra_rate, 1e-6, old_intra_rate)))
                         has_intra = True
 
-                    if any(0 < v < 1 for v in factor['medoid']):
+                    if any(0 < v < 1 for v in factor['medoid'].values()):
                         med_k, med_v = [], []
                         for k, v in factor['medoid'].items():
                             if v > 0:
                                 med_k.append(k)
-                                med_v.append(trial.suggest_float(k, 1e-6, 1e3, log = True))
+                                med_v.append(trial.suggest_float(corp + '.medoid.' + k, 1e-6, 1e3, log = True))
                         med_v = np.array(med_v)
                         med_v /= np.sum(med_v)
                         for k, v in zip(med_k, med_v):
@@ -288,7 +288,7 @@ class DMOperater(DO):
                     loss_weight['disco_2d_inter'] = 0
 
                 olr = specs['train']['learning_rate']
-                specs['train']['learning_rate'] = nlr = trial.suggest_loguniform('learning_rate', 1e-6, olr)
+                specs['train']['learning_rate'] = nlr = trial.suggest_float('learning_rate', 1e-6, olr, log = True)
                 self._train_materials = new_factor, self._train_materials[1]
                 self._train_config._nested.update(specs['train'])
                 return ''.join(desc) + ';' + loss_str + ';' + height_ratio(log_to_frac(nlr, 1e-6, olr))

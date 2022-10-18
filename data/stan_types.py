@@ -100,19 +100,20 @@ def check_data(save_dir, valid_sizes):
     return all(check_vocab(join(save_dir, vf), vs) for vf, vs in zip(vocab_files, valid_sizes))
 
 
+NEUTRAL = '2'
+NEG_SET = '01'
+POS_SET = '34'
 def neg_pos(head, data, _numerators, _denominators, offset):
     gr = head.label()
     pr = data.label().split('-')
-    neg_set = '01'
-    pos_set = '34'
-    neutral = pr[0] == '2'
+    neutral = pr[0] == NEUTRAL
     fine = gr == pr[0]
-    if gr in neg_set:
-        ternary = pr[0] in neg_set
-        binary = pr[1] in neg_set if neutral else ternary
-    elif gr in pos_set:
-        ternary = pr[0] in pos_set
-        binary = pr[1] in pos_set if neutral else ternary
+    if gr in NEG_SET:
+        ternary = pr[0] in NEG_SET
+        binary = pr[1] in NEG_SET if neutral else ternary
+    elif gr in POS_SET:
+        ternary = pr[0] in POS_SET
+        binary = pr[1] in POS_SET if neutral else ternary
     else:
         ternary = True
         binary = None
@@ -128,15 +129,29 @@ def neg_pos(head, data, _numerators, _denominators, offset):
         if binary:
             _numerators[0 + offset] += 1
 
+def flipped(tree, path = ()):
+    c_paths = []
+    if tree.height() > 2:
+        parent = tree.label()
+        for eid, _tree in enumerate(tree):
+            child = _tree.label()
+            c_path = path + (eid,)
+            c_paths.extend(flipped(_tree, c_path))
+            if parent == child or parent == NEUTRAL or child == NEUTRAL or any(parent in _set and child in _set for _set in (POS_SET, NEG_SET)):
+                continue
+            c_paths.append(c_path)
+    return c_paths
+
 from nltk.tree import Tree
 from collections import namedtuple
 SentimentScore = namedtuple('SentimentScore', 'D, T, Q, d, t, q')
     # 0: root_fine, 1: root_PnN 2: root_PN, 3: fine, 4: PnN 5: PN
-def calc_stan_accuracy(hfname, dfname, on_error):
+def calc_stan_accuracy(hfname, dfname, on_error, flip_lines = None):
     
     numerators   = [0,0,0,0,0,0]
     denominators = [0,0,0,0,0,0]
     sents = []
+    from data.continuous import draw_str_lines
     with open(hfname) as fh,\
          open(dfname) as fd:
         for sid, (head, data) in enumerate(zip(fh, fd)):
@@ -159,6 +174,9 @@ def calc_stan_accuracy(hfname, dfname, on_error):
             neg_pos(head, data, _numerators, _denominators, 0)
             for gt, pt in zip(head.subtrees(), data.subtrees()):
                 neg_pos(gt, pt, _numerators, _denominators, 3)
+            if flip_lines is not None and (flip_h := len(flipped(head))):
+                flip_d = len(flipped(data))
+                flip_lines[flip_h].append((flip_d, draw_str_lines(head), draw_str_lines(data)))
 
             scores = []
             for i, (n, d) in enumerate(zip(_numerators, _denominators)):

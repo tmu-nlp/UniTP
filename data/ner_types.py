@@ -53,10 +53,7 @@ C_IN = 'idner'
 C_EN = 'conll'
 E_NER = C_IN, C_EN
 
-from utils.types import make_common_data_config
-from utils.types import true_type, trapezoid_height, token_type, K_CORP
-from utils.types import vocab_size, train_batch_size, train_max_len, train_bucket_len, true_type, false_type
-from utils.types import valid_size, BaseType, rate_5
+from utils.types import false_type, rate_5
 
 augment = dict(a = rate_5, p = rate_5)
 ner_extension  = dict(break_o_chunk = rate_5,
@@ -65,10 +62,6 @@ ner_extension  = dict(break_o_chunk = rate_5,
                       insert        = augment,
                       substitute    = augment)
 
-ner_data_config = make_common_data_config(
-    with_bi_prefix = true_type,
-    with_pos_tag   = false_type)
-ner_data_config[K_CORP] = {C_IN: ner_extension, C_EN: ner_extension}
 
 from data.io import make_call_fasttext, check_fasttext, check_vocab, save_vocab, split_dict
 from data.stan_types import sstb_split # same name
