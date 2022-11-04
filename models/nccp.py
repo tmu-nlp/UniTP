@@ -220,7 +220,7 @@ class _SentimentCB(nn.Module):
         self._stem_layer = Stem(model_dim, **kwargs['orient_layer'])
         self._polar_layer = LinearM2(model_dim, hidden_dim, num_polars, polar_layer['activation'], polar_layer['drop_out'])
 
-    def forward(self, base_inputs, bottom_existence, ignore_logits = False, key = None, **kwargs):
+    def forward(self, bottom_existence, base_inputs, ignore_logits = False, key = None, **kwargs):
         sout = self._stem_layer(bottom_existence, base_inputs, **kwargs)
         return sout, self._polar_layer(sout.embedding)
 
@@ -241,8 +241,8 @@ class _SentimentOnSyntacticCB(ParsingOutputLayer):
         in_size = (model_dim, self.hidden_dim)[pfph]
         self._polar_layer = LinearM2(in_size, polar_layer['hidden_dim'], num_polars, polar_layer['activation'], polar_layer['drop_out'])
 
-    def forward(self, base_inputs, bottom_existence, ignore_logits = False, key = None, **kwargs):
-        sout, pout = super().forward(base_inputs, bottom_existence, ignore_logits, key, **kwargs)
+    def forward(self, bottom_existence, base_inputs, ignore_logits = False, key = None, **kwargs):
+        sout, pout = super().forward(bottom_existence, base_inputs, ignore_logits, key, **kwargs)
         if ignore_logits:
             return sout, self._polar_layer(pout if self._polar_from_parsing_hidden else sout.embedding)
         return sout, pout

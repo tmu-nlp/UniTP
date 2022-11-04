@@ -1,27 +1,58 @@
-from data.stutt_types import E_DISCONTINUOUS, dccp_data_config
+from data.stutt_types import E_DISCONTINUOUS, dccp_data_config, C_TIGER, C_DPTB
 
 CORPORA = set(E_DISCONTINUOUS)
 
 def get_configs(recorder = None):
-    from experiments.t_db.model import DB, model_type
-    from experiments.t_db.operator import DBOperator, train_type
+    from experiments.t_db.model import model_type
+    from experiments.t_db.operator import train_type
     if recorder is None:
         return dccp_data_config, model_type, train_type
-    
+    return make_instance(recorder)
+
+def make_instance(recorder, use_plm = False):
     from data.stutt import DTreeReader
     from utils.types import M_TRAIN, K_CORP
     from utils.param_ops import HParams
+    from data.utils import post_word_base, parsing_pnames
 
     data_config, model_config, train_config, _ = recorder.task_specs()
     stutt = HParams(data_config)
     readers = {}
+
+    if use_plm:
+        if len(data_config[K_CORP]) == 1:
+            from models.dccp import _DB
+            from models.plm import XLNetDatasetHelper, XLNetLeaves, GBertDatasetHelper, GBertLeaves
+            if C_TIGER in data_config[K_CORP]:
+                DatasetHelper = GBertDatasetHelper
+                class DB(GBertLeaves, _DB):
+                    def forward(self, *args, **kw_args):
+                        return super().forward(*args, **kw_args, squeeze_existence = True)
+
+            elif C_DPTB in data_config[K_CORP]:
+                DatasetHelper = XLNetDatasetHelper
+                class DB(XLNetLeaves, _DB):
+                    def forward(self, *args, **kw_args):
+                        return super().forward(*args, **kw_args, squeeze_existence = True)
+            else:
+                raise ValueError(', '.join(data_config[K_CORP].keys()))
+        else:
+            raise ValueError(', '.join(data_config[K_CORP].keys()))
+        from experiments.t_plm_db.operator import DBOperator_lr as DBOperator
+        pnames = parsing_pnames[2:]
+    else:
+        from experiments.t_db.operator import DBOperator
+        from experiments.t_db.model import DB
+        DatasetHelper = None
+        pnames = parsing_pnames
     
     for corp_name, dc in data_config[K_CORP].items():
         dc['token'] = 'word'
         readers[corp_name] = DTreeReader(corp_name,
             HParams(dc),
             stutt.unify_sub,
-            stutt.nil_pad)
+            stutt.nil_pad,
+            DatasetHelper)
 
     def get_datasets(mode, new_factor = None):
         datasets = {}
@@ -44,8 +75,7 @@ def get_configs(recorder = None):
                 datasets[corp_name] = reader.binary(mode, stutt.batch_size << 1, 0)
         return datasets
 
-    from data.utils import post_word_base
-    model, i2vs = post_word_base(DB, model_config, data_config[K_CORP], readers)
+    model, i2vs = post_word_base(DB, model_config, data_config[K_CORP], readers, pnames)
     from data.cross.mp import BxDM
     get_dm = lambda num_threads: BxDM(stutt.batch_size << 1, i2vs, num_threads)
     return DBOperator(model, get_datasets, recorder, i2vs, get_dm, train_config, recorder.evalb)

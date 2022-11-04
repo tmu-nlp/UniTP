@@ -111,7 +111,7 @@ class InputLeaves(nn.Module):
         static_emb = self._dp_layer(static_emb)
         if self._act_pre_trained is not None:
             static_emb = self._act_pre_trained(static_emb)
-        return static_emb, bottom_existence
+        return bottom_existence, static_emb
 
 
 state_usage = BaseType(None, as_index = False, as_exception = True,
@@ -231,7 +231,7 @@ class InputLayer(nn.Module):
         assert isinstance(squeeze_existence, bool)
         batch_size, batch_len = word_idx.shape
         emb = self._input_emb if key is None else self._input_emb[key]
-        static, bottom_existence = emb(word_idx, tune_pre_trained)
+        bottom_existence, static = emb(word_idx, tune_pre_trained)
         if self._contextualize is None:
             base_inputs = static
             cell_hidden = None
@@ -240,12 +240,12 @@ class InputLayer(nn.Module):
             if self._half_dim_diff:
                 zero_pads = torch.zeros(batch_size, batch_len, self._half_dim_diff, dtype = static.dtype, device = static.device)
                 static = torch.cat([zero_pads, static, zero_pads], dim = 2)
-            base_inputs  = dynamic * bottom_existence
+            base_inputs = dynamic * bottom_existence
             if self._combine_static is not None:
                 base_inputs = self._combine_static.compose(static, base_inputs, None)
         if squeeze_existence:
             bottom_existence = bottom_existence.squeeze(dim = 2)
-        base_returns = super().forward(base_inputs, bottom_existence, ignore_logits, key, **kw_args)
+        base_returns = super().forward(bottom_existence, base_inputs, ignore_logits, key, **kw_args)
         return (BottomOutput(batch_size, batch_len, static, cell_hidden),) + base_returns
 
     def get_static_pca(self, key = None):
@@ -346,8 +346,8 @@ class ParsingOutputLayer(nn.Module):
         self._model_dim = model_dim
 
     def forward(self,
-                base_inputs,
                 bottom_existence,
+                base_inputs,
                 ignore_logits = False,
                 key = None,
                 tag_layer = 0,
@@ -404,11 +404,16 @@ class ParsingOutputLayer(nn.Module):
     def stem(self):
         return self._stem_layer
 
-    def get_losses(self, batch, tag_logits, label_logits, weight, key = None, extra_pad = 0):
-        label_height_mask = get_label_height_mask(batch, extra_pad = extra_pad)
-        assert label_height_mask[:, -1].any()
-        if weight is not None:
-            label_height_mask = label_height_mask * weight
+    def get_losses(self, batch, tag_logits, label_logits, weight, key = None, extra_pad = 0, *, height_mask = True):
+        if height_mask:
+            label_height_mask = get_label_height_mask(batch, extra_pad = extra_pad)
+            assert label_height_mask[:, -1].any()
+            if weight is not None:
+                label_height_mask = label_height_mask * weight
+        elif weight is None:
+            label_height_mask = None
+        else:
+            label_height_mask = weight
 
         if self._logit_max:
             tag_fn = label_fn = None

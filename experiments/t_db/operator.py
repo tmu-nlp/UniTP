@@ -241,8 +241,9 @@ class DBOperator(DO):
                         desc_.append(height_ratio(binarization))
                         binarization = level, F_CNF, binarization
                     else:
-                        level = trial.suggest_categorical(corp + '.l', [F_SENTENCE, F_PHRASE])
-                        desc_.append(level[0])
+                        if level == F_PHRASE:
+                            level = trial.suggest_categorical(corp + '.l', [F_SENTENCE, F_PHRASE])
+                            desc_.append(level[0])
                         beta_l = trial.suggest_float(corp + '.beta_l', 1e-2, 1e2, log = True)
                         beta_r = trial.suggest_float(corp + '.beta_r', 1e-2, 1e2, log = True)
                         factor['binarization'] = f'{level} {beta_l} {beta_r}'

@@ -392,7 +392,7 @@ def parse_export_sample(lines, fallback = None, dptb_split = False):
     return bottom, top_down
 
 def export_string(sent_id, bottom, top_down, root_id = 0):
-    lines = f'#BOS {sent_id}\n'
+    lines = [f'#BOS {sent_id}']
     bottom_up = {}
     has_vroot = False
     assert len(bottom) < C_TIGER_NT_START, 'TODO: let discodop support large bottom'
@@ -408,15 +408,24 @@ def export_string(sent_id, bottom, top_down, root_id = 0):
             bottom_up[cid] = pid
     for tid, word, tag in bottom:
         pid = bottom_up.pop(tid)
-        lines += f'{word}\t\t\t{tag}\t--\t--\t{pid}\n'
+        lines.append(f'{word}\t\t\t{tag}\t--\t--\t{pid}')
     bottom_up = list(bottom_up.items())
     bottom_up.reverse()
     while bottom_up:
         cid, pid = bottom_up.pop()
-        lines += f'#{node_dict[cid]}\t\t\t{top_down[cid].label}\t--\t--\t{pid}\n'
+        lines.append(f'#{node_dict[cid]}\t\t\t{top_down[cid].label}\t--\t--\t{pid}')
     if not has_vroot:
-        lines+= f'#{node_dict[root_id]}\t\t\t{top_down[root_id].label}\t--\t--\t0\n'
-    return lines + f'#EOS {sent_id}'
+        lines.append(f'#{node_dict[root_id]}\t\t\t{top_down[root_id].label}\t--\t--\t0')
+    lines.append(f'#EOS {sent_id}')
+    return '\n'.join(lines)
+
+def export_failed_string(sent_id, bottom):
+    lines = [f'#BOS {sent_id}']
+    for tid, word, tag in bottom:
+        lines.append(f'{word}\t\t\t{tag}\t--\t--\t{C_TIGER_NT_START}')
+    lines.append(f'#{C_TIGER_NT_START}\t\t\tVROOT\t--\t--\t0')
+    lines.append(f'#EOS {sent_id}')
+    return '\n'.join(lines)
 
 class ExportReader:
     def __init__(self, fname, *la, **ka):

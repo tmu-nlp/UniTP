@@ -238,6 +238,8 @@ class DMOperater(DO):
                     desc_ = [corp + '.']
                     factor['esub'] = esub = trial.suggest_float(corp + '.esub', 0.0, 1.0)
                     factor['msub'] = msub = trial.suggest_float(corp + '.msub', 0.0, 1.0)
+                    factor['max_interply'] = mip = trial.suggest_int('max_inter_height', 0, 9)
+                    desc_.append(f'h{mip}')
                     if esub or msub:
                         desc_.append(height_ratio(esub) + height_ratio(msub))
                     
@@ -265,7 +267,7 @@ class DMOperater(DO):
                             factor['medoid'][k] = float(v)
                         desc_.append('[' + ''.join(height_ratio(v) for v in med_v) + ']')
                         
-                    new_factor[corp] = factor['medoid'], esub, msub, intra_rate, inter_rate
+                    new_factor[corp] = factor['medoid'], esub, msub, mip, intra_rate, inter_rate
                     desc.append(''.join(desc_))
                     
                 loss_weight = specs['train']['loss_weight']

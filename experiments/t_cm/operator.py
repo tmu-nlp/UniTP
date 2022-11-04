@@ -6,7 +6,7 @@ from models.utils import fraction, mean_stdev
 from models.loss import binary_cross_entropy, hinge_loss
 from experiments.helper.co import CO, CVP
 from experiments.helper import make_tensors, speed_logg, continuous_score_desc_logg
-from data.penn_types import C_PTB
+from data.penn_types import C_PTB, E_NER
 
 
 train_type = dict(loss_weight = dict(tag   = BaseType(0.2, validator = frac_open_0),
@@ -18,42 +18,12 @@ train_type = dict(loss_weight = dict(tag   = BaseType(0.2, validator = frac_open
                                           lr_factor = frac_06))
                 #   keep_low_attention_rate = BaseType(1.0, validator = frac_close),
 
-def serialize_matrix(m, skip = None):
-    for rid, row in enumerate(m):
-        offset = 0 if skip is None else (rid + skip)
-        for cid, val in enumerate(row[offset:]):
-            yield rid, offset + cid, float(val)
-
-def sort_matrix(m, lhs, rhs, higher_better):
-    lines = []
-    n = max(len(n) for n in lhs) + 1
-    for rid, row in enumerate(m):
-        line = []
-        for cid, _ in sorted(enumerate(row), key = lambda x: x[1], reverse = higher_better):
-            line.append(rhs[cid])
-        lines.append(lhs[rid].ljust(n) + ': ' + ' '.join(line))
-    return '\n'.join(lines)
-
-def save_txt(fname, append, lhv, rhv, dst, cos):
-    with open(fname, ('w', 'a+')[append]) as fw:
-        if append:
-            fw.write('\n\n')
-            lhv, rhv = lhv.label, rhv.label
-            n = 'Label'
-        else:
-            lhv, rhv = lhv.tag, rhv.tag
-            n = 'Tag'
-        fw.write(f'Distance\n  {n}:\n')
-        fw.write(sort_matrix(dst, lhv, rhv, False))
-        fw.write(f'\nCosine\n  {n}:\n')
-        fw.write(sort_matrix(cos, lhv, rhv, True))
-
 class CMOperator(CO):
     def _step(self, mode, ds_name, batch, batch_id = None):
 
         batch['key'] = corp = ds_name if self.multi_corp else None
         if mode == M_TRAIN:
-            batch['supervision'] = gold_chunks = batch['chunk'][:, :-2] # top 2 are stable ones and useless
+            batch['supervision'] = gold_chunks = batch['chunk']
             # supervised_signals['keep_low_attention_rate'] = self._train_config.keep_low_attention_rate
         elif 'tag_layer' in batch:
             batch['bottom_supervision'] = batch['tag_layer'], batch['char_chunk']
@@ -70,15 +40,25 @@ class CMOperator(CO):
         if not self._train_config.chunk_hinge_loss:
             chunk_logits = self._sigmoid(chunk_logits)
 
+        if ds_name in E_NER:
+            if batch['n_layers'] == 1:
+                label_logits = label_logits[:, tag_end:].contiguous()
+                label_existence = existences[:, tag_end:]
+            else: # bio 1-1 labelling
+                label_logits = label_logits[:, :tag_end].contiguous()
+                label_existence = existences[:, :tag_end]
+        else:
+            label_existence = existences[:, tag_start:]
+
         if mode == M_TRAIN:
             tags    = self._model.get_decision(tag_logits  )
             labels  = self._model.get_decision(label_logits)
             tag_mis      = (tags    != batch['tag'  ])
             label_mis    = (labels  != batch['label'])
             tag_weight   = (  tag_mis | existences[:, tag_start: tag_end])
-            label_weight = (label_mis | existences[:, tag_start:])
+            label_weight = (label_mis | label_existence)
             
-            tag_loss, label_loss = self._model.get_losses(batch, tag_logits, label_logits, label_weight, corp)
+            tag_loss, label_loss = self._model.get_losses(batch, tag_logits, label_logits, label_weight, corp, height_mask = ds_name not in E_NER)
             if self._train_config.chunk_hinge_loss:
                 chunk_loss = hinge_loss(chunk_logits, gold_chunks, None)
             else:
@@ -112,7 +92,9 @@ class CMOperator(CO):
             tags   = self._model.get_decision(tag_logits  )
             labels = self._model.get_decision(label_logits)
             b_data = [tags.type(torch.short), labels.type(torch.short), chunks, stem.segment, batch_segment, batch.get('tag_layer', 0)]
-            if serial: # [tree, length, token, tag, label, chunk, b_seg, segment, weight, vote]
+            if ds_name in E_NER:
+                b_data += [tag_end]
+            elif serial: # [tree, length, token, tag, label, chunk, b_seg, segment, weight, vote]
                 if draw_weights:
                     b_data.append(mean_stdev(weight).type(torch.float16))
                     b_data.append(None if chunk_vote is None else chunk_vote.type(torch.float16))
@@ -165,57 +147,32 @@ class CMOperator(CO):
             i2vs = self.i2vs
         work_dir = self.recorder.create_join(folder)
         
-        if serial := (draw_weights or flush_heads or self.dm is None):
-            vis = CMVA(epoch,
-                       work_dir,
-                       self._evalb,
-                       i2vs,
-                       self.recorder.log,
-                       ds_name == C_PTB,
-                       draw_weights,
-                       length_bins,
-                       flush_heads)
+        if serial := (draw_weights or flush_heads or self.dm is None or ds_name in E_NER):
+            if ds_name in E_NER:
+                vis = NERVA(
+                    epoch,
+                    work_dir,
+                    self._evalb,
+                    i2vs,
+                    self.recorder.log,
+                    flush_heads
+                )
+            else:
+                vis = CMVA(
+                    epoch,
+                    work_dir,
+                    self._evalb,
+                    i2vs,
+                    self.recorder.log,
+                    ds_name == C_PTB,
+                    draw_weights,
+                    length_bins,
+                    flush_heads
+                )
         else:
             vis = CMVP(epoch, work_dir, self._evalb, self.recorder.log, self.dm, m_corp)
         vis = VisRunner(vis, async_ = serial) # wrapper
         self._vis_mode = vis, use_test_set, final_test, serial, draw_weights
-
-        if final_test and self.multi_corp:
-            work_dir = self._recorder.create_join('multilingual')
-            # save vocabulary
-            for corp, i2vs in self.i2vs.items():
-                with open(join(work_dir, 'tag.' + corp), 'w') as fw:
-                    fw.write('\n'.join(i2vs.tag))
-                with open(join(work_dir, 'label.' + corp), 'w') as fw:
-                    fw.write('\n'.join(i2vs.label))
-            # save Tag/Label
-            for prefix in ('tag', 'label'):
-                if get_label := prefix == 'label':
-                    fn = self._model.get_multilingual_label_matrices
-                else:
-                    fn = self._model.get_multilingual_tag_matrices
-                for lhs, rhs, dst, cos in fn():
-                    # save matrix
-                    #  # 'a+' if get_label else 'w' lhv, rhv = self.i2vs[lhs], self.i2vs[rhs]
-                    if lhs == rhs:
-                        fname = lhs
-                        save_txt(join(work_dir, lhs + '.txt'), get_label, self.i2vs[lhs], self.i2vs[lhs], dst, cos)
-                    else:
-                        fname = lhs + '.' + rhs
-                        save_txt(join(work_dir, lhs + '.' + rhs + '.txt'), get_label, self.i2vs[lhs], self.i2vs[rhs], dst, cos)
-                        save_txt(join(work_dir, rhs + '.' + lhs + '.txt'), get_label, self.i2vs[rhs], self.i2vs[lhs], dst.T, cos.T)
-                    with open(join(work_dir, prefix + fname + '.csv'), 'w') as fw:
-                        fw.write('type,row,col,value\n')
-                        if lhs == rhs:
-                            for r, c, v in serialize_matrix(dst, 1):
-                                fw.write(f'd,{r},{c},{v}\n')
-                            for r, c, v in serialize_matrix(cos, 1):
-                                fw.write(f'c,{c},{r},{v}\n')
-                        else:
-                            for r, c, v in serialize_matrix(dst):
-                                fw.write(f'd,{r},{c},{v}\n')
-                            for r, c, v in serialize_matrix(cos):
-                                fw.write(f'c,{r},{c},{v}\n')
 
 
     def _after_validation(self, ds_name, count, seconds):
@@ -433,3 +390,104 @@ class CMVP(CVP):
         (_, _, token, tag, label, chunk, batch_segment, segment, tag_layer) = batch
         dm, _, _, corp_key = self._args
         dm.batch(batch_id, tag_layer, batch_segment, token, tag, label, chunk, segment, key = corp_key)
+
+
+import numpy as np
+from data.ner_types import bio_to_tree, ner_to_tree, recover_bio_prefix
+def batch_trees(b_length, b_word, b_tag, b_label, b_fence, i2vs, b_weight = None, **kw_args):
+    has_tag = b_tag is not None
+    has_bio = b_fence is None
+    for sid, (ln, word) in enumerate(zip(b_length, b_word)):
+        wd = [i2vs.token[i] for i in word [     :ln]]
+        ps = [i2vs  .tag[i] for i in b_tag[sid, :ln]] if has_tag else None
+        
+        if has_bio:
+            bi = [i2vs.label[i] for i in b_label[sid, :ln]]
+            yield bio_to_tree(wd, bi, ps, **kw_args), (wd, bi)
+        else:
+            nr = [i2vs.label[i] for i in b_label[sid, :b_fence[sid, 1:].sum()]]
+            fence, = np.where(b_fence[sid]) #.nonzero() in another format
+            weights = b_weight[sid, :ln] if b_weight is not None else None
+            bi = recover_bio_prefix(fence, nr)
+            yield ner_to_tree(wd, nr, fence, ps, weights = weights, **kw_args), (wd, bi)
+
+from data.continuous import draw_str_lines
+from utils.file_io import join, isfile, remove
+from utils.shell_io import parseval, rpt_summary
+from nltk.tree import Tree
+class NERVA(BaseVis):
+    def __init__(self, epoch, work_dir, evalb, i2vs, logger, flush_heads = False):
+        super().__init__(epoch, work_dir, i2vs)
+        self._evalb_i2vs_logger = evalb, i2vs, logger
+        htree = self.join('head.tree')
+        dtree = self.join(f'data.{epoch}.tree')
+        self._art_lines = []
+        self._art = self.join(f'data.{epoch}.art')
+        self._err = self.join(f'data.{epoch}.rpt')
+        self._fnames = htree, dtree
+        self._head_tree = flush_heads
+        self._data_tree = None
+
+    def _before(self):
+        htree, dtree = self._fnames
+        if self._head_tree:
+            self._head_tree = open(htree, 'w')
+        self._data_tree = open(dtree, 'w')
+
+    def __del__(self):
+        self.close()
+
+    def close(self):
+        if self._head_tree: self._head_tree.close()
+        if self._data_tree: self._data_tree.close()
+
+    def _process(self, _, batch):
+        _, i2vs, _ = self._evalb_i2vs_logger
+        (trees, length, token, tag, label, chunk, batch_segment, segment, tag_layer, tag_end) = batch
+        if self._head_tree:
+            for tree in trees:
+                print(' '.join(str(tree).split()), file = self._head_tree)
+
+        for tree, _ in batch_trees(length, token, tag, label, chunk, i2vs):
+            print(' '.join(str(tree).split()), file = self._data_tree)
+            self._art_lines.append('\n'.join(draw_str_lines(tree)))
+
+    def _after(self): # TODO TODO TODO length or num_ners
+        # call evalb to data.emm.rpt return the results, and time counted
+        # provide key value in results
+        if self._head_tree:
+            self._head_tree.close()
+        self._data_tree.close()
+        evalb, _, logger = self._evalb_i2vs_logger
+        proc = parseval(evalb, *self._fnames)
+        report = proc.stdout.decode()
+        s_rows, scores = rpt_summary(report, True, True)
+        errors = proc.stderr.decode().split('\n')
+        assert errors.pop() == ''
+        num_errors = len(errors)
+        if num_errors:
+            logger(f'  {num_errors} errors from evalb')
+            for e, error in enumerate(errors[:10]):
+                logger(f'    {e}. ' + error)
+            if num_errors > 10:
+                logger('     ....')
+            logger(f'  (Check {self._err} for details.)')
+        with open(self._err, 'w') as fw:
+            fw.write(report)
+
+        self._head_tree = self._data_tree = None
+        with open(self._fnames[0]) as fr, open(self._art, 'w') as fw:
+            for gold_tree, pred_tree, s_row in zip(fr, self._art_lines, s_rows):
+                if not s_row:
+                    breakpoint()
+                lines = f'Sent #{s_row[0]}:'
+                if s_row[3] == s_row[4] == 0 or s_row[3] == s_row[4] == 100:
+                    lines += ' EXACT MATCH\n' + pred_tree + '\n\n\n'
+                else:
+                    gold_tree = Tree.fromstring(gold_tree)
+                    gold_tree.set_label('Gold')
+                    lines += '\n' + '\n'.join(draw_str_lines(gold_tree))
+                    lines += '\n\n' + pred_tree + '\n\n\n'
+                fw.write(lines)
+
+        return continuous_score_desc_logg(scores) + (None,)

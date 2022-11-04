@@ -1,9 +1,10 @@
-def read_dataset(fname, n, skip_lines = 0):
+def read_dataset(fname, n):
     sent = tuple([] for _ in range(n))
     with open(fname) as fr:
-        for _ in range(skip_lines):
-            next(fr)
         for line in fr:
+            if line.startswith('-DOCSTART-'):
+                assert next(fr) == '\n'
+                continue
             if line == '\n':
                 yield sent
                 sent = tuple([] for _ in range(n))
@@ -53,7 +54,7 @@ C_IN = 'idner'
 C_EN = 'conll'
 E_NER = C_IN, C_EN
 
-from utils.types import false_type, rate_5
+from utils.types import true_type, false_type, rate_5, K_CORP
 
 augment = dict(a = rate_5, p = rate_5)
 ner_extension  = dict(break_o_chunk = rate_5,
@@ -61,6 +62,14 @@ ner_extension  = dict(break_o_chunk = rate_5,
                       delete        = augment,
                       insert        = augment,
                       substitute    = augment)
+def fill_accp_data_config(accp_data_config):
+    accp_data_config['ner'] = dict(with_bi_prefix = true_type,
+                                   with_pos_tag   = true_type)
+    corp_configs = {
+        C_IN: dict(extension = ner_extension), 
+        C_EN: dict(extension = dict(with_o_chunk = true_type))
+    }
+    accp_data_config[K_CORP].update(corp_configs)
 
 
 from data.io import make_call_fasttext, check_fasttext, check_vocab, save_vocab, split_dict
@@ -244,12 +253,13 @@ def substitute_o(old_ner, old_fence, n_indices, o_idx):
     return new_ner, new_fence
 
 from nltk.tree import Tree
+from data import brackets2RB
 def bio_to_tree(words, bio_tags, pos_tags = None, show_internal = False, root_label = 'TOP'): # TODO perserve bio
     bottom = []
     last_ner = last_chunk = None
     prefixes = ''
     for nid, (word, bio) in enumerate(zip(words, bio_tags)):
-        leaf = Tree(f'#{nid+1}' if pos_tags is None else pos_tags[nid], [word])
+        leaf = Tree(f'#{nid+1}' if pos_tags is None else brackets2RB(pos_tags[nid]), [brackets2RB(word, True)])
         prefix, ner = bio.split('-') if '-' in bio else (bio, None)
         if last_ner == ner and prefix != 'B':
             if ner is None:
@@ -274,7 +284,7 @@ def bio_to_tree(words, bio_tags, pos_tags = None, show_internal = False, root_la
     return Tree(root_label, bottom)
 
 def ner_to_tree(words, ner_tags, fences, pos_tags = None, show_internal = False, weights = None, root_label = 'TOP'):
-    leaves = [Tree(f'#{nid+1}' if pos_tags is None else pos_tags[nid], [word]) for nid, word in enumerate(words)]
+    leaves = [Tree(f'#{nid+1}' if pos_tags is None else brackets2RB(pos_tags[nid]), [brackets2RB(word, True)]) for nid, word in enumerate(words)]
     bottom = []
     all_os = all(x == 'O' for x in ner_tags)
     for ner, start, end in zip(ner_tags, fences, fences[1:]):

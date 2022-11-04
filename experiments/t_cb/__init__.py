@@ -4,10 +4,13 @@ CORPORA = set(E_BINARY)
 
 def get_configs(recorder = None):
     from experiments.t_cb.model import model_type
-    from experiments.t_cb.operator import CBOperator, train_type
+    from experiments.t_cb.operator import train_type
     if recorder is None:
         return nccp_data_config, model_type, train_type
-    
+    return make_instance(recorder)
+
+def make_instance(recorder, xlnet_helper = None):
+    from experiments.t_cb.operator import CBOperator
     from data.penn import PennReader
     from data.stan import StanReader
     from utils.types import M_TRAIN, K_CORP
@@ -21,13 +24,14 @@ def get_configs(recorder = None):
     for corp_name, dc in data_config[K_CORP].items():
         if corp_name == C_SSTB:
             has_sstb = True
-            reader = StanReader(HParams(dc))
+            reader = StanReader(HParams(dc), xlnet_helper)
         else:
             has_penn = True
             reader = PennReader(corp_name,
                 HParams(dc, fallback_to_none = True),
                 penn.unify_sub,
-                penn.nil_pad)
+                penn.nil_pad,
+                xlnet_helper)
         readers[corp_name] = reader
 
     if not has_penn:
@@ -60,17 +64,29 @@ def get_configs(recorder = None):
                 datasets[corp_name] = reader.binary(mode, penn.condense_per, penn.batch_size << 1, 0)
         return datasets
 
-    from data.utils import post_word_base, parsing_pnames, sentiment_pnames, parsing_sentiment_pnames
+    from data.utils import post_word_base, parsing_pnames, sentiment_pnames, parsing_sentiment_pnames, base_pnames
     if has_sstb:
         if has_penn:
-            from experiments.t_cb.model import SentimentOnSyntacticCB as CB
-            pnames = parsing_sentiment_pnames
+            if xlnet_helper is None:
+                from experiments.t_cb.model import SentimentOnSyntacticCB as CB
+                pnames = parsing_sentiment_pnames
+            else:
+                from experiments.t_plm_cb.model import XLNetSentimentOnSyntacticCB as CB
+                pnames = parsing_sentiment_pnames - set(base_pnames)
         else:
-            from experiments.t_cb.model import SentimentCB as CB
-            pnames = sentiment_pnames
+            if xlnet_helper is None:
+                from experiments.t_cb.model import SentimentCB as CB
+                pnames = sentiment_pnames
+            else:
+                from experiments.t_plm_cb.model import XLNetSentimentCB as CB
+                pnames = sentiment_pnames[2:]
     else:
-        from experiments.t_cb.model import CB
-        pnames = parsing_pnames
+        if xlnet_helper is None:
+            from experiments.t_cb.model import CB
+            pnames = parsing_pnames
+        else:
+            from experiments.t_plm_cb.model import XLNetCB as CB
+            pnames = parsing_pnames[2:]
 
     if has_penn:
         if not penn.condense_per:

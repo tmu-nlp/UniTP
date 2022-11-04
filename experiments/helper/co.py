@@ -1,7 +1,7 @@
 from torch import nn
 from utils.operator import Operator
 from utils.file_io import join, listdir, remove, isdir
-from experiments.helper import speed_logg, WarmOptimHelper
+from experiments.helper import speed_logg, WarmOptimHelper, write_multilingual
 from data.stan_types import C_SSTB
 
 class CO(Operator):
@@ -78,10 +78,12 @@ class CO(Operator):
             self.recorder.tensorboard(self.global_step, prefix + '/%s', suffix, **key,
                                       SamplePerSec = None if serial else speed_dm)
         scores['speed'] = speed_outer
-        self._vis_mode = None
+        self._vis_mode = final_test
         return scores, desc + _desc, logg + _logg
 
     def combine_scores_and_decide_key(self, epoch, ds_scores):
+        if self._vis_mode and self.multi_corp:
+            write_multilingual(self._recorder.create_join('multilingual'), self.i2vs, self._model)
         key = []
         for ds_name, ds_score in ds_scores.items():
             if ds_name != C_SSTB:

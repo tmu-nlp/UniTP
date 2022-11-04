@@ -1,10 +1,12 @@
 from data.stan_types import C_SSTB
+from data.ner_types import E_NER, fill_accp_data_config
 C_PTB = 'ptb'
 C_CTB = 'ctb'
 C_KTB = 'ktb'
 C_NPCMJ = 'npcmj'
 E_CONTINUE = C_PTB, C_CTB, C_KTB, C_NPCMJ
 E_BINARY = E_CONTINUE + (C_SSTB,)
+E_MULTIB = E_CONTINUE + E_NER
 
 from data.io import make_call_fasttext, check_vocab, split_dict
 build_params = {C_PTB: split_dict('2-21',             '22',      '23'    ),
@@ -16,7 +18,7 @@ ft_bin = {C_PTB: 'en', C_CTB: 'zh', C_KTB: 'ja', C_NPCMJ: 'ja'}
 call_fasttext = make_call_fasttext(ft_bin)
 
 from utils.types import make_parse_data_config, make_parse_factor, make_beta, F_CNF, F_SENTENCE, make_sentiment_factor
-from utils.types import true_type, trapezoid_height, token_type, K_CORP
+from utils.types import true_type, false_type, trapezoid_height, token_type, K_CORP
 
 def nccp_factor(*level_left_right):
     return make_parse_factor(binarization = make_beta(*level_left_right))
@@ -37,8 +39,9 @@ accp_data_config[K_CORP] = {
     C_PTB: make_parse_factor(token = token_type),
     C_CTB: make_parse_factor(token = token_type),
     C_KTB: make_parse_factor(token = token_type),
-    C_NPCMJ: make_parse_factor(token = token_type)
+    C_NPCMJ: make_parse_factor(token = token_type),
 }
+fill_accp_data_config(accp_data_config)
 
 from utils.str_ops import StringProgressBar, cat_lines
 from utils.shell_io import byte_style
@@ -56,33 +59,27 @@ def gen_trees(fpath, keep_str):
     def wrap_tree():
         if keep_str:
             return cumu_string
-        tree = Tree.fromstring(cumu_string)
-        if tree.label() == '':
+        if (tree := Tree.fromstring(cumu_string)).label() == '':
             tree = tree[0]
         return tree
 
     with open(fpath) as fr:
-        cumu_string = None
+        cumu_string = ''
+        cumu_lrb = cumu_rrb = 0
         for line in fr:
-            if not keep_str:
-                line = line.rstrip()
-            if not line: continue
-            if line[0] == '(': # end
-                if cumu_string is not None:
-                    if ')' not in line: continue
-                    yield wrap_tree()
-                cumu_string = line # cumu_starte = eid
-            elif line[0] == '<' or len(line) <= 1: # start or end
-                if cumu_string is None:
-                    continue # not start yet
-                yield wrap_tree()
-                cumu_string = None # cumu_starte = eid
-            elif cumu_string is not None:
+            if line[0] == '<':
+                continue
+            lrb = sum(c == '(' for c in line)
+            rrb = sum(c == ')' for c in line)
+            if lrb or rrb:
+                cumu_lrb += lrb
+                cumu_rrb += rrb
                 cumu_string += line
-    if cumu_string is not None:
-        if keep_str:
-            cumu_string += '\n'
-        yield wrap_tree()
+                if cumu_lrb == cumu_rrb:
+                    yield wrap_tree()
+                    cumu_lrb = cumu_rrb = 0
+                    cumu_string = ''
+    assert not cumu_string
 
 class CorpusReader:
     def __init__(self, path):

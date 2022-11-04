@@ -9,8 +9,13 @@ from os import listdir
 from os.path import dirname
 types = tuple(f[:-3] for f in listdir(dirname(__file__)) if f.endswith('_types.py'))
 
-def brackets2RB(w):
-    return {'(': '-LRB-', ')': '-RRB-'}.get(w, w)
+def brackets2RB(w, char = False):
+    if char:
+        if '(' in w: w = w.replace('(', '-LRB-')
+        if ')' in w: w = w.replace(')', '-RRB-')
+    else:
+        w = {'(': '-LRB-', ')': '-RRB-'}.get(w, w)
+    return w
 
 def RB2brackets(w):
     return {'-LRB-': '(', '-RRB-': ')'}.get(w, w)

@@ -69,7 +69,7 @@ class DiscontinuousDataset(LengthOrderedDataset):
         super().__init__(heads, label, length, factor, min_len, max_len, extra_text_helper)
         self._args = token, tag, signals, signal_kwargs, binary, b_pad_shuffle_or_m_fence_intra_inter, self_check_i2vs, extra
 
-    def reset_multib_factor(self, factor, esub, msub, *intra_inter_rates, initialize = False):
+    def reset_multib_factor(self, factor, esub, msub, *height_intra_inter_rates, initialize = False):
         non_random = bidict({e:f for e, (f, p) in enumerate(factor.items()) if f != F_RANDOM and p > 0})
         if has_static_n := (msub in (0, 1) and sum(non_random)):
             hy_factor = {}
@@ -79,25 +79,27 @@ class DiscontinuousDataset(LengthOrderedDataset):
             if rand_p := factor.get(F_RANDOM):
                 hy_factor[-1] = rand_p * (1 - esub)
                 hy_factor[-2] = rand_p * esub
+        else:
+            esub_factor = {0: 1 - esub, 1: esub}
 
         if initialize:
+            assert not height_intra_inter_rates
             if has_static_n:
                 cache_fn = lambda n: tuple([None] * (has_static_n << 1) for _ in range(n))
             else: # pure random
-                return {0: 1 - esub, 1: esub}, msub
-
+                return esub_factor, msub
             return hy_factor, HybridM(non_random, msub, cache_fn(initialize))
-        old_args = self._args
+        assert len(height_intra_inter_rates) == 3
         if not has_static_n:
-            self._args = self._args[:-1] + (msub,)
+            extra = msub
         elif isinstance((old := self._args[-1]), HybridM):
             if old.non_random == non_random:
                 cache = old.cache
             else:
                 cache = cache_fn(len(self._args[0]))
-            self._args = self._args[:-1] + (HybridM(non_random, msub, cache),)
-        f, h, _, _ = self._args[-3] # 1, + (2, 3, 4) fails for unary +
-        self._args = self._args[:-3] + (((f, h) + intra_inter_rates),) + self._args[-2:]
+            extra = HybridM(non_random, msub, cache)
+        self._args = self._args[:-3] + (((self._args[-3][0],) + height_intra_inter_rates), self._args[-2], extra)
+        super()._reset_factors(hy_factor if has_static_n else esub_factor)
 
     def at_idx(self, idx, factor, helper_outputs):
         token, tag, signals, signal_kwargs, binary, _, _, extra = self._args

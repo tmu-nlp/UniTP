@@ -13,7 +13,7 @@ plm_leaves_config = dict(contextual   = rnn_module_type,
                          sum_weighted_layers = true_type)
 
 from models.utils import condense_helper, condense_left
-from models.backend import torch, nn, init, math
+from models.backend import torch, nn, init, math, BottomOutput
 class PreLeaves(nn.Module):
     has_static_pca = False # class property
 
@@ -27,8 +27,9 @@ class PreLeaves(nn.Module):
                  activation,
                  paddings,
                  subword_proc,
-                 sum_weighted_layers):
-        super().__init__() #  
+                 sum_weighted_layers,
+                 **kwargs_forwarding):
+        super().__init__(model_dim, **kwargs_forwarding) # paddings = paddings, 
 
         from transformers import AutoModel
         self._pre_model = AutoModel.from_pretrained(model_key_name)
@@ -79,7 +80,9 @@ class PreLeaves(nn.Module):
     def embedding_dim(self):
         return self._word_dim
 
-    def forward(self, word_idx, offset, plm_idx, plm_start, tune_pre_trained = False):
+    def forward(self, word_idx, offset, plm_idx, plm_start, squeeze_existence,
+               tune_pre_trained = False, ignore_logits = False, 
+               **kwargs):
         batch_size, batch_len = word_idx.shape # just provide shape and nil info
 
         if tune_pre_trained:
@@ -149,21 +152,48 @@ class PreLeaves(nn.Module):
             non_nil = (word_idx > 0)
             non_nil.unsqueeze_(dim = 2)
             xl_base = xl_base * non_nil # in-place fails at FloatTensor
-        return batch_size, batch_len, xl_base, non_nil # just dynamic
+        if squeeze_existence:
+            non_nil = non_nil.squeeze(dim = 2)
+        base_returns = super().forward(non_nil, xl_base, ignore_logits, **kwargs)
+        return (BottomOutput(batch_size, batch_len, xl_base, None),) + base_returns
 
 xlnet_model_key = 'xlnet-base-cased'
 gbert_model_key = 'bert-base-german-cased'
 class XLNetLeaves(PreLeaves):
-    def __init__(self, *args, **kw_args):
-        super().__init__(xlnet_model_key, *args, **kw_args)
+    def __init__(self, input_layer, **kwargs):
+        paddings = kwargs.get('paddings') # TODO remove this ugly piece...
+        if isinstance(paddings, dict) and all(isinstance(p, dict) for p in paddings.values()):
+            pd = None
+            for p in paddings.values():
+                if pd is None:
+                    pd = p
+                else:
+                    assert pd == p
+            kwargs['paddings'] = pd
+        super().__init__(xlnet_model_key, **input_layer, **kwargs)
+
+    @property
+    def message(self):
+        if self._layer_weights is not None:
+            _layer_weights = self._layer_weights.detach().reshape(-1)
+            _layer_weights = self._softmax(_layer_weights).cpu()
+            min_val = _layer_weights.min()
+            max_val = _layer_weights.max()
+            _layer_weights = (_layer_weights - min_val) / (max_val - min_val)
+            from utils.str_ops import height_ratio, str_ruler
+            msg_0 = 'Layer weights: '
+            msg_1 = ''.join(height_ratio(w) for w in _layer_weights.numpy())
+            msg_2 = f'[{min_val:.2f}, {max_val:.2f}]'
+            msg_3 = '\n               '
+            msg_4 = str_ruler(len(msg_1))
+            return msg_0 + msg_1 + msg_2 + msg_3 + msg_4
 
 class GBertLeaves(PreLeaves):
-    def __init__(self, *args, **kw_args):
-        super().__init__(gbert_model_key, *args, **kw_args)
+    def __init__(self, input_layer, **kwargs):
+        super().__init__(gbert_model_key, **input_layer, **kwargs)
 
 
 _penn_to_xlnet = {'``': '"', "''": '"'}
-from tqdm import tqdm
 from unidecode import unidecode
 from multiprocessing import Pool
 from data.utils import TextHelper
@@ -171,10 +201,11 @@ class PreDatasetHelper(TextHelper):
     def __init__(self, text, *args):
         with Pool() as p:
             cache = p.map(self._append, text)
-        super().__init__(cache)
-        # self._cache = cache =  []
+        # cache =  []
+        # from tqdm import tqdm
         # for penn_words in tqdm(text, desc = self.tknz_name):
         #     cache.append(self._append(penn_words))
+        super().__init__(cache)
 
     @classmethod
     def _append(cls, penn_words, check = True):
@@ -259,16 +290,15 @@ class XLNetDatasetHelper(PreDatasetHelper):
                 xlnt_word = xlnt_word[1:]
             if pw == xlnt_word:
                 continue
-            while xlnt_word != pw:
+            while xlnt_word != pw and xlnt_word != unidecode(pw):
                 xlnt_offset += 1
-                try:
-                    piece = xlnt_words[i_ + xlnt_offset]
-                except:
-                    import pdb; pdb.set_trace()
+                # clichés != cliches
+                piece = xlnt_words[i_ + xlnt_offset]
                 if piece == '"': # -`` in ptb
                     piece = '``' if '``' in pw else "''"
                 xlnt_word += piece
                 xlnt_starts.append(False)
+                assert len(xlnt_word) <= len(pw), xlnt_word + '+' + pw
         return xlnt_starts
 
 

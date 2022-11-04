@@ -6,7 +6,7 @@ from data.cross.evalb_lcfrs import DiscoEvalb, ExportWriter
 from utils.operator import Operator
 from utils.shell_io import has_discodop, discodop_eval, byte_style
 from utils.param_ops import get_sole_key
-from experiments.helper import speed_logg, WarmOptimHelper, discontinuous_score_desc_logg
+from experiments.helper import speed_logg, WarmOptimHelper, discontinuous_score_desc_logg, write_multilingual
 from collections import namedtuple
 HDIO = namedtuple('HDIO', 'bid_offset, evalb_lines, head_lines, trees_and_errors')
 
@@ -82,10 +82,12 @@ class DO(Operator):
                                       F1 = scores.get('TF', 0), DF = scores.get('DF', 0),
                                       SamplePerSec = None if serial else speed_dm)
         scores['speed'] = speed_outer
-        self._vis_mode = None
+        self._vis_mode = final_test
         return scores, desc + _desc, logg + _logg
 
     def combine_scores_and_decide_key(self, epoch, ds_scores):
+        if self._vis_mode and self.multi_corp:
+            write_multilingual(self._recorder.create_join('multilingual'), self.i2vs, self._model)
         if self.multi_corp:
             key = [s.get('TF', 0) for s in ds_scores.values()]
             ds_scores['key'] = sum(key) / len(key)
@@ -131,7 +133,7 @@ class DVA(BaseVis):
                 head_lines.append(
                     '\n'.join(draw_str_lines(bt, td, label_fn = tag_root_fn)))
             self.save_head_trees(head_trees_for_scores, head_lines)
-        else:
+        else: # TODO self.evalb make error here when testing!!!
             head_trees_for_scores, head_lines = self.get_head_trees()
 
         bid_offset, _ = self._evalb.total_missing
@@ -139,13 +141,19 @@ class DVA(BaseVis):
         evalb_lines, trees_and_errors = [], []
         for sid, (btm, tpd, error) in enumerate(tree_gen(*batch_args, self.i2vs, 'VROOT')):
             trees_and_errors.append((btm, tpd, error))
-            try:
+            try: # TODO error when multilingual
                 pred = inner_score(btm, tpd, self._evalb_lcfrs_kwargs, self._xd_writer)
             except:
+                from pprint import pprint
+                pprint(btm)
+                pprint(tpd)
                 breakpoint()
             try:
                 evalb_lines.append(self._evalb.add(*pred, *head_trees_for_scores[sid]))
             except:
+                from pprint import pprint
+                pprint(pred)
+                pprint(head_trees_for_scores[sid])
                 breakpoint()
             if error: self._v_errors[bid_offset + sid] = error
         return HDIO(bid_offset, evalb_lines, head_lines, trees_and_errors)

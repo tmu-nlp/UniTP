@@ -7,3 +7,4 @@ Unidecode
 tensorboard
 optuna
 bidict
+transformers

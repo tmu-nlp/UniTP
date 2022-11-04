@@ -95,7 +95,7 @@ class MultiStem(PadRNN):
             batch_segment.append(layer_len)
             segment.append(length)
 
-            if layer_len == 1 or stop_at_nth_layer and l_cnt == n_layers:
+            if not stop_at_nth_layer and layer_len == 1 or stop_at_nth_layer and l_cnt == n_layers:
                 break
             elif len(segment) > 1:
                 prev, curr = segment[-2:]
@@ -105,7 +105,7 @@ class MultiStem(PadRNN):
                     print(f'WARNING: Action layers overflow maximun {l_cnt}', file = stderr, end = '')
                     break
 
-            if l_cnt < n_layers:
+            if l_cnt < n_layers and self._char_bias is not None:
                 chunk_hidden, _ = self._chunk_emb(embedding + self._char_bias, h0c0)
             else:
                 chunk_hidden, _ = self._chunk_emb(embedding, h0c0)
@@ -152,7 +152,12 @@ class MultiStem(PadRNN):
             layers_of_weight .append(weights)
             layers_of_chunk  .append(chunk_logits)
 
-        chunk     = torch.cat(layers_of_chunk, dim = 1)
+        if stop_at_nth_layer and n_layers == 0:
+            chunk = None
+        elif layers_of_chunk:
+            chunk = torch.cat(layers_of_chunk, dim = 1)
+        else:
+            chunk = torch.ones(batch_size, 0, device = embedding.device, dtype = torch.bool)
         segment   = torch.stack(segment, dim = 1)
         embedding = torch.cat(layers_of_embedding, dim = 1)
         existence = torch.cat(layers_of_existence, dim = 1)

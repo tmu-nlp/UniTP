@@ -177,7 +177,7 @@ class ContinuousDataset(LengthOrderedDataset):
                 else: # split (load slower)
                     sig = torch.zeros(len(length), sig_size, dtype = torch.bool, device = self.device)
                     fill_bool_tensor(char_split + erect_split_more(batch.chunk, batch_segment, sig_offset), sig, True, indice_args)
-                field_columns['chunk'] = sig
+                field_columns['chunk'] = sig[:, :-2] # top 2 are stable useless ones
                 
                 if char_as_token:
                     segment = np.concatenate([batch_char_segment, segment], axis = 1)

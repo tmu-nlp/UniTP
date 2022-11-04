@@ -2,6 +2,7 @@ from math import exp
 from torch import optim, Tensor
 from utils.shell_io import byte_style
 from utils import do_nothing
+from os.path import join
 
 make_tensors = lambda *args, fn = do_nothing: tuple(fn(x).cpu().numpy() if isinstance(x, Tensor) else x for x in args)
 
@@ -88,3 +89,69 @@ def sentiment_score_desc_logg(scores):
     desc += ')'
     scores = {k: v for k, v in zip(scores._fields, scores)}
     return scores, desc, logg
+
+def serialize_matrix(m, skip = None):
+    for rid, row in enumerate(m):
+        offset = 0 if skip is None else (rid + skip)
+        for cid, val in enumerate(row[offset:]):
+            yield rid, offset + cid, float(val)
+
+def sort_matrix(m, lhs, rhs, higher_better):
+    lines = []
+    n = max(len(n) for n in lhs) + 1
+    for rid, row in enumerate(m):
+        line = []
+        for cid, _ in sorted(enumerate(row), key = lambda x: x[1], reverse = higher_better):
+            line.append(rhs[cid])
+        lines.append(lhs[rid].ljust(n) + ': ' + ' '.join(line))
+    return '\n'.join(lines)
+
+def save_txt(fname, append, lhv, rhv, dst, cos):
+    with open(fname, ('w', 'a+')[append]) as fw:
+        if append:
+            fw.write('\n\n')
+            lhv, rhv = lhv.label, rhv.label
+            n = 'Label'
+        else:
+            lhv, rhv = lhv.tag, rhv.tag
+            n = 'Tag'
+        fw.write(f'Distance\n  {n}:\n')
+        fw.write(sort_matrix(dst, lhv, rhv, False))
+        fw.write(f'\nCosine\n  {n}:\n')
+        fw.write(sort_matrix(cos, lhv, rhv, True))
+
+def write_multilingual(work_dir, i2vs, model):
+    # save vocabulary
+    for corp, _i2vs in i2vs.items():
+        with open(join(work_dir, 'tag.' + corp), 'w') as fw:
+            fw.write('\n'.join(_i2vs.tag))
+        with open(join(work_dir, 'label.' + corp), 'w') as fw:
+            fw.write('\n'.join(_i2vs.label))
+    # save Tag/Label
+    for prefix in ('tag', 'label'):
+        if get_label := prefix == 'label':
+            fn = model.get_multilingual_label_matrices
+        else:
+            fn = model.get_multilingual_tag_matrices
+        for lhs, rhs, dst, cos in fn():
+            # save matrix
+            #  # 'a+' if get_label else 'w' lhv, rhv = self.i2vs[lhs], self.i2vs[rhs]
+            if lhs == rhs:
+                fname = lhs
+                save_txt(join(work_dir, lhs + '.txt'), get_label, i2vs[lhs], i2vs[lhs], dst, cos)
+            else:
+                fname = lhs + '.' + rhs
+                save_txt(join(work_dir, lhs + '.' + rhs + '.txt'), get_label, i2vs[lhs], i2vs[rhs], dst, cos)
+                save_txt(join(work_dir, rhs + '.' + lhs + '.txt'), get_label, i2vs[rhs], i2vs[lhs], dst.T, cos.T)
+            with open(join(work_dir, prefix + '.' + fname + '.csv'), 'w') as fw:
+                fw.write('type,row,col,value\n')
+                if lhs == rhs:
+                    for r, c, v in serialize_matrix(dst, 1):
+                        fw.write(f'd,{r},{c},{v}\n')
+                    for r, c, v in serialize_matrix(cos, 1):
+                        fw.write(f'c,{c},{r},{v}\n')
+                else:
+                    for r, c, v in serialize_matrix(dst):
+                        fw.write(f'd,{r},{c},{v}\n')
+                    for r, c, v in serialize_matrix(cos):
+                        fw.write(f'c,{r},{c},{v}\n')

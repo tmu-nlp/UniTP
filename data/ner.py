@@ -1,7 +1,9 @@
 from data.vocab import VocabKeeper
 from data.dataset import LengthOrderedDataset, post_batch
-from data.ner_types import read_dataset, remove_bio_prefix
+from data.dataset import pad_tag_like_nil, erect_split_more, fill_bool_tensor
+from data.ner_types import read_dataset, remove_bio_prefix, bio_to_tree
 from data.io import load_i2vs, join, get_fasttext
+from utils.types import M_TRAIN
 import numpy as np
 from tqdm import tqdm
 import torch
@@ -18,19 +20,22 @@ from utils.param_ops import change_key
 class NerReader(VocabKeeper):
     def __init__(self, ner,
                  with_bi_prefix,
-                 with_pos_tag,
                  extra_text_helper = None):
         if with_bi_prefix:
-            vocabs = ['word', 'bio']
+            vocabs = ['word', 'pos', 'bio']
         else:
-            vocabs = ['word', 'ner']
-        if with_pos_tag:
-            vocabs.append('pos')
+            vocabs = ['word', 'pos', 'ner']
         i2vs = load_i2vs(ner.local_path, *vocabs)
+
         change_key(i2vs, 'word', 'token')
-        vocabs[0] = 'token'
-        def token_fn(token_type):
-            weights = get_fasttext(join('token', token_type + '.vec'))
+        change_key(i2vs, 'pos', 'tag')
+        if with_bi_prefix:
+            change_key(i2vs, 'bio', 'label')
+        else:
+            change_key(i2vs, 'ner', 'label')
+
+        def token_fn(): # token_type
+            weights = get_fasttext(join(ner.local_path, 'word.vec'))
             weights[0] = 0 # [nil ...]
             return weights
         char_vocab = None
@@ -43,8 +48,8 @@ class NerReader(VocabKeeper):
             pad_idx = c2is(PAD)
             for word in tqdm(self.i2vs.token[1:], 'NER-Wordlist'): # skip pad <nil>
                 char_vocab[t2is(word)] = [c2is(t) for t in word] + [pad_idx]
-        self._load_options = ner, extra_text_helper, char_vocab
-        super().__init__(vocabs, i2vs, {}, {}, weight_fn = token_fn)
+        self._load_options = ner, with_bi_prefix, extra_text_helper, char_vocab
+        super().__init__(('token', 'tag', 'label'), i2vs, {}, {}, weight_fn = token_fn)
 
     def batch(self,
               mode,
@@ -53,13 +58,14 @@ class NerReader(VocabKeeper):
               min_len        = 0,
               max_len        = None,
               sort_by_length = True):
-        ner, extra_text_helper, char_vocab = self._load_options
+        ner, with_bi_prefix, extra_text_helper, char_vocab = self._load_options
 
         len_sort_ds = NerDataset(join(ner.source_path, ner.build_params._nested[mode + '_set']),
-                                 ner.ner_extension,
+                                 mode == M_TRAIN,
+                                 with_bi_prefix,
+                                 ner.extension._nested,
                                  char_vocab,
                                  self.v2is,
-                                 self.device,
                                  min_len,
                                  max_len, 
                                  extra_text_helper)
@@ -145,129 +151,127 @@ from utils.shell_io import byte_style
 class NerDataset(LengthOrderedDataset):
     def __init__(self,
                  fname,
+                 train_mode,
+                 with_bi_prefix,
                  ner_extension,
                  char_vocab,
                  v2is,
-                 device,
                  min_len  = 0,
                  max_len  = None,
                  extra_text_helper = None):
 
-        lengths, text = [], []
-        token, pos = [], []
-        p2is = n2is = b2is = None
-        (_, t2is) = v2is['token']
-        if 'pos' in v2is:
-            (_, p2is) = v2is['pos']
-        if 'bio' in v2is:
-            _, b2is = v2is['bio']
-            bio = []
+        lengths, token, tag, text, = [], [], [], []
+        label, ner_fence, tree = [], [], []
+        if (has_syntax := ('with_o_chunk' in ner_extension)):
+            n_files = 4
         else:
-            _, n2is = v2is['ner']
-            ner, ner_fence = [], []
-        for words, pos_tags, bio_tags in read_dataset(fname):
-            lengths.append(len(words))
-            if extra_text_helper:
-                text.append(words)
-            token.append([t2is(w) for w in words])
-            if p2is:
-                pos.append([p2is(p) for p in pos_tags])
-            if b2is:
-                bio.append([b2is(x) for x in bio_tags])
+            n_files = 3
+        for largs in read_dataset(fname, n_files):
+            if has_syntax:
+                wd, pt, chk, bi = largs
+                chk = chk if ner_extension['with_o_chunk'] else None
+                fc, nt = remove_bio_prefix(bi, chk)
             else:
-                _ner_fence, _ner = remove_bio_prefix(bio_tags)
-                ner.append([n2is(x) for x in _ner])
-                ner_fence.append(_ner_fence)
+                wd, pt, bi = largs
+                fc, nt = remove_bio_prefix(bi)
+            lb = bi if with_bi_prefix else nt
+            lengths.append(len(wd))
+            text.append(wd)
+            ner_fence.append(fc)
+            label.append([v2is.label(x) for x in lb])
+            token.append([v2is.token(x) for x in wd])
+            tag.append([v2is.tag(x) for x in pt])
+            tree.append(bio_to_tree(wd, bi, pt))
 
         if extra_text_helper:
             _, c2is = v2is['char']
-            extra_text_helper = extra_text_helper(text, device, c2is)
+            extra_text_helper = extra_text_helper(text, self.device, c2is)
 
+        factors = None
         self._aug_size = 0
-        if b2is:
-            heads = ('bio',)
-            columns = dict(token = token, bio = bio)
-            factors = None
-        else:
-            heads = ('ner', 'fence')
-            columns = dict(token = token, ner = ner, fence = ner_fence)
-            break_o_chunk, break_whole, augment = 0, True, None
-            o_idx = n2is('O')
-            if ner_extension is not None:
-                break_o_chunk = ner_extension.break_o_chunk
-                break_whole   = ner_extension.break_whole
-                if ner_extension.insert.a + ner_extension.delete.a + ner_extension.substitute.a > 0:
-                    assert 'pos' not in v2is
-                    print(byte_style('Augmenting with Negative Samples', '2'))
-                    augment = NegativeAugment(lengths, ner_extension, char_vocab, o_idx)
-                    self._aug_size += len(augment)
-            self._break_o = break_o_chunk, break_whole, o_idx
-            if break_whole:
-                factors = {False: 1 - break_o_chunk, True: break_o_chunk}
+        if train_mode:
+            if with_bi_prefix:
+                heads = 'tree', 'token', 'tag', 'label'
             else:
-                factors = break_o_chunk > 0
-            self._augment_cache = augment, [], []
-        if p2is:
-            heads = ('token', 'pos') + heads
-            columns['pos'] = pos
+                heads = 'tree', 'token', 'tag', 'label', 'fence'
+            if not has_syntax:
+                o_idx = v2is.label('O')
+                break_o_chunk, break_whole, augment = 0, True, None
+                if ner_extension is not None:
+                    break_o_chunk = ner_extension.break_o_chunk
+                    break_whole   = ner_extension.break_whole
+                    if ner_extension.insert.a + ner_extension.delete.a + ner_extension.substitute.a > 0:
+                        print(byte_style('Augmenting with Negative Samples', '2'))
+                        augment = NegativeAugment(lengths, ner_extension, char_vocab, o_idx)
+                        self._aug_size += len(augment)
+                self._break_o = break_o_chunk, break_whole, o_idx
+                if break_whole:
+                    factors = {False: 1 - break_o_chunk, True: break_o_chunk}
+                else:
+                    factors = break_o_chunk > 0
+                self._augment_cache = augment, [], []
         else:
-            heads = ('token',) + heads
-        assert all(len(lengths) == len(col) for col in columns.values())
+            heads = 'tree', 'token'
 
-        super().__init__(heads, lengths, factors, min_len, max_len, extra_text_helper)
-        self._columns = columns
-        self._device = device
+        field_columns = dict(n_layers = int(not with_bi_prefix),
+                             stop_at_nth_layer = True)
+        super().__init__(heads, None, lengths, factors, min_len, max_len, extra_text_helper)
+        self._args = train_mode, has_syntax, field_columns, tree, token, tag, label, ner_fence
 
     @property
     def size(self):
         return self._aug_size + super().size
 
-    def at_idx(self, idx, factor, length, helper_outputs):
-        sample = {}
-        for hd in self.heads:
-            if hd == 'length':
-                value = length
-            else:
-                value = self._columns[hd][idx]
-                if factor and hd == 'fence':
+    def at_idx(self, idx, factor, helper_outputs):
+        train_mode, has_syntax, _, tree, token, tag, label, fence = self._args
+        token  = token[idx]
+        sample = [tree[idx], token]
+        if train_mode:
+            label = label[idx]
+            if 'fence' in self.heads:
+                fence = fence[idx]
+                if not has_syntax and factor:
                     augment, cache, sub_cache = self._augment_cache
                     if augment is not None:
-                        for aug_data, aug_sub in augment(idx, sample['token'], sample['ner'], value, helper_outputs):
+                        for aug_data, aug_sub in augment(idx, token, label, fence, helper_outputs):
                             cache.append(aug_data)
                             if aug_sub is not None:
                                 sub_cache.append(aug_sub)
-                    sample['ner'], value = break_o(sample['ner'], value, *self._break_o)
-            sample[hd] = value
-        return sample
+                    label, fence = break_o(label, fence, *self._break_o)
+                sample += [tag[idx], label, [fence]]
+            else:
+                sample += [tag[idx], label]
+        return tuple(sample)
 
-    def _collate_fn(self, batch):
+    def _collate_fn(self, batch, length, segment):
         field_columns = {}
-        if 'fence' in self.heads:
+        train_mode, has_syntax, fc = self._args[:3]
+        indice_args = dict(device = self.device, dtype = torch.long)
+        field_columns = dict(length = length, **fc)
+        max_token_len = length.max()
+        without_bio = 'fence' in self.heads
+
+        if not has_syntax and without_bio:
             augment, cache, sub_cache = self._augment_cache
             batch += cache
             self._augment_cache = augment, [], []
             if sub_cache and self._extra_text_helper:
                 self._extra_text_helper.a_secrete_buffer(sub_cache)
-        for field, column in zip(self.heads, zip(*batch)):
-            if field == 'length':
-                batch_size = len(column)
-                tensor = lengths = np.asarray(column, np.uint8)
-                max_len = lengths.max()
-            elif field in ('token', 'pos', 'bio'):
-                tensor = np.zeros([batch_size, max_len], np.int32 if field == 'token' else np.uint8)
-                for i, (values, length) in enumerate(zip(column, lengths)):
-                    tensor[i, :length] = values
-            elif field == 'ner':
-                ner_lengths = np.array([len(x) for x in column], np.uint8)
-                max_ner_len = ner_lengths.max()
-                tensor = np.zeros([batch_size, max_ner_len], np.uint8)
-                for i, (values, length) in enumerate(zip(column, ner_lengths)):
-                    tensor[i, :length] = values
+
+        field_columns['tree'] = batch.tree
+        field_columns['token'] = torch.as_tensor(pad_tag_like_nil(batch.token, max_token_len), **indice_args)
+        if train_mode:
+            field_columns['tag'] = torch.as_tensor(pad_tag_like_nil(batch.tag, max_token_len), **indice_args)
+            if without_bio:
+                max_label_len = max(len(x) for x in batch.label)
+                field_columns['label'] = torch.as_tensor(pad_tag_like_nil(batch.label, max_label_len), **indice_args)
+
+                max_fence_len = max_token_len + 1
+                field_columns['chunk'] = sig = torch.zeros(len(length), max_fence_len, dtype = torch.bool, device = self.device)
+                fill_bool_tensor(erect_split_more(batch.fence, [max_fence_len], 0), sig, True, indice_args)
+                field_columns['batch_segment'] = [max_token_len, max_label_len]
             else:
-                assert field == 'fence'
-                tensor = np.zeros([batch_size, max_len + 1], np.bool)
-                for i, indices in enumerate(column):
-                    tensor[i, indices] = True
-            dtype = torch.bool if field == 'fence' else torch.long
-            field_columns[field] = torch.as_tensor(tensor, dtype = dtype, device = self._device)
+                field_columns['batch_segment'] = [max_token_len]
+                field_columns['label'] = torch.as_tensor(pad_tag_like_nil(batch.label, max_token_len), **indice_args)
+                
         return field_columns

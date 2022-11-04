@@ -1,6 +1,6 @@
 
 from data.mp import DM
-from data.cross.evalb_lcfrs import export_string
+from data.cross.evalb_lcfrs import export_string, export_failed_string
 from data.cross.binary import disco_tree as binary_tree
 from data.cross.multib import disco_tree as multib_tree
 
@@ -9,7 +9,16 @@ class BxDM(DM):
     def tree_gen_fn(i2w, i2t, i2l, bid_offset, batch_segment, *data_gen):
         for segment, token, tag, label, xtype, joint in zip(*data_gen):
             bt, td, _ = binary_tree(*binary_layers(i2w, i2t, i2l, batch_segment, segment, token, tag, label, xtype, joint), 'VROOT')
-            yield export_string(bid_offset, bt, td)
+            try:
+                yield export_string(bid_offset, bt, td)
+            except:
+                yield export_failed_string(bid_offset, bt)
+                from datetime import datetime
+                from pprint import pprint
+                with open('export.error.dbg.txt', 'a+') as fw:
+                    fw.write(f'# {datetime.now()}: BxDM\n')
+                    pprint(bt, fw)
+                    pprint(td, fw)
             bid_offset += 1
 
     @staticmethod
