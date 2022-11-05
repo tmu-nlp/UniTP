@@ -10,22 +10,13 @@ model_type['contextualize']  = contextual_config
 model_type['combine_emb_and_cxt'] = combine_static_type
 
 class CB(InputLayer, _CB):
-    def __init__(self, *largs, **kwargs):
-        super().__init__(*largs, **kwargs)
-
     def forward(self, *largs, **kwargs):
         return super().forward(*largs, **kwargs, squeeze_existence = False)
 
 class SentimentCB(InputLayer, _SentimentCB):
-    def __init__(self, *largs, **kwargs):
-        super().__init__(*largs, **kwargs)
-
     def forward(self, *largs, **kwargs):
         return super().forward(*largs, **kwargs, squeeze_existence = False)
 
 class SentimentOnSyntacticCB(InputLayer, _SentimentOnSyntacticCB):
-    def __init__(self, *largs, **kwargs):
-        super().__init__(*largs, **kwargs)
-
     def forward(self, *largs, **kwargs):
         return super().forward(*largs, **kwargs, squeeze_existence = False)

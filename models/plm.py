@@ -80,8 +80,9 @@ class PreLeaves(nn.Module):
     def embedding_dim(self):
         return self._word_dim
 
-    def forward(self, word_idx, offset, plm_idx, plm_start, squeeze_existence,
-               tune_pre_trained = False, ignore_logits = False, 
+    def forward(self, word_idx, tune_pre_trained,
+                offset, plm_idx, plm_start, squeeze_existence,
+                ignore_logits = False, 
                **kwargs):
         batch_size, batch_len = word_idx.shape # just provide shape and nil info
 

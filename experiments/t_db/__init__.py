@@ -21,19 +21,12 @@ def make_instance(recorder, use_plm = False):
 
     if use_plm:
         if len(data_config[K_CORP]) == 1:
-            from models.dccp import _DB
-            from models.plm import XLNetDatasetHelper, XLNetLeaves, GBertDatasetHelper, GBertLeaves
             if C_TIGER in data_config[K_CORP]:
-                DatasetHelper = GBertDatasetHelper
-                class DB(GBertLeaves, _DB):
-                    def forward(self, *args, **kw_args):
-                        return super().forward(*args, **kw_args, squeeze_existence = True)
-
+                from models.plm import GBertDatasetHelper as DatasetHelper
+                from experiments.t_plm_db.model import GBertDB as DB
             elif C_DPTB in data_config[K_CORP]:
-                DatasetHelper = XLNetDatasetHelper
-                class DB(XLNetLeaves, _DB):
-                    def forward(self, *args, **kw_args):
-                        return super().forward(*args, **kw_args, squeeze_existence = True)
+                from models.plm import XLNetDatasetHelper as DatasetHelper
+                from experiments.t_plm_db.model import XLNetDB as DB
             else:
                 raise ValueError(', '.join(data_config[K_CORP].keys()))
         else:
