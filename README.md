@@ -71,5 +71,5 @@ We suggest tuning hyperparameter with a trained model.
 If you want to edit the range of hyperparameter explorating, please find a respective file `experiments/[model]/operator.py` and modify its function `_get_optuna_fn`.
 
 ### Visualization (not avaliable now)
-We gave an exemplary illustration from our project.
-However, because there are no much demand for visualization, `./visualization.py` becomes obsolated.
+We gave an exemplary illustration from [https://github.com/tmu-nlp/nccp](https://github.com/tmu-nlp/nccp).
+However, because of few demands for visualization, `./visualization.py` becomes obsoleted.

@@ -1,0 +1,697 @@
+# 2022-12-16 16:30:53.815715
+data:
+  conll:
+    build_params:
+      devel_set: eng.testa
+      test_set: eng.testb
+      train_set: eng.train
+    local_path: null
+    source_path: /FILL/THIS/FOLDER
+    valid_sizes: null
+  ctb:
+    build_params:
+      devel_set: 301-325
+      test_set: 271-300
+      train_set: 001-270,440-1151
+    local_path: null
+    source_path: /FILL/THIS/FOLDER
+    valid_sizes: null
+  dptb:
+    build_params:
+      devel_set: '22'
+      test_set: '23'
+      train_set: 2-21
+    local_path: null
+    source_path: /FILL/THIS/FOLDER
+    valid_sizes: null
+  idner:
+    build_params:
+      devel_set: dev.txt
+      test_set: test.txt
+      train_set: train.txt
+    local_path: null
+    source_path: /FILL/THIS/FOLDER
+    valid_sizes: null
+  ktb:
+    build_params:
+      devel_set: 15-29
+      test_set: 0-14
+      train_set: 300
+    local_path: null
+    source_path: /FILL/THIS/FOLDER
+    valid_sizes: null
+  npcmj:
+    build_params:
+      devel_set: 15-29
+      test_set: 0-14
+      train_set: 300
+    local_path: null
+    source_path: /FILL/THIS/FOLDER
+    valid_sizes: null
+  ptb:
+    build_params:
+      devel_set: 22
+      test_set: 23
+      train_set: 2-21
+    local_path: null
+    source_path: /FILL/THIS/FOLDER
+    valid_sizes: null
+  sstb:
+    build_params:
+      devel_set: dev.txt
+      test_set: test.txt
+      train_set: train.txt
+    local_path: null
+    source_path: /FILL/THIS/FOLDER
+    valid_sizes: null
+  tiger:
+    build_params:
+      devel_set: 40475-45474
+      test_set: 45475-50474
+      train_set: 1-40474
+    local_path: null
+    source_path: /FILL/THIS/XML_FILE
+    valid_sizes: null
+task:
+  cb:
+    data:
+      batch_size: 80
+      bucket_len: 4
+      condense_per: 1
+      factor:
+        ctb:
+          binarization: sentence cnf 0.2
+          esub: 0
+          msub: 0
+          vocab_size: null
+        ktb:
+          binarization: sentence cnf 0.7
+          esub: 0
+          msub: 0
+          vocab_size: null
+        npcmj:
+          binarization: sentence cnf 0.7
+          esub: 0
+          msub: 0
+          vocab_size: null
+        ptb:
+          binarization: sentence cnf .15
+          esub: 0
+          msub: 0
+          vocab_size: null
+        sstb:
+          neutral_nil: true
+          vocab_size: null
+      max_len: null
+      nil_pad: true
+      sort_by_length: false
+      unify_sub: true
+    model:
+      combine_emb_and_cxt: Add
+      contextualize:
+        num_layers: 6
+        rnn_drop_out: 0.2
+        rnn_type: LSTM
+        use_state:
+          from_cell: true
+          usage: null
+      input_emb:
+        activation: Softsign
+        drop_out: 0.4
+        pre_trained: true
+      model_dim: 300
+      orient_layer:
+        combine_type: CV2
+        drop_out: 0.4
+        num_layers: 1
+        orient_dim: 64
+        rnn_drop_out: 0.2
+        trainable_initials: false
+      polar_layer:
+        activation: ReLU
+        drop_out: 0.4
+        hidden_dim: 200
+        polar_from_parsing_hidden: false
+      tag_label_layer:
+        activation: ReLU
+        drop_out: 0.4
+        hidden_dim: 200
+        logit_type: affine
+    train:
+      learning_rate: 0.001
+      loss_weight:
+        label: 0.3
+        orient: 0.5
+        polar: 1
+        polaro: 0
+        tag: 0.2
+      orient_hinge_loss: true
+      tune_pre_trained:
+        from_nth_epoch: null
+        lr_factor: 0.06
+  cm:
+    data:
+      batch_size: 80
+      bucket_len: 3
+      factor:
+        conll:
+          extension:
+            with_o_chunk: true
+        ctb:
+          esub: 0
+          msub: 0
+          token: word
+          vocab_size: null
+        idner:
+          extension:
+            break_o_chunk: 0.5
+            break_whole: false
+            delete:
+              a: 0.5
+              p: 0.5
+            insert:
+              a: 0.5
+              p: 0.5
+            substitute:
+              a: 0.5
+              p: 0.5
+        ktb:
+          esub: 0
+          msub: 0
+          token: char
+          vocab_size: null
+        npcmj:
+          esub: 0
+          msub: 0
+          token: word
+          vocab_size: null
+        ptb:
+          esub: 0
+          msub: 0
+          token: word
+          vocab_size: null
+      max_len: null
+      ner:
+        with_bi_prefix: false
+        with_pos_tag: true
+      sort_by_length: false
+      unify_sub: true
+    model:
+      chunk_layer:
+        activation: ReLU
+        attention_hint:
+          after: false
+          before: false
+          boundary: false
+          difference: true
+          state: false
+          unit: false
+        chunk_dim: 200
+        chunk_module: LSTM
+        chunk_vote: null
+        drop_out: 0.4
+        linear_dim: 100
+        num_layers: 1
+        rnn_drop_out: 0.2
+        trainable_initials: false
+      combine_emb_and_cxt: Add
+      contextualize:
+        num_layers: 6
+        rnn_drop_out: 0.2
+        rnn_type: LSTM
+        use_state:
+          from_cell: true
+          usage: null
+      input_emb:
+        activation: null
+        drop_out: 0.4
+        pre_trained: true
+      model_dim: 300
+      tag_label_layer:
+        activation: ReLU
+        drop_out: 0.4
+        hidden_dim: 200
+        logit_type: affine
+    train:
+      chunk_hinge_loss: true
+      learning_rate: 0.001
+      loss_weight:
+        chunk: 0.5
+        label: 0.3
+        tag: 0.2
+      tune_pre_trained:
+        from_nth_epoch: null
+        lr_factor: 0.06
+  db:
+    data:
+      batch_size: 80
+      bucket_len: 3
+      factor:
+        dptb:
+          binarization: sentence continuous 5
+          esub: 0.25
+          min_gap: null
+          msub: 0
+          ply_shuffle: all
+          vocab_size: null
+        tiger:
+          binarization: sentence continuous 5
+          esub: 0.25
+          min_gap: null
+          msub: 0
+          ply_shuffle: all
+          vocab_size: null
+      max_len: null
+      nil_pad: true
+      sort_by_length: false
+      unify_sub: true
+    model:
+      combine_emb_and_cxt: NV
+      contextualize:
+        num_layers: 6
+        rnn_drop_out: 0.2
+        rnn_type: LSTM
+        use_state:
+          from_cell: true
+          usage: null
+      input_emb:
+        activation: null
+        drop_out: 0.4
+        pre_trained: true
+      model_dim: 300
+      orient_layer:
+        combine_type: EV2
+        drop_out: 0.4
+        joint_type: iadd:150:ReLU
+        local_joint: false
+        num_layers: 2
+        orient_dim: 300
+        orient_module: LSTM
+        orient_type: hinge.jr
+        rnn_drop_out: 0.2
+        threshold:
+          direc: 0.5
+          joint: 0.5
+          right: 0.5
+        trainable_initials: false
+      tag_label_layer:
+        activation: ReLU
+        drop_out: 0.4
+        hidden_dim: 200
+        logit_type: affine
+    train:
+      learning_rate: 0.001
+      loss_weight:
+        _direc: 1
+        _udirec_strength: 1
+        joint: 1
+        label: 1
+        orient: 1
+        shuffled__direc: 1
+        shuffled_joint: 1
+        shuffled_orient: 1
+        sudirec_strength: 1
+        tag: 1
+      tune_pre_trained:
+        from_nth_epoch: null
+        lr_factor: 0.06
+  dm:
+    data:
+      batch_size: 80
+      bucket_len: 4
+      continuous_chunk_only: false
+      factor:
+        dptb:
+          disco_2d:
+            inter_rate: 1.0
+            intra_rate: 0.1
+          esub: 0.1
+          max_interply: 999
+          medoid:
+            continuous: 0
+            head: 0
+            left: 0
+            random: 1.0
+            right: 0
+          min_gap: null
+          msub: 0.25
+          vocab_size: null
+        tiger:
+          disco_2d:
+            inter_rate: 1.0
+            intra_rate: 0.1
+          esub: 0.1
+          max_interply: 999
+          medoid:
+            continuous: 0
+            head: 0
+            left: 0
+            random: 1.0
+            right: 0
+          min_gap: null
+          msub: 0.25
+          vocab_size: null
+      max_len: null
+      sort_by_length: false
+      unify_sub: true
+    model:
+      combine_emb_and_cxt: NV
+      contextualize:
+        num_layers: 6
+        rnn_drop_out: 0.2
+        rnn_type: LSTM
+        use_state:
+          from_cell: true
+          usage: null
+      input_emb:
+        activation: null
+        drop_out: 0.4
+        pre_trained: true
+      model_dim: 300
+      space_layer:
+        attention_hint:
+          after: false
+          before: false
+          difference: true
+          state: false
+          unit: false
+        chunk_activation: ReLU
+        chunk_linear_dim: 150
+        disco_1d_activation: ReLU
+        disco_1d_form: state
+        disco_1d_hidden_dim: 150
+        disco_2d_activation: Tanh
+        disco_2d_form: diff.biaff.unit
+        disco_2d_medoid: unsupervised_head
+        drop_out: 0.4
+        num_layers: 2
+        rnn_drop_out: 0.2
+        space_dim: 300
+        space_module: LSTM
+        trainable_initials: false
+      tag_label_layer:
+        activation: ReLU
+        drop_out: 0.4
+        hidden_dim: 200
+        logit_type: affine
+    train:
+      binary_hinge_loss: true
+      learning_rate: 0.001
+      loss_weight:
+        chunk: 1
+        disco_1d: 1
+        disco_2d: 1
+        disco_2d_inter: 1
+        disco_2d_intra: 1
+        label: 1
+        tag: 1
+      tune_pre_trained:
+        from_nth_epoch: null
+        lr_factor: 0.06
+  plm_cb:
+    data:
+      batch_size: 80
+      bucket_len: 4
+      condense_per: 1
+      factor:
+        ptb:
+          binarization: sentence cnf 0.15
+          esub: 0
+          msub: 0
+          vocab_size: null
+        sstb:
+          neutral_nil: true
+          vocab_size: null
+      max_len: null
+      nil_pad: true
+      sort_by_length: false
+      unify_sub: true
+    model:
+      input_layer:
+        activation: ReLU
+        contextual: LSTM
+        drop_out: 0.0
+        num_layers: 0
+        rnn_drop_out: 0.0
+        subword_proc: leftmost
+        sum_weighted_layers: true
+      model_dim: 300
+      orient_layer:
+        combine_type: CV2
+        drop_out: 0.4
+        num_layers: 1
+        orient_dim: 64
+        rnn_drop_out: 0.2
+        trainable_initials: false
+      polar_layer:
+        activation: ReLU
+        drop_out: 0.4
+        hidden_dim: 200
+        polar_from_parsing_hidden: false
+      tag_label_layer:
+        activation: ReLU
+        drop_out: 0.4
+        hidden_dim: 200
+        logit_type: affine
+    train:
+      learning_rate: 0.001
+      loss_weight:
+        label: 0.3
+        orient: 0.5
+        polar: 0.9
+        polaro: 0.1
+        tag: 0.2
+      orient_hinge_loss: true
+      tune_pre_trained:
+        from_nth_epoch: null
+        lr_factor: 0.06
+  plm_cm:
+    data:
+      batch_size: 80
+      bucket_len: 4
+      factor:
+        ptb:
+          esub: 0
+          msub: 0
+          token: word
+          vocab_size: null
+      max_len: null
+      ner:
+        with_bi_prefix: true
+        with_pos_tag: true
+      sort_by_length: false
+      unify_sub: true
+    model:
+      chunk_layer:
+        activation: ReLU
+        attention_hint:
+          after: false
+          before: false
+          boundary: false
+          difference: true
+          state: false
+          unit: false
+        chunk_dim: 200
+        chunk_module: LSTM
+        chunk_vote: null
+        drop_out: 0.4
+        linear_dim: 100
+        num_layers: 1
+        rnn_drop_out: 0.2
+        trainable_initials: false
+      input_layer:
+        activation: ReLU
+        contextual: LSTM
+        drop_out: 0.0
+        num_layers: 0
+        rnn_drop_out: 0.0
+        subword_proc: leftmost
+        sum_weighted_layers: true
+      model_dim: 300
+      tag_label_layer:
+        activation: ReLU
+        drop_out: 0.4
+        hidden_dim: 200
+        logit_type: affine
+    train:
+      chunk_hinge_loss: true
+      learning_rate: 0.001
+      loss_weight:
+        chunk: 0.5
+        label: 0.3
+        tag: 0.2
+      tune_pre_trained:
+        from_nth_epoch: null
+        lr_factor: 0.06
+  plm_db:
+    data:
+      batch_size: 80
+      bucket_len: 4
+      factor:
+        dptb:
+          binarization: sentence 1 1
+          esub: 0.25
+          min_gap: null
+          msub: 0.25
+          ply_shuffle: all
+          vocab_size: null
+        tiger:
+          binarization: sentence 1 1
+          esub: 0.25
+          min_gap: null
+          msub: 0.25
+          ply_shuffle: all
+          vocab_size: null
+      max_len: null
+      nil_pad: true
+      sort_by_length: false
+      unify_sub: true
+    model:
+      input_layer:
+        activation: ReLU
+        contextual: LSTM
+        drop_out: 0.1
+        num_layers: 0
+        rnn_drop_out: 0.0
+        subword_proc: leftmost
+        sum_weighted_layers: true
+      model_dim: 300
+      orient_layer:
+        combine_type: EV2
+        drop_out: 0.4
+        joint_type: iadd:150:ReLU
+        local_joint: false
+        num_layers: 2
+        orient_dim: 300
+        orient_module: LSTM
+        orient_type: hinge.jr
+        rnn_drop_out: 0.2
+        threshold:
+          direc: 0.5
+          joint: 0.5
+          right: 0.5
+        trainable_initials: false
+      tag_label_layer:
+        activation: ReLU
+        drop_out: 0.4
+        hidden_dim: 200
+        logit_type: affine
+    train:
+      learning_rate: 0.001
+      loss_weight:
+        _direc: 1
+        _udirec_strength: 1
+        joint: 1
+        label: 1
+        orient: 1
+        shuffled__direc: 1
+        shuffled_joint: 1
+        shuffled_orient: 1
+        sudirec_strength: 1
+        tag: 1
+      tune_pre_trained:
+        from_nth_epoch: 50
+        lr_factor: 0.003
+  plm_dm:
+    data:
+      batch_size: 80
+      bucket_len: 2
+      continuous_chunk_only: false
+      factor:
+        dptb:
+          disco_2d:
+            inter_rate: 1.0
+            intra_rate: 0.1
+          esub: 0.25
+          max_interply: 999
+          medoid:
+            continuous: 0
+            head: 0
+            left: 0
+            random: 1.0
+            right: 0
+          min_gap: null
+          msub: 0.25
+          vocab_size: null
+        tiger:
+          disco_2d:
+            inter_rate: 1.0
+            intra_rate: 0.1
+          esub: 0.25
+          max_interply: 999
+          medoid:
+            continuous: 0
+            head: 0
+            left: 0
+            random: 1.0
+            right: 0
+          min_gap: null
+          msub: 0.25
+          vocab_size: null
+      max_len: null
+      sort_by_length: false
+      unify_sub: true
+    model:
+      input_layer:
+        activation: Tanh
+        contextual: LSTM
+        drop_out: 0.0
+        num_layers: 0
+        rnn_drop_out: 0.2
+        subword_proc: leftmost
+        sum_weighted_layers: true
+      model_dim: 300
+      space_layer:
+        attention_hint:
+          after: false
+          before: false
+          difference: true
+          state: false
+          unit: false
+        chunk_activation: ReLU
+        chunk_linear_dim: 150
+        disco_1d_activation: ReLU
+        disco_1d_form: state
+        disco_1d_hidden_dim: 150
+        disco_2d_activation: Tanh
+        disco_2d_form: diff.biaff+b.unit
+        disco_2d_medoid: unsupervised_head
+        drop_out: 0.4
+        num_layers: 2
+        rnn_drop_out: 0.2
+        space_dim: 300
+        space_module: LSTM
+        trainable_initials: false
+      tag_label_layer:
+        activation: ReLU
+        drop_out: 0.4
+        hidden_dim: 200
+        logit_type: affine
+    train:
+      binary_hinge_loss: true
+      learning_rate: 0.001
+      loss_weight:
+        chunk: 1
+        disco_1d: 1
+        disco_2d: 1
+        disco_2d_inter: 1
+        disco_2d_intra: 1
+        label: 1
+        tag: 1
+      tune_pre_trained:
+        from_nth_epoch: 50
+        lr_factor: 0.003
+tool:
+  evalb:
+    path: /FILL/THIS/EVALB/evalb
+    prm: /FILL/THIS/EVALB/new.prm
+  evalb_lcfrs_prm: /FILL/THIS/discodop.prm
+  fasttext:
+    ft_bin:
+      de: /FILL/THIS/cc.de.300.bin
+      en: /FILL/THIS/wiki.en.bin
+      id: /FILL/THIS/cc.id.300.bin
+      ja: /FILL/THIS/cc.ja.300.bin
+      zh: /FILL/THIS/cc.zh.300.bin
+    ft_lower: false
+    path: /FILL/THIS/fasttext
