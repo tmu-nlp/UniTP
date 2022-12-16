@@ -9,29 +9,37 @@ from nltk.tree import Tree
 from utils import inf_none_gen, inf_zero_gen
 from utils.file_io import join, isfile, parpath
 from utils.pickle_io import pickle_load, pickle_dump
+from utils.param_ops import HParams
 
-IOVocab = namedtuple('IOVocab', 'vocabs, IOHead_fields, IOData_fields, threshold')
+IOVocab = namedtuple('IOVocab', 'vocabs, type, IOHead_fields, IOData_fields, threshold')
+_IOHead = namedtuple('_IOHead', 'tree, token, offset, length')
+DataStat = namedtuple('DataStat', 'data, stat')
 class TensorVis:
     @classmethod
     def from_vfile(cls, fpath): # vocabs, IOHead_fields, IOData_fields, threshold
         return cls(parpath(fpath), *pickle_load(fpath))
 
-    def __init__(self, fpath, vocabs, IOHead_fields, IOData_fields, threshold = None, clean_fn = None, fname = 'vocabs.pkl'):
+    def __init__(self, fpath, vocabs, type, IOHead_fields, IOData_fields, threshold = None, clean_fn = None, fname = 'vocabs.pkl'):
         files = listdir(fpath)
-        if fname in files:
+        if isinstance(vocabs, dict):
+            assert (threshold is None) ^ isinstance(threshold, dict)
+            pkl_vocabs, pkl_thresh = vocabs, threshold
+        else:
+            pkl_vocabs = {k: v for k, v in zip(vocabs._fields, vocabs)}
+            pkl_thresh = {k: v for k, v in zip(threshold._fields, threshold)} if threshold else None
+        if vfile_exists := (fname in files):
             assert isfile(join(fpath, fname))
             if callable(clean_fn): # TODO
                 clean_fn(files)
-            anew = False
         else:
-            pickle_dump(join(fpath, fname), IOVocab(tuple(vocabs), IOHead_fields, IOData_fields, threshold))
-            anew = True
-        self._anew = anew
+            pickle_dump(join(fpath, fname), IOVocab(pkl_vocabs, type, IOHead_fields, IOData_fields, pkl_thresh))
+        self._anew = not vfile_exists
         self._fpath = fpath
-        self._vocabs = vocabs
+        self._vocabs = HParams(pkl_vocabs)
+        self._type = type
         self._head_type = namedtuple('IOHead', IOHead_fields)
         self._data_type = namedtuple('IOData', IOData_fields)
-        self._threshold = threshold
+        self._threshold = HParams(pkl_thresh) if threshold else None
 
     @property
     def is_anew(self):
@@ -43,6 +51,10 @@ class TensorVis:
     @property
     def vocabs(self):
         return self._vocabs
+
+    @property
+    def type(self):
+        return self._type
 
     @property
     def IOHead(self):
@@ -59,17 +71,18 @@ class TensorVis:
 from contextlib import ExitStack
 class DiscontinuousTensorVis(TensorVis):
     def __init__(self, fpath, vocabs, thresholds):
-        IOHead_fields = 'tree, token'
-        IOData_fields = 'tree, tag, label, right, joint, direc, batch_segment, segment, mpc_word, mpc_phrase, warning, scores, tag_score, label_score, right_score, joint_score, direc_score'
-        super().__init__(fpath, vocabs, IOHead_fields, IOData_fields, thresholds)
+        common = 'tag, label, right, joint, direc'
+        IOHead_fields = 'token, ' + common
+        IOData_fields = f'tree, {common}, batch_segment, segment, mpc_word, mpc_phrase, warning, scores, tag_score, label_score, right_score, joint_score, direc_score'
+        super().__init__(fpath, vocabs, None, IOHead_fields, IOData_fields, thresholds)
 
-    def set_head(self, batch_id, size, *args):
-        assert len(self._head_type._fields) == len(args)
-        pickle_dump(self.join(f'head.{batch_id}_{size}.pkl'), args)
+    def set_head(self, batch_id, tree, token, length):
+        size = token.shape[1]
+        pickle_dump(self.join(f'head.{batch_id}_{size}.pkl'), (tree, token, 1, length))
 
-    def set_data(self, batch_id, epoch, *args):
-        assert len(self._data_type._fields) == len(args)
-        pickle_dump(self.join(f'data.{batch_id}_{epoch}.pkl'), args)
+    def set_data(self, batch_id, epoch, *l_args):
+        assert len(self._data_type._fields) == len(l_args)
+        pickle_dump(self.join(f'data.{batch_id}_{epoch}.pkl'), l_args)
 
 def tee_trees(join_fn, mode, lengths, trees, batch_id, bin_width):
     ftrees = {}
@@ -97,10 +110,12 @@ from data.continuous.binary.triangle import data_to_tree as tri_d2t
 from data.continuous.binary.trapezoid import data_to_tree as tra_d2t
 from utils.shell_io import parseval, rpt_summary
 class ContinuousTensorVis(TensorVis):
-    def __init__(self, fpath, vocabs):
-        IOHead_fields = 'tree, token'
-        IOData_fields = 'tree, offset, length, word_emb, tree_emb, tag, label, orient, tag_score, label_score, orient_score, trapezoid_info, warning, summary'
-        super().__init__(fpath, vocabs, IOHead_fields, IOData_fields)
+    def __init__(self, fpath, vocabs, condense_per):
+        assert condense_per >= 0
+        common = 'tag, label, orient'
+        IOHead_fields = 'token, ' + common
+        IOData_fields = f'tree, offset, length, word_emb, tree_emb, {common}, tag_score, label_score, orient_score, trapezoid_info, warning, summary'
+        super().__init__(fpath, vocabs, condense_per, IOHead_fields, IOData_fields)
 
     def set_head(self, fhtree, trees, *args):
         str_trees = []
@@ -112,11 +127,10 @@ class ContinuousTensorVis(TensorVis):
             print(str_tree, file = fhtree)
 
         if args:
-            batch_id, size, bin_width, length, token = args
+            batch_id, size, bin_width, token, offset, length, condense_per = args
 
             fname = self.join(f'head.{batch_id}_{size}.pkl')
-            head  = self.IOHead(str_trees, token)
-            pickle_dump(fname, tuple(head)) # type check
+            pickle_dump(fname, (condense_per, str_trees, token, offset, length)) # type check
             return tee_trees(self.join, 'head', length, str_trees, batch_id, bin_width)
 
     def set_data(self, fdtree, error_log_fn, batch_id, epoch,
@@ -209,7 +223,12 @@ if desktop:
 
     def _frac(x):
         x = float(x)
-        assert 0 < x < 1, 'should be a fraction'
+        assert 0 < x < 1, 'should be a fraction in (0, 1)'
+        return x
+
+    def _frac_(x):
+        x = float(x)
+        assert 0 <= x <= 1, 'should be a fraction in [0, 1]'
         return x
 
     def _size(x):
@@ -238,8 +257,8 @@ if desktop:
     BoolList = namedtuple('BoolList', 'delta_shape, show_errors, show_paddings, show_nil, dark_background, inverse_brightness, align_coord, show_color, force_bottom_color, statistics')
     CombList = namedtuple('CombList', 'curve, dash, gauss, picker, spotlight')
     DynamicSettings = namedtuple('DynamicSettings', BoolList._fields + tuple('apply_' + f for f in CombList._fields) + CombList._fields)
-    NumbList = namedtuple('NumbList', 'font, pc_x, pc_y, line_width, offset_x, offset_y, word_width, word_height, yx_ratio, histo_width, scatter_width')
-    numb_types = NumbList(_font, _dim, _dim, _ratio, _offset, _offset, _size, _size, _ratio, _size, _size)
+    NumbList = namedtuple('NumbList', 'font, rho, pc_x, pc_y, line_width, offset_x, offset_y, word_width, word_height, yx_ratio, histo_width, scatter_width')
+    numb_types = NumbList(_font, _frac_, _dim, _dim, _ratio, _offset, _offset, _size, _size, _ratio, _size, _size)
     comb_types = CombList(_curve, _frac, _ratio, _ratio, _ratio)
     PanelList = namedtuple('PanelList', 'hide_listboxes, detach_viewer')
     navi_directions = '⇤↑o↓⇥'
@@ -255,7 +274,10 @@ if desktop:
     from data import NIL
     from data.continuous.binary.triangle import triangle_to_layers
     from data.continuous.binary.trapezoid import trapezoid_to_layers, inflate
-    from data.cross import draw_str_lines
+    from data.cross import Signal as CS
+    from data.cross import Signal as DS, draw_str_lines
+    CS.set_binary()
+    DS.set_binary()
 
     class PathWrapper:
         def __init__(self, fpath, sftp):
@@ -316,7 +338,7 @@ if desktop:
                      root,
                      fpath,
                      initial_bools = BoolList(True, False, False, False, False, True, False, True, False, False),
-                     initial_numbs = NumbList('System 6 15', (1, 1, 9, 1), (2, 1, 9, 1), (4, 2, 10, 2), (0, -200, 200, 10), (0, -200, 200, 10), (80, 60, 200, 5), (22, 12, 99, 2), (0.9, 0.5, 2, 0.1), (60, 50, 120, 10), (60, 50, 120, 10)),
+                     initial_numbs = NumbList('System 6 15', (1, 0, 1, 0.2), (1, 1, 9, 1), (2, 1, 9, 1), (4, 2, 10, 2), (0, -200, 200, 10), (0, -200, 200, 10), (80, 60, 200, 5), (22, 12, 99, 2), (0.9, 0.5, 2, 0.1), (60, 50, 120, 10), (60, 50, 120, 10)),
                      initial_panel = PanelList(False, False),
                      initial_combs = CombList((True, 'x ** 0.5'), (False, (0.5, 0.1, 0.9, 0.1)), (True, (0.04, 0.01, 0.34, 0.01)), (True, (0.2, 0.1, 0.9, 0.1)), (False, (200, 100, 500, 100)))):
             vocabs = fpath.join('vocabs.pkl')
@@ -493,29 +515,20 @@ if desktop:
                 fpath, heads = self._fpath_heads
                 i = int(choice_t[0]) # head/inter-batch id or sentence/intra-batch id
                 if event.widget is headbox:
-                    IOHead = self._tvis.IOHead
                     IOData = self._tvis.IOData
-                    head = fpath.join(heads[i])
                     bid, num_word = (int(i) for i in heads[i][5:-4].split('_'))
-                    head = IOHead(*pickle_load(head))
-                    if head.tag is None and head.label is not None:
-                        polar_vocab = self._tvis.vocabs.polar
+                    head = _IOHead(*pickle_load(fpath.join(heads[i])))
+                    if sentiment := (set(polar_vocab := self._tvis.vocabs.label) == set('01234')):
                         neg_set = set(polar_vocab.index(i) for i in '01')
                         pos_set = set(polar_vocab.index(i) for i in '34')
                             
                     sentbox.delete(0, END)
-                    is_a_conti_task = 'offset' in IOHead._fields
-                    if is_a_conti_task: # tri/tra
-                        offsets = head.offset
-                        lengths = head.length
+                    if is_a_conti_task := not (isinstance(head.offset, int) and head.offset == 1): # tri/tra
+                        breakpoint()
                         is_triangular = head.segment is None and head.label is not None
-                    else: # cross
-                        batch_size = head.token.shape[0]
-                        offsets = (1 for _ in range(batch_size))
-                        lengths = head.seg_length[:, 0]
-                    for sid, (offset, length, words) in enumerate(zip(offsets, lengths, head.token)):
-                        if head.tag is None and head.label is not None:
-                            negation = any(i in head.label[sid] for i in pos_set) and any(i in head.label[sid] for i in neg_set)
+                    for sid, tree in enumerate(head.tree):
+                        if sentiment:
+                            negation = any(t.label() in pos_set for t in head.tree[sid].subtrees()) and any(t.label() in neg_set for t in head.tree[sid].subtrees())
                         else:
                             negation = False
                         mark = '*' if negation else ''
@@ -523,29 +536,19 @@ if desktop:
                         # if warning_cnt:
                         #     mark += " ◌•▴⨯"[warning_level(warning_cnt)]
                         mark += '\t'
-                        tokens = '' if head.label is None else ' '
-                        tokens = tokens.join(self._tvis.vocabs.token[idx] for idx in words[offset:offset + length])
+                        tokens = ' '.join(tree.leaves() if isinstance(tree, Tree) else (w for _, w, _ in tree[0]))
                         sentbox.insert(END, mark + tokens)
 
-                    head_ = []
-                    if is_a_conti_task: # depend on task senti/parse | tri
-                        if is_triangular:
-                            sample_gen = (inf_none_gen if h is None else h for h in head)
-                            for sample in zip(*sample_gen):
-                                values = []
-                                for field, value in zip(IOHead._fields, sample):
-                                    if value is not None and field in ('label', 'right'):
-                                        value = triangle_to_layers(value) 
-                                    values.append(value)
-                                head_.append(IOHead(*values))
+                    prefix, suffix = f'data.{bid}_', '.pkl'
+                    for fname_time in fpath.listdir():
+                        if fname_time.startswith(prefix) and fname_time.endswith(suffix):
+                            if fname_time not in self._sent_cache:
+                                data = IOData(*pickle_load(fpath.join(fname_time)))
+                                self._sent_cache[fname_time] = data_stat = []
 
-                            prefix, suffix = f'data.{bid}_', '.pkl'
-                            for fname_time in fpath.listdir():
-                                if fname_time.startswith(prefix) and fname_time.endswith(suffix):
-                                    if fname_time not in self._sent_cache:
-                                        data       = IOData(*pickle_load(fpath.join(fname_time)))
+                                if is_a_conti_task: # depend on task senti/parse | tri
+                                    if is_triangular:
                                         sample_gen = (inf_none_gen if x is None else x for x in data[:-1])
-                                        data_      = []
                                         for sample in zip(*sample_gen):
                                             values = []
                                             for field, value in zip(IOData._fields, sample): # TODO: open for unsup?
@@ -555,25 +558,9 @@ if desktop:
                                             sample = IOData(*values, inf_none_gen)
                                             stat = SentenceEnergy(num_word, sample.mpc_word, sample.mpc_phrase,
                                                                   sample.offset, sample.length, None, None)
-                                            data_.append((sample, stat))
-                                        self._sent_cache[fname_time] = data_, data[-1]
-                        else: # trapezoidal
-                            sample_gen = (inf_none_gen if h is None or f == 'segment' else h for f,h in zip(IOHead._fields, head))
-                            for sample in zip(*sample_gen):
-                                values = dict(zip(IOHead._fields, sample))
-                                for field in ('label', 'right'):
-                                    if values[field] is not None: # trapezoids for supervised parsing
-                                        values[field] = inflate(trapezoid_to_layers(values[field], head.segment, values['seg_length']))
-                                values['segment'] = head.segment
-                                head_.append(IOHead(**values))
-
-                            prefix, suffix = f'data.{bid}_', '.pkl'
-                            for fname_time in fpath.listdir():
-                                if fname_time.startswith(prefix) and fname_time.endswith(suffix):
-                                    if fname_time not in self._sent_cache:
-                                        data       = IOData(*pickle_load(fpath.join(fname_time)))
+                                            data_stat.append(DataStat(sample, stat))
+                                    else: # trapezoidal
                                         sample_gen = (inf_none_gen if d is None or f in ('segment', 'summary') else d for f,d in zip(IOData._fields, data))
-                                        data_      = []
                                         for sample in zip(*sample_gen):
                                             values = dict(zip(IOData._fields, sample))
                                             for field in ('label', 'right', 'label_score', 'split_score'):
@@ -586,40 +573,23 @@ if desktop:
                                             stat = SentenceEnergy(num_word, sample.mpc_word, sample.mpc_phrase,
                                                                   sample.offset, sample.length,
                                                                   sample.segment, sample.seg_length)
-                                            data_.append((sample, stat))
-                                        self._sent_cache[fname_time] = data_, data[-1]
-                    else: # discontinuous task
-                        sample_gen = (inf_none_gen if f == 'segment' else h for f,h in zip(IOHead._fields, head))
-                        for sample in zip(*sample_gen):
-                            values = dict(zip(IOHead._fields, sample))
-                            for field in ('label', 'right', 'direc'):
-                                values[field] = trapezoid_to_layers(values[field], head.segment, head.segment, big_endian = False)
-                            joint_segment = (head.segment - 1)[:-1]
-                            values['joint'] = trapezoid_to_layers(values['joint'], joint_segment, joint_segment, big_endian = False)
-                            values['segment'] = head.segment
-                            head_.append(IOHead(**values))
-                        
-                        prefix, suffix = f'data.{bid}_', '.pkl'
-                        for fname_time in fpath.listdir():
-                            if fname_time.startswith(prefix) and fname_time.endswith(suffix):
-                                if fname_time not in self._sent_cache:
-                                    data       = IOData(*pickle_load(fpath.join(fname_time)))
-                                    sample_gen = (inf_none_gen if f == 'segment' else d for f,d in zip(IOData._fields, data))
-                                    data_      = []
+                                            data_stat.append(DataStat(sample, stat))
+                                else: # discontinuous task
+                                    batch_segment = data.batch_segment
+                                    joint_segment = [x - 1 for x in batch_segment[:-1]]
+                                    sample_gen = (inf_none_gen if f == 'batch_segment' else d for f,d in zip(IOData._fields, data))
                                     for sample in zip(*sample_gen):
                                         values = dict(zip(IOData._fields, sample))
                                         for field in ('label', 'right', 'direc', 'label_score', 'right_score', 'direc_score'):
-                                            values[field] = trapezoid_to_layers(values[field], data.segment, data.segment, big_endian = False)
-                                        joint_segment = [x - 1 for x in data.segment[:-1]]
+                                            values[field] = trapezoid_to_layers(values[field], batch_segment, batch_segment)
                                         for field in ('joint', 'joint_score'):
-                                            values[field] = trapezoid_to_layers(values[field], joint_segment, joint_segment, big_endian = False)
-                                        values['segment'] = data.segment
+                                            values[field] = trapezoid_to_layers(values[field], joint_segment, joint_segment)
+                                        values['batch_segment'] = batch_segment
                                         sample = IOData(**values)
                                         stat = SentenceEnergy(num_word, sample.mpc_word, sample.mpc_phrase,
-                                                              1, None, sample.segment, sample.seg_length, False)
-                                        data_.append((sample, stat))
-                                    self._sent_cache[fname_time] = data_, data[-1]
-                    self._selected = bid, num_word, head_
+                                                              1, None, batch_segment, sample.segment, False)
+                                        data_stat.append(DataStat(sample, stat))
+                    self._selected = bid, num_word, head
 
                 elif event.widget is sentbox:
                     bid, num_word, head = self._selected[:3]
@@ -736,7 +706,7 @@ if desktop:
                 ds = self.dynamic_settings()
                 ss = self.static_settings()
                 viewer.configure(num_word, num_time, ds, ss, self._init_time)
-                
+            
             viewer.set_framework(head, {t:self._sent_cache[t] for t in timeline})
             viewer.show_sentence(sid)
             viewer.update() # manually update canvas
@@ -936,7 +906,7 @@ if desktop:
                 if is_contiuous:
                     layers = inflate(trapezoid_to_layers(mpc_phrase, segment, seg_length)) # TODO check  seg seg
                 else:
-                    layers = trapezoid_to_layers(mpc_phrase, segment, segment, big_endian = False)
+                    layers = trapezoid_to_layers(mpc_phrase, segment, segment)
                 stats = phrase = tuple(l if l is None else LayerMPCStat(l) for l in layers)
 
             if mpc_word is not None:
@@ -1291,14 +1261,20 @@ if desktop:
         def show_sentence(self, sid): # across timesteps
             head, time_data = self._head_time
 
-            # head in [sentence]: IOHead
-            self._head = _head = head[sid]
+            # head in [sentence]: _IOHead
+            offset = head.offset
+            if not isinstance(offset, int):
+                offset = head.offset[sid]
+            if self._vocab_bundle.type is None:
+                signal = DS.from_bottom_top_down(head.tree[sid])
+                label, xtype, joint, _ = signal.binary(self._conf.rho)
+                _head = self._vocab_bundle.IOHead(signal.word, signal.tag, label, xtype, joint)
+            else:
+                breakpoint()
+            self._head = _head
 
             # data in [epoch, sentence]: IOData
-            self._data = []
-            for _, (batch, _) in time_data:
-                self._data.append(batch[sid])
-
+            self._data = [data_stat[sid] for _, data_stat in time_data]
             self._refresh_board(self._time_slider[1].get())
             if not self._conf.show_paddings:
                 offset = _head.offset if 'offset' in _head._fields else 1
@@ -2071,6 +2047,7 @@ if desktop:
 
         def __draw_board_x(self, data, stat, fg_color, jnt_color, to_color):
             head   = self._head
+            breakpoint()
             board  = self._boards[0]
             vocabs = self._vocab_bundle.vocabs
             threshold = self._vocab_bundle.threshold

@@ -1,9 +1,10 @@
-from models.accp import torch, nn, MultiStem
+from models.accp import torch, MultiStem
 from models.utils import condense_helper, condense_left, blocky_softmax, blocky_max, bool_start_end
 from models.utils import BiaffineAttention, LinearBinary
-from sys import stderr
-from time import time
+from models.types import fmax
 from utils.shell_io import byte_style
+from utils import do_nothing
+from sys import stderr
 
 try:
     import xccp_decode
@@ -149,9 +150,18 @@ def append_negative(layers_of_disco_2d_positive,
     else:
         layers_of_disco_2d_positive.append(logits.squeeze(dim = 2)[existence])
 
+def wrap_split(logits, exsitence, pad = fmax):
+    b = logits.shape[0]
+    batch_dim = torch.arange(b, device = logits.device)
+    l = torch.ones (b, 1, dtype = logits.dtype, device = logits.device) * pad
+    r = torch.zeros(b, 1, dtype = logits.dtype, device = logits.device)
+    logits = torch.cat([l, logits, r], dim = 1)
+    logits[batch_dim, exsitence.sum(dim = 1)] = pad
+    return -logits # because of chunk == 1 - affinity
+
 
 from models.types import rnn_module_type, discontinuous_attention_hint, activation_type, logit_type, fmin, fmax
-from utils.types import orient_dim, hidden_dim, frac_2, frac_4, num_ori_layer, true_type, BaseType
+from utils.types import orient_dim, hidden_dim, frac_2, frac_4, num_ori_layer, true_type, xccp_chunk_type, BaseType
 E_1D_IN = ('unit', 'state', 'diff')
 def is_valid_2d_form(x):
     x = x.split('.')
@@ -173,7 +183,7 @@ stem_config = dict(space_dim           = orient_dim,
                    disco_2d_activation = activation_type,
                    disco_2d_form       = disco_2d_form,
                    disco_2d_medoid     = medoid,
-                   chunk_linear_dim    = orient_dim,
+                   chunk_linear_dim    = xccp_chunk_type,
                    space_module        = rnn_module_type,
                    chunk_activation    = activation_type,
                    attention_hint      = discontinuous_attention_hint,
@@ -272,18 +282,31 @@ class DiscoMultiStem(MultiStem):
         SelectCache.fns = lhs_select, rhs_select
         if disco_2d_op.startswith('biaff'):
             self.biaff_2d_disco = BiaffineAttention(lhs_dim, rhs_dim, disco_2d_op == 'biaff+b')
-            def predict_2d_disco(lhs, rhs):
-                return self.biaff_2d_disco(self._stem_dp(lhs), self._stem_dp(rhs.transpose(1, 2)))
+            def predict_2d_disco(lhs, rhs, existence = None):
+                if is_2d := (existence is None):
+                    rhs = rhs.transpose(1, 2)
+                else:
+                    lhs = lhs[:, :-1]
+                    rhs = rhs[:, 1:]
+                logits = self.biaff_2d_disco(self._stem_dp(lhs), self._stem_dp(rhs), not is_2d)
+                return logits if is_2d else wrap_split(logits, existence)
         else:
             cat_dim = int(disco_2d_op)
             self.cat_2d_disco = LinearBinary(lhs_dim + rhs_dim, cat_dim, disco_2d_activation)
-            def predict_2d_disco(lhs, rhs):
-                batch_size, lhs_seq_dim, lhs_dim = lhs.shape
-                _,          rhs_seq_dim, rhs_dim = rhs.shape
-                lhs_hidden = lhs[:, :, None].expand(batch_size, lhs_seq_dim, rhs_seq_dim, lhs_dim)
-                rhs_hidden = rhs[:, None, :].expand(batch_size, lhs_seq_dim, rhs_seq_dim, rhs_dim)
+            def predict_2d_disco(lhs, rhs, existence = None):
+                if is_2d := (existence is None):
+                    batch_size, lhs_seq_dim, lhs_dim = lhs.shape
+                    _,          rhs_seq_dim, rhs_dim = rhs.shape
+                    lhs_hidden = lhs[:, :, None].expand(batch_size, lhs_seq_dim, rhs_seq_dim, lhs_dim)
+                    rhs_hidden = rhs[:, None, :].expand(batch_size, lhs_seq_dim, rhs_seq_dim, rhs_dim)
+                else:
+                    lhs_hidden = lhs[:, :-1]
+                    rhs_hidden = rhs[:, 1:]
                 hidden = torch.cat([lhs_hidden, rhs_hidden], dim = -1)
-                return self.cat_2d_disco(self._stem_dp(hidden), self._stem_dp)
+                logits = self.cat_2d_disco(self._stem_dp(hidden), self._stem_dp)
+                return logits if is_2d else wrap_split(logits, existence)
+        if chunk_linear_dim == 0:
+            self.predict_chunk = None
         self.predict_2d_disco = predict_2d_disco
 
     def forward(self,
@@ -333,7 +356,10 @@ class DiscoMultiStem(MultiStem):
             cache = SelectCache(unit_emb, disco_hidden, fw, bw)
             disco_1d_logits = self.predict_1d_disco(cache.disco_1d)
             layers_of_disco_1d.append(disco_1d_logits)
-            chunk_logits = self.predict_chunk(fw, bw) # local fw & bw for continuous
+            if self.predict_chunk is None:
+                chunk_logits = self.predict_2d_disco(*cache.disco_2d(do_nothing), existence)
+            else:
+                chunk_logits = self.predict_chunk(fw, bw) # local fw & bw for continuous
             layer_chunk_logits = chunk_logits # save for the next function
 
             longer_seq_idx = torch.arange(seg_len + 1, device = unit_emb.device)
@@ -501,8 +527,14 @@ class DiscoMultiStem(MultiStem):
 
     @property
     def message(self):
+        messages = []
         if hasattr(self, 'biaff_2d_disco'):
-            return f'Biaff.bias: {self.biaff_2d_disco.bias.bias.mean()}'
+            messages.append(f'Biaff.bias: {self.biaff_2d_disco.bias.bias.mean()}')
+        if hasattr(super(), 'message') and (message := super().message):
+            messages.append(message)
+        if messages:
+            return '\n'.join(messages)
+
 
 # batch_insert(101011, 4444) -> 1010000011
 #  001132324    001112334 [_-]=[01]

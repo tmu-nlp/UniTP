@@ -139,6 +139,7 @@ half_hidden_dim = BaseType(100, validator = valid_size)
 train_batch_size = BaseType(80, validator = valid_size)
 train_bucket_len = BaseType(4, validator = valid_epoch)
 inter_height_2d  = BaseType(7, validator = valid_epoch)
+xccp_chunk_type  = BaseType(0, validator = valid_epoch)
 tune_epoch_type  = BaseType(None, as_exception = True, validator = valid_epoch)
 train_max_len    = BaseType(None, validator = valid_size, as_exception = True)
 trapezoid_height = BaseType(-1, valid_size, (0, 1), as_index = True)
@@ -197,9 +198,10 @@ def beta_type(string):
         right = float(right)
     except:
         return
-    if not (level in (F_PHRASE, F_SENTENCE) and 0 <= right <= 1):
+    f_right = left in (F_CNF, F_CON)
+    if level not in (F_PHRASE, F_SENTENCE) or f_right and not 0 <= right <= 1:
         return
-    if left in (F_CNF, F_CON):
+    if f_right:
         if level == F_PHRASE and left == F_CNF:
             return
         return level, left, right

@@ -294,7 +294,7 @@ class DBVA(DVA):
         batch_args = token, tag, label, xtype, joint, batch_segment, segment
         hdio = self.head_data_io(batch_id, tree, batch_trees, batch_args)
         if self.pending_head and self.save_tensors:
-            self.save_tensors.set_head(batch_id, token.shape[1], token, tree)
+            self.save_tensors.set_head(batch_id, tree, token, segment[:, 0])
 
         if self.save_tensors:
             fname = self.join('summary.pkl')
@@ -302,12 +302,9 @@ class DBVA(DVA):
             smy = pickle_load(fname) if isfile(fname) else {}
             smy[(batch_id, self.epoch)] = dict(F1 = tf, DF = df)
             pickle_dump(fname, smy)
-            trees_and_errors = tuple(zip(*hdio.trees_and_errors))
-            data_trees  = trees_and_errors[:2]
-            data_errors = trees_and_errors[2]
-            self.save_tensors.set_data(batch_id, self.epoch, data_trees, 
+            self.save_tensors.set_data(batch_id, self.epoch, hdio.trees, 
                 tag, label, right, joint, direc, batch_segment, segment,
-                mpc_word, mpc_phrase, data_errors, hdio.evalb_lines,
+                mpc_word, mpc_phrase, hdio.errors, hdio.evalb_lines,
                 tag_score, label_score, right_score, joint_score, direc_score)
             
             fpath, draw_str_lines = self._draw_trees

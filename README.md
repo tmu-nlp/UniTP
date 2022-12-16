@@ -1,63 +1,75 @@
 # UniTP
-Unified Tokenization and Parsing framework in PyTorch
+Unified Tokenization and Parsing framework (UniTP) in PyTorch for our two papers in [ACL Findings 2021](https://aclanthology.org/2021.findings-acl.194) and 
+[TACL 2022](https://aclanthology.org/2022.tacl-na.na).
+This is Neural Combinatory Constituency Parsing (NCCP) family which also performs addtional word segmentation (WS), sentiment analysis (SA), named entity recoginition (NER).
+
+This project is extended from [https://github.com/tmu-nlp/nccp](https://github.com/tmu-nlp/nccp).
 
 ![NCCP](000/figures/nccp.gif)
 
 ## Requirements
-- `pip install -r requirements/visual.txt` to visualize remote tensors locally through sftp. (funny!)
-- `pip install -r requirements/full.txt` to train or test our models with PyTorch.
-  - [Evalb](https://nlp.cs.nyu.edu/evalb/) and [fastText](https://fasttext.cc/) are necessary. You need to download and configure `manager.yaml` for them.
-  - [Huggingface transformers](https://github.com/huggingface/transformers) and [Discontinuous DOP](https://github.com/andreasvc/disco-dop) are optional.
 
-## Models
-- NCCP: Neural Combinatory Constituency Parsing (continuous and binary)
-  - ACCP: Attentional Combinatory Constituency Parsing (continuous and multi-branching)
-- DCCP: Discontinuous Combinatory Constituency Parsing (binary)
-  - XCCP: discontinuous X multi-branching Combinatory Constituency Parsing
+For models with fastText,
+- `pip install -r requirements/minimal.txt`
+- Install [fastText](https://fasttext.cc/) and configurate values under path `tool:fasttext:` in file `000/manager.yaml`.
+
+Additional requirements:
+- `pip install -r requirements/full.txt` for NCCP models with [huggingface transformers](https://github.com/huggingface/transformers).
+- For continuous models, install [evalb](https://nlp.cs.nyu.edu/evalb/) and configurate values under path `tool:evalb:` in file `000/manager.yaml`.
+- For discontinuous models, install [discontinuous DOP](https://github.com/andreasvc/disco-dop) and configurate values under path `tool:evalb_lcfrs_prm:` in file `000/manager.yaml`.
+
+## Neural Combinatory Constituency Parsing Models
+- CB: continuous and binary (`models/nccp`, +SA)
+- CM: continuous and multi-branching (`models/accp`, +WS, +NER)
+- DB: discontinuous binary (`models/dccp`)
+- DM: discontinuous multi-branching (`models/xccp`)
+
+Besides constituency parsing, continuous models enables SA, WS, and NER.
+All models can be either monolingual or multilingual.
 
 ## Usage
+### Train a monolingual model
+We provide configuration of models in our two papers
+(i.e., [CB and CM](https://aclanthology.org/2021.findings-acl.194) as file `000/manager.yaml` and [DB and DM](https://aclanthology.org/2022.tacl-na.na)).
+Please first configurate path `data:[corpus]:source_path:` for each corpus you have and check additional requirements above.
 
-### Visualization
-Once you `git clone https://github.com/this/git_repo` from this repository, the folder `000` contains
-our best pre-trained BiLSTM models and visualization samples.
+If a monolingual parser as in our published papers, you might try the following command:
+    
+    # train DB on corpus DPTB on device GPU ID 0.
+    ./manager.py 000 -s db/dptb -g 0
 
-- Use `./visualization.py '000/lstm_nccp/0.ptb/penn_devel'` to see English continuous parsing training process.
-- Check `'000/lstm_accp/0.ptb/penn_devel/*.art'` text files for multi-branching tree visualization with headedness.
-(We use freely available Penn Treebank/PTB sections for this visualization.)
-- Use `./visualization.py '000/lstm_dccp/0.dptb/disco_devel'` to see Engish discontinuous parsing training process.
-- Use `./visualization.py '000/lstm_dccp/1.tiger/disco_devel'` to see German discontinuous parsing training process.
+    # give a optional folder name [#.test_me] for storage
+    ./manager.py 000 -s db/dptb:test_me -g 0
 
-You can also train a new model with your corpus to see more details.
+For multiligual models, example are:
 
-### Test a Pre-Trained Models
-First, try training a new model with the pre-set configuration `000/manager.yaml`.
-- Set `data:ptb:source_path:` to your PTB/WSJ folder, and then use `./manager.py 000 -p` to prepare the data.
-- Set items under `tool:evalb:` for testing F1 scores.
-  - Use `./manager.py 000` to check the status. Any improper configuration will be prompted.
-- Use `./manager.py 000 -s lstm_nccp -i0` to test the pre-train model on PTB test set.
-  - Add `-g [GPU ID]` to choose a GPU; the default is 0.
-  - Use `./visualization.py '000/lstm_nccp/0.ptb/penn_test'` to see local tensors or add ` -h [server address] -p [port]` to see remote ones.
+    # train CB on all available corpora (i.e., PTB, CTB, KTB, NPCMJ, and SST (for SA) if configurated) on GPU 0 (using default values).
+    ./manager.py 000 -s cb
 
-### Train a New Model
-If you want a new work folder, try `mkdir Oh-My-Folder; ./manager.py Oh-My-Folder`. You will get a new configure file `Oh-My-Folder/manager.yaml`.
-- Use `./manager.py Oh-My-Folder` to check the status and available experiments.
-- Use `./manager.py Oh-My-Folder -s lstm_nccp/ptb:Oh-My-Model` to train a continuous model on PTB.
-  - Add `-x [fv=fine evaluation start:[early stop count:[fine eval count]]],[max=max epoch count],[! test along with evaluation]` to change training settings.
-- Use `-s [[lstm_nccp|lstm_accp|xlnet_nccp|xlnet_accp]/[ptb|ctb|ktb]]` to choose a continuous parsing experiment.
-- Use `-s [lstm_dccp|lstm_xccp|xbert_dccp]/[dptb/tiger]` to choose a discontinuous parsing experiment.
-- Use `-s [lstm_sentiment|xlnet_sentiment]` to run a joint task with [Stanford Sentiment Treebank](https://nlp.stanford.edu/sentiment/treebank.html). Set `task/lstm_sentiment/model/hidden_dim: null` as so to turn off the joint task. You can also check the SST tensors with `Oh-My-Folder/lstm_sentiment/0.Oh-My-Model/stan_devel` in a remote/local folder or similar test folders.
-- Use `-s [lstm_tokenization]/[ptb/ctb/ktb]` run a BPE-style neural tokenization. Also please try visualization:)
+    # train CM on all available corpora (i.e., PTB, CTB, KTB, NPCMJ, and CONLL & IDNER (for NER) if configurated).
+    ./manager.py 000 -s cm
 
-### Tips
-- Try modifying the hyper-parameters in your `Oh-My-Folder/manager.yaml`.
-- `Oh-My-Folder/lstm_nccp/register_and_tests.yaml` contains the scores for this experiment.
-- Our reported top speed of NCCP is 1.3k sents/sec on GeForce GTX 1080 Ti with `task:[select]:train:multiprocessing_decode: true`. The speed is shown during the training process. To test the speed on the test set. Use `-x !` to include test set with evaluation. Otherwise, the top speed is around 0.5k sents/sec.
+    # train DM on corpora DPTB and TIGER with pre-trained language models on device GPU 4.
+    ./manager.py 000 -s pre_dm/dptb,tiger -g 4
+    # or
+    ./manager.py 000 -s pre_dm -g 4
 
-### Tips for Developers
-- All modules in `experiments` prefixed with `t_` will be recognized by `manager.py`.
-  - Feel free to write any model in your own experiment. For example, `t_lstm_tokenization` is 
-  a young and underdeveloped experiment. We wrote most codes in the local `model.py` rather than in
-  `models/`.
-  - `models/` contains our sophisticated models' base classes such as `nccp.py`, `accp.py`, and `dccp.py`.
-  If you are looking for our implementation, these three files plus `combine.py` are what you are looking for.
-This framework is mainly for research. We do not pack vocabulary to the model. 
+### Test a trained model
+
+Each trained model is stored at `000/[model]/[#.folder_name]` with an entry `[#]` in `000/[model]/register_and_tests.yaml`, where `[model]` is the model variant and `[#]` is an integer for the trained model instance. Number `[#]` is assigned by `mamager.py` and `[folder_name]` is the optional name for storage such as `:test_me` in the previous example.
+
+To test, you may try:
+
+    ./manager 000 -s [model] -i [#]
+
+### Hyperparameter tuning
+
+We suggest tuning hyperparameter with a trained model.
+
+    ./manager 000 -s [model] -ir [#] -x mp,optuna=[#trials],max=0
+
+If you want to edit the range of hyperparameter explorating, please find a respective file `experiments/[model]/operator.py` and modify its function `_get_optuna_fn`.
+
+### Visualization (not avaliable now)
+We gave an exemplary illustration from our project.
+However, because there are no much demand for visualization, `./visualization.py` becomes obsolated.

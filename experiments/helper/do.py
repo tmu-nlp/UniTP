@@ -8,7 +8,7 @@ from utils.shell_io import has_discodop, discodop_eval, byte_style
 from utils.param_ops import get_sole_key
 from experiments.helper import speed_logg, WarmOptimHelper, discontinuous_score_desc_logg, write_multilingual
 from collections import namedtuple
-HDIO = namedtuple('HDIO', 'bid_offset, evalb_lines, head_lines, trees_and_errors')
+HDIO = namedtuple('HDIO', 'bid_offset, evalb_lines, head_lines, trees, errors')
 
 class DO(Operator):
     def __init__(self, model, get_datasets, recorder, i2vs, get_dm, train_config, evalb_lcfrs_prm):
@@ -122,7 +122,7 @@ class DVA(BaseVis):
 
     @property
     def pending_head(self):
-        return self._xh_writer is None
+        return self._xh_writer is not None
 
     def head_data_io(self, batch_id, trees, tree_gen, batch_args):
         if self._xh_writer:
@@ -138,9 +138,10 @@ class DVA(BaseVis):
 
         bid_offset, _ = self._evalb.total_missing
         self._evalb.add_batch_line(batch_id)
-        evalb_lines, trees_and_errors = [], []
+        evalb_lines, trees, errors = [], [], []
         for sid, (btm, tpd, error) in enumerate(tree_gen(*batch_args, self.i2vs, 'VROOT')):
-            trees_and_errors.append((btm, tpd, error))
+            trees.append((btm, tpd))
+            errors.append(error)
             try: # TODO error when multilingual
                 pred = inner_score(btm, tpd, self._evalb_lcfrs_kwargs, self._xd_writer)
             except:
@@ -156,7 +157,7 @@ class DVA(BaseVis):
                 pprint(head_trees_for_scores[sid])
                 breakpoint()
             if error: self._v_errors[bid_offset + sid] = error
-        return HDIO(bid_offset, evalb_lines, head_lines, trees_and_errors)
+        return HDIO(bid_offset, evalb_lines, head_lines, trees, errors)
 
     def save_head_trees(self, *head_trees):
         self._head_trees.append(head_trees)

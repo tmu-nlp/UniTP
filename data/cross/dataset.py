@@ -7,6 +7,7 @@ from data.dataset import erect_joint_less, fill_bool_tensor
 from data.dataset import binary_signals, checkin_cache
 from data.cross.multib import total_fence, continuous_fence
 from data.continuous.binary import X_RGT
+from data.io import sorting_order, sort_by_order
 from utils.types import F_RANDOM
 from itertools import zip_longest
 from bidict import bidict
@@ -40,6 +41,9 @@ class DiscontinuousDataset(LengthOrderedDataset):
         w2i, t2i, l2i = v2is
         (length, token, tag, signals,
          text) = read_signals(w2i, t2i, fileids, reader, Signal, from_fn, esub, False)
+        if factor is None: # to sort inference samples for comparison
+            sent_order = sorting_order(text)
+            length, token, tag, signals, text = (sort_by_order(sent_order, x) for x in (length, token, tag, signals, text))
         if min_gap:
             for eid, signal in enumerate(signals):
                 if signal.gap >= min_gap:

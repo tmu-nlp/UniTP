@@ -52,17 +52,18 @@ class Signal:
         cls.m_signals = cross_signals, append_space_final_layer
 
     @classmethod
-    def from_tiger_graph(cls, graph, dep = None, *args, **kw_args):
+    def from_tiger_graph(cls, graph, *args, **kw_args):
         from data.cross.tiger import read_tree
-        tree = bottom, top_down = read_tree(graph)
-        top_down_without_unary = deepcopy(top_down)
-        word, bottom_nodes, node2tag, bottom_unary = _pre_proc(bottom, top_down_without_unary, dep)
-        return cls(tree, word, bottom_nodes, top_down_without_unary, bottom_unary, node2tag, dep, *args, **kw_args)
+        return cls.from_bottom_top_down(read_tree(graph), *args, **kw_args)
 
     @classmethod
-    def from_disco_penn(cls, tree, dep = None, *args, **kw_args):
+    def from_disco_penn(cls, tree, *args, **kw_args):
         from data.cross.dptb import read_tree
-        tree = bottom, top_down = read_tree(tree)
+        return cls.from_bottom_top_down(read_tree(tree), *args, **kw_args)
+
+    @classmethod
+    def from_bottom_top_down(cls, tree, dep = None, *args, **kw_args):
+        bottom, top_down = tree
         top_down_without_unary = deepcopy(top_down)
         word, bottom_nodes, node2tag, bottom_unary = _pre_proc(bottom, top_down_without_unary, dep)
         return cls(tree, word, bottom_nodes, top_down_without_unary, bottom_unary, node2tag, dep, *args, **kw_args)

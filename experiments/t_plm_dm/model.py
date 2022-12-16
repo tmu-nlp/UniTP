@@ -11,8 +11,8 @@ from models.plm import XLNetLeaves, GBertLeaves
 
 class GBertDM(GBertLeaves, _DM):
     def forward(self, *args, **kw_args):
-        return super().forward(*args, **kw_args, squeeze_existence = True)
+        return super().forward(*args, **kw_args, offset = None, squeeze_existence = True)
 
 class XLNetDM(XLNetLeaves, _DM):
     def forward(self, *args, **kw_args):
-        return super().forward(*args, **kw_args, squeeze_existence = True)
+        return super().forward(*args, **kw_args, offset = None, squeeze_existence = True)

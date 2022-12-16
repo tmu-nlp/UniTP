@@ -281,31 +281,32 @@ class InputLayer(nn.Module):
         return odc
 
     def tensorboard(self, recorder, global_step):
-        if self._bias_only:
-            ctx_ratio = self._combine_static.itp_rhs_bias().detach()
-            if ctx_ratio is not None:
-                params = dict(ContextualRatio = ctx_ratio.mean())
-                if ctx_ratio.nelement() > 1:
-                    params['RatioStdv'] = ctx_ratio.std()
-                recorder.tensorboard(global_step, 'Parameters/%s', **params)
+        if self._bias_only and (ctx_ratio := self._combine_static.itp_rhs_bias().detach()) is not None:
+            params = dict(ContextualRatio = ctx_ratio.mean())
+            if ctx_ratio.nelement() > 1:
+                params['RatioStdv'] = ctx_ratio.std()
+            recorder.tensorboard(global_step, 'Parameters/%s', **params)
 
     @property
     def message(self):
+        messages = []
         # bsb = self._subject_bias.bias
         # msg = f'BlockySoftmax.bias: {bsb.mean()}'
         # if bsb.nelement() > 1:
         #     msg += f'±{bsb.std()}'
-        if self._bias_only:
-            ctx_ratio = self._combine_static.itp_rhs_bias().detach()
-            if ctx_ratio is not None:
-                ctx_ratio *= 100
-                msg = 'Contextual Rate:'
-                msg += f' {ctx_ratio.mean():.2f}'
-                if ctx_ratio.nelement() > 1:
-                    msg += f'±{ctx_ratio.std():.2f}%'
-                else:
-                    msg += '%'
-                return msg
+        if self._bias_only and (ctx_ratio := self._combine_static.itp_rhs_bias().detach()) is not None:
+            ctx_ratio *= 100
+            msg = 'Contextual Rate:'
+            msg += f' {ctx_ratio.mean():.2f}'
+            if ctx_ratio.nelement() > 1:
+                msg += f'±{ctx_ratio.std():.2f}%'
+            else:
+                msg += '%'
+            return messages.append(msg)
+        if hasattr(super(), 'message') and (message := super().message):
+            messages.append(message)
+        if messages:
+            return '\n'.join(messages)
 
 from models.utils import get_logit_layer
 from models.loss import get_decision, get_decision_with_value
@@ -435,8 +436,8 @@ class ParsingOutputLayer(nn.Module):
         messages = []
         if hasattr(stem := self._stem_layer, 'message'):
             messages.append(stem.message)
-        if hasattr(self, 'message'):
-            messages.append(self.message)
+        if hasattr(super(), 'message'):
+            messages.append(super().message)
         return '\n'.join(messages)
 
 

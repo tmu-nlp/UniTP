@@ -119,9 +119,9 @@ class BiaffineAttention(Module):
             self.register_parameter('bias', None)
         self.reset_parameters()
 
-    def forward(self, lhs, rhs):
+    def forward(self, lhs, rhs, flat = False):
         hidden = self.weight(lhs)
-        hidden = hidden.bmm(rhs)
+        hidden = (hidden * rhs).sum(dim = -1) if flat else hidden.bmm(rhs)
         if self.bias is not None:
             hidden = hidden + self.bias()
         return hidden
@@ -195,7 +195,7 @@ class Bias(Module):
         return self.bias
 
     def extra_repr(self):
-        return 'bias_shape={}'.format(self.in_features)
+        return 'bias_shape={}'.format(self.bias_shape)
 
 def get_logit_layer(logit_type):
     if logit_type in ('affine', 'linear'):

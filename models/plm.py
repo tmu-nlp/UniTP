@@ -158,6 +158,28 @@ class PreLeaves(nn.Module):
         base_returns = super().forward(non_nil, xl_base, ignore_logits, **kwargs)
         return (BottomOutput(batch_size, batch_len, xl_base, None),) + base_returns
 
+    @property
+    def message(self):
+        messages = []
+        if self._layer_weights is not None:
+            _layer_weights = self._layer_weights.detach().reshape(-1)
+            _layer_weights = self._softmax(_layer_weights).cpu()
+            min_val = _layer_weights.min()
+            max_val = _layer_weights.max()
+            _layer_weights = (_layer_weights - min_val) / (max_val - min_val)
+            from utils.str_ops import height_ratio, str_ruler
+            msg_0 = 'Layer weights: '
+            msg_1 = ''.join(height_ratio(w) for w in _layer_weights.numpy())
+            msg_2 = f'[{min_val:.2f}, {max_val:.2f}]'
+            msg_3 = '\n               '
+            msg_4 = str_ruler(len(msg_1))
+            messages.append(msg_0 + msg_1 + msg_2 + msg_3 + msg_4)
+        if hasattr(super(), 'message') and (message := super().message):
+            messages.append(message)
+        if messages:
+            return '\n'.join(messages)
+
+
 xlnet_model_key = 'xlnet-base-cased'
 gbert_model_key = 'bert-base-german-cased'
 class XLNetLeaves(PreLeaves):
@@ -172,22 +194,6 @@ class XLNetLeaves(PreLeaves):
                     assert pd == p
             kwargs['paddings'] = pd
         super().__init__(xlnet_model_key, **input_layer, **kwargs)
-
-    @property
-    def message(self):
-        if self._layer_weights is not None:
-            _layer_weights = self._layer_weights.detach().reshape(-1)
-            _layer_weights = self._softmax(_layer_weights).cpu()
-            min_val = _layer_weights.min()
-            max_val = _layer_weights.max()
-            _layer_weights = (_layer_weights - min_val) / (max_val - min_val)
-            from utils.str_ops import height_ratio, str_ruler
-            msg_0 = 'Layer weights: '
-            msg_1 = ''.join(height_ratio(w) for w in _layer_weights.numpy())
-            msg_2 = f'[{min_val:.2f}, {max_val:.2f}]'
-            msg_3 = '\n               '
-            msg_4 = str_ruler(len(msg_1))
-            return msg_0 + msg_1 + msg_2 + msg_3 + msg_4
 
 class GBertLeaves(PreLeaves):
     def __init__(self, input_layer, **kwargs):

@@ -281,10 +281,11 @@ class CBVA(BaseVis):
 
     def _process(self, batch, trapezoid_info):
         (batch_id, _, size, head_tree, offset, length, token, token_emb, tree_emb,
-         tag, label, orient, tag_score, label_score, orient_score) = batch
+         tag, label, orient, tag_score, label_score, orient_score, condense_per) = batch
 
         if self._head_tree:
-            self._length_bins |= self._ctvis.set_head(self._head_tree, head_tree, batch_id, size, 10, length, token)
+            # batch_id, size, bin_width, token, offset, length, condense_per
+            self._length_bins |= self._ctvis.set_head(self._head_tree, head_tree, batch_id, size, 10, token, offset, length, condense_per)
 
         if self.save_tensors and tag is not None:
             if self._length_bins is not None and self._scores_of_bins:

@@ -158,10 +158,8 @@ class Operator:
                 super_recorder, _, _, trial_step = self._optuna_mode
                 super_recorder.log(f'  (finished after {trial_step + 1} steps: {scores["key"]:.2f})')
                 self._recorder.register_test_scores(scores)
-            if hasattr(self._model, 'message'):
-                message = self._model.message
-                if message:
-                    self._recorder.log(message)
+            if hasattr(self._model, 'message') and (message := self._model.message):
+                self._recorder.log(message)
             return scores
 
     def validation_or_test(self, mode, ds_total, ds_names, ds_iters, icon, epoch, final_test = False):

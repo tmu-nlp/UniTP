@@ -6,6 +6,7 @@ from data.dataset import LengthOrderedDataset, np, read_signals
 from data.dataset import pad_tag_like_nil, pad_tag_like_bos_eos
 from data.dataset import pad_label_like_nil, pad_label_like_bos_eos
 from data.dataset import erect_joint_more, erect_split_more, fill_bool_tensor
+from data.io import sort_by_order, sorting_order
 
 class ContinuousDataset(LengthOrderedDataset):
     def __init__(self,
@@ -28,6 +29,9 @@ class ContinuousDataset(LengthOrderedDataset):
         w2i, t2i, l2i = v2is
         (length, token, tag, signals,
          text) = read_signals(w2i, t2i, fileids, reader, Signal, from_fn, esub, char_as_token)
+        if factor is None: # to sort inference samples for comparison
+            sent_order = sorting_order(text)
+            length, token, tag, signals, text = (sort_by_order(sent_order, x) for x in (length, token, tag, signals, text))
         heads = 'tree', 'token'
         if factor is None:
             label = extra = signal_kwargs = None
