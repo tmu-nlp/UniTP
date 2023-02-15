@@ -55,10 +55,9 @@ class XMLWriter:
     def __init__(self):
         self._lines = []
 
-    def add(self, bottom, top_down, root_id = 0):
+    def add(self, bottom, top_down, root_id = 0, **graph_info):
         s = ET.Element('s', id = str(len(self._lines) + 1))
-        graph = ET.SubElement(s, 'graph', {}, root = str(root_id)) # TODO level in {ctree, dtree, dag}
-        self._lines.append(graph)
+        graph = ET.SubElement(s, 'graph', graph_info, root = str(root_id)) # TODO level in {ctree, dtree, dag}
 
         terminals = ET.SubElement(graph, 'terminals')
         nonterminals = ET.SubElement(graph, 'nonterminals')
@@ -70,6 +69,7 @@ class XMLWriter:
             nt = ET.SubElement(nonterminals, 'nt', id = str(nid), cat = td.label)
             for cid, ftag in td.children.items():
                 ET.SubElement(nt, 'edge', label = ftag if ftag else '--', idref = str(cid))
+        self._lines.append(s)
 
     def dump(self, fname):
         body = ET.Element('body')

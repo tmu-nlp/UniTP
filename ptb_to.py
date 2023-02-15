@@ -3,6 +3,7 @@ from sys import argv, stderr
 from os import mkdir
 from os.path import isdir, join, dirname
 from nltk.corpus import BracketParseCorpusReader
+from data.cross import gap_degree, multi_attachment
 from data.cross.dptb import read_tree, read_graph
 from tqdm import tqdm
 from data.cross.dag import XMLWriter
@@ -21,7 +22,13 @@ if to_type not in ('g', 'd', 'gptb', 'dptb'):
     print('  Supported type: d/dptb or g/gptb', file = stderr)
     exit()
 else:
-    convert = (read_tree, read_graph)[to_type[0] == 'g']
+    if to_dag := (to_type[0] == 'g'):
+        def graph_info(bt, td):
+            return dict(max_gap = str(gap_degree(bt, td)), max_parent = str(max(multi_attachment(td).values())))
+    else:
+        def graph_info(bt, td):
+            return dict(max_gap = str(gap_degree(bt, td)))
+    convert = (read_tree, read_graph)[to_dag]
 
 fileids = reader.fileids()
 if one_xml := xml_fpath.endswith('.xml'):
@@ -52,7 +59,7 @@ with tqdm(desc = wsj_path, total = len(fileids)) as qbar:
             except:
                 continue
 
-            (one_xml if one_xml else xml_writer).add(bt, td)
+            (one_xml if one_xml else xml_writer).add(bt, td, **graph_info(bt, td))
         if not one_xml:
             xml_writer.dump(xml_files[fileid])
         qbar.update(1)
