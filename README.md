@@ -75,7 +75,7 @@ We gave an exemplary illustration from [https://github.com/tmu-nlp/nccp](https:/
 However, because of few demands for visualization, `./visualization.py` becomes obsoleted.
 
 ## For NLP2023 OKINAWA (言語処理学会第29回年次大会)
-To convert the Penn Treebank into a graphbank:
+To convert the Penn Treebank into a graphbank or [DPTB](https://www.aclweb.org/anthology/W11-2913/):
 
     # Output all trees into one XML file,
     ./ptb_to.py g path_to_ptb_wsj gptb.xml
@@ -83,6 +83,6 @@ To convert the Penn Treebank into a graphbank:
     # or into separate XML files respecting the wsj folder
     ./ptb_to.py g path_to_ptb_wsj gptb_folder
 
-    # Additionally, following [https://www.aclweb.org/anthology/W11-2913/](DPTB) conversion:
+    # Additionally, following DPTB conversion:
     ./ptb_to.py d path_to_ptb_wsj dptb.xml
     ./ptb_to.py d path_to_ptb_wsj dptb_folder
