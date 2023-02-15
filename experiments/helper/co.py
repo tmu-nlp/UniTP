@@ -18,10 +18,8 @@ class CO(Operator):
         if self.multi_corp:
             make = lambda v: {k: v for k in self.i2vs}
             self._mode_length_bins = make(None), make(None)
-            self._initial_run      = make(True), make(True)
         else:
             self._mode_length_bins = None, None
-            self._initial_run      = True, True
 
     def _build_optimizer(self, start_epoch):
         # self._loss_weights_of_tag_label_orient = 0.3, 0.1, 0.6 betas = (0.9, 0.98), weight_decay = 0.01, eps = 1e-6
@@ -29,7 +27,7 @@ class CO(Operator):
         if start_epoch > 0:
             base_path = self.recorder._instance_dir[1]
             for folder in listdir(base_path):
-                if folder.endswith('_devel') and isdir(fpath := join(base_path, folder)):
+                if (folder.endswith('_devel') or folder.endswith('_test')) and isdir(fpath := join(base_path, folder)):
                     CO.clean_and_report(fpath, start_epoch)
         optim = hp.optimizer
         optim.zero_grad()
@@ -83,13 +81,16 @@ class CO(Operator):
 
     def combine_scores_and_decide_key(self, epoch, ds_scores):
         if self._vis_mode and self.multi_corp:
-            write_multilingual(self._recorder.create_join('multilingual'), self.i2vs, self._model)
+            if len(i2vs := {k:v for k,v in self.i2vs.items() if k != C_SSTB}) > 1:
+                write_multilingual(self._recorder.create_join('multilingual'), i2vs, self._model)
         key = []
         for ds_name, ds_score in ds_scores.items():
             if ds_name != C_SSTB:
                 key.append(ds_score.get('F1', 0))
             else:
-                key.append(ds_score['q'])
+                # from utils.math_ops import harmony
+                # key.append(100 * harmony(*(ds_score[x]/100 for x in 'QqDd')))
+                key.append(ds_score.get('q', 0))
         ds_scores['key'] = sum(key) / len(key)
         return ds_scores
 
@@ -112,6 +113,27 @@ class CO(Operator):
                     content = f'{len(removed)} files'
                 Operator.msg(f' [{start_epoch:.2f}:] {content} removed from {fpath}.')
 
+
+from contextlib import ExitStack
+def tee_trees(join_fn, mode, lengths, trees, batch_id, bin_width):
+    ftrees = {}
+    write_len = isinstance(bin_width, int)
+    with ExitStack() as stack:
+        if batch_id is None:
+            fh = stack.enter_context(open(join_fn(f'{mode}.tree'), 'a'))
+        else:
+            fh = stack.enter_context(open(join_fn(f'{mode}.{batch_id}.tree'), 'w'))
+        for wlen, tree in zip(lengths, trees):
+            print(tree, file = fh)
+            if write_len:
+                wbin = wlen // bin_width
+                if wbin in ftrees:
+                    fw = ftrees[wbin]
+                else:
+                    fw = open(join_fn(f'{mode}.bin_{wbin}.tree'), 'a')
+                    ftrees[wbin] = stack.enter_context(fw)
+                print(tree, file = fw)
+    return ftrees.keys()
 
 def remove_vis_data_from(fpath, start_epoch):
     removed = []

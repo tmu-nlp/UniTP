@@ -5,7 +5,7 @@ from utils.types import M_TRAIN, K_CORP, F_CNF, BaseType, frac_open_0, true_type
 from models.utils import PCA, fraction, hinge_score
 from models.loss import binary_cross_entropy, hinge_loss, cross_entropy, get_label_height_mask, sorted_decisions_with_values
 from experiments.helper import make_tensors, continuous_score_desc_logg, sentiment_score_desc_logg
-from experiments.helper.co import CO, CVP
+from experiments.helper.co import CO, CVP, tee_trees
 from time import time
 import torch
 
@@ -116,6 +116,7 @@ class CBOperator(CO):
                 else:
                     polar_scores, polars = sorted_decisions_with_values(self._softmax, 5, tag_label_or_polar)
                     b_data = [None, polars.type(torch.uint8), gold_orients, None, polar_scores.type(torch.float16), orient_logits.type(torch.float16)]
+                b_data.append(batch.get('condense_per'))
             else:
                 if ds_name != C_SSTB:
                     tags   = self._model.get_decision(tag_label_or_polar.tag  )
@@ -131,7 +132,6 @@ class CBOperator(CO):
 
     def _before_validation(self, ds_name, epoch, use_test_set = False, final_test = False):
         devel_bins, test_bins = self._mode_length_bins
-        devel_init, test_init = self._initial_run
         epoch_major, epoch_minor = epoch.split('.')
         if use_test_set:
             if final_test:
@@ -141,23 +141,11 @@ class CBOperator(CO):
                 folder = ds_name + '_test_with_devel'
                 save_tensors = is_bin_times(int(epoch_major)) if int(epoch_minor) == 0 else False
                 scores_of_bins = False
-            if self.multi_corp:
-                flush_heads = test_init[ds_name]
-                test_init[ds_name] = False
-            else:
-                flush_heads = test_init
-                self._initial_run = devel_init, False
             length_bins = test_bins
         else:
             folder = ds_name + '_devel'
             save_tensors = is_bin_times(int(epoch_major)) if int(epoch_minor) == 0 else False
             scores_of_bins = False
-            if self.multi_corp:
-                flush_heads = devel_init[ds_name]
-                devel_init[ds_name] = False
-            else:
-                flush_heads = devel_init
-                self._initial_run = False, test_init
             length_bins = devel_bins
 
         if self.multi_corp:
@@ -171,7 +159,7 @@ class CBOperator(CO):
             self._model.update_static_pca(m_corp)
 
         work_dir = self.recorder.create_join(folder)
-        if serial := (save_tensors or flush_heads or self.dm is None or ds_name == C_SSTB):
+        if serial := (save_tensors or length_bins is None or self.dm is None or ds_name == C_SSTB):
             v_cls = ParsingCBVA if ds_name != C_SSTB else SentimentCBVA
             vis = v_cls(epoch,
                         work_dir,
@@ -180,11 +168,10 @@ class CBOperator(CO):
                         self.recorder.log,
                         save_tensors,
                         length_bins,
-                        scores_of_bins,
-                        flush_heads)
+                        scores_of_bins)
         else:
             vis = CBVP(epoch, work_dir, self._evalb, self.recorder.log, self.dm, m_corp)
-        vis = VisRunner(vis, async_ = serial) # wrapper
+        vis = VisRunner(vis, async_ = False) # wrapper
         self._vis_mode = vis, use_test_set, final_test, serial
 
     def _get_optuna_fn(self, train_params):
@@ -243,71 +230,89 @@ class CBOperator(CO):
         return obj_fn
 
 
-from data.mp import BaseVis, VisRunner
-from utils.file_io import join, isfile, remove
+from copy import deepcopy
+from data.continuous.binary.triangle import data_to_tree as tri_d2t
+from data.continuous.binary.trapezoid import data_to_tree as tra_d2t
 from utils.shell_io import parseval, rpt_summary
-from visualization import ContinuousTensorVis
+
+from data.mp import BaseVis, VisRunner
+from utils import inf_none_gen, inf_zero_gen
+from utils.file_io import join, remove, isfile
+from utils.shell_io import parseval, rpt_summary
 class CBVA(BaseVis):
     def __init__(self, epoch, work_dir, evalb, i2vs, logger,
                  save_tensors   = True,
                  length_bins    = None,
-                 scores_of_bins = False,
-                 flush_heads    = False):
+                 scores_of_bins = False):
         super().__init__(epoch, work_dir, i2vs)
         self._evalb = evalb
-        if flush_heads and isfile(fname := self.join('vocabs.pkl')):
-            remove(fname)
-        self._ctvis = ContinuousTensorVis(work_dir, i2vs)
         self._logger = logger
         htree = join(work_dir, 'head.tree')
         dtree = join(work_dir, f'data.{epoch}.tree')
         self._fnames = htree, dtree
-        self._head_tree = None
-        self._data_tree = None
         self._scores_of_bins = scores_of_bins
         self.save_tensors = save_tensors
         self._length_bins = length_bins
 
-    def __del__(self):
-        if self._head_tree: self._head_tree.close()
-        if self._data_tree: self._data_tree.close()
-
     def _before(self):
+        self._flush_head = self._length_bins is None
         htree, dtree = self._fnames
-        if self._ctvis.is_anew: # TODO
-            self._head_tree = open(htree, 'w')
+        if isfile(dtree): remove(dtree)
+        if self._flush_head:
             self._length_bins = set()
-        self._data_tree = open(dtree, 'w')
+            if isfile(htree): remove(htree)
 
     def _process(self, batch, trapezoid_info):
         (batch_id, _, size, head_tree, offset, length, token, token_emb, tree_emb,
          tag, label, orient, tag_score, label_score, orient_score, condense_per) = batch
 
-        if self._head_tree:
-            # batch_id, size, bin_width, token, offset, length, condense_per
-            self._length_bins |= self._ctvis.set_head(self._head_tree, head_tree, batch_id, size, 10, token, offset, length, condense_per)
+        if self._flush_head:
+            str_trees = []
+            for tree in head_tree:
+                tree = deepcopy(tree)
+                tree.un_chomsky_normal_form()
+                str_trees.append(' '.join(str(tree).split()))
+            self._length_bins |= tee_trees(self.join, 'head', length, str_trees, None, 10)
 
-        if self.save_tensors and tag is not None:
-            if self._length_bins is not None and self._scores_of_bins:
-                bin_width = 10
-            else:
-                bin_width = None
-            extra = size, bin_width, self._evalb
+        if self._length_bins is not None and self._scores_of_bins:
+            bin_width = 10
         else:
-            extra = None
+            bin_width = None
 
-        self._ctvis.set_data(self._data_tree, self._logger, batch_id, self.epoch,
-                             offset, length, token, token_emb, tree_emb,
-                             tag, label, orient,
-                             tag_score, label_score, orient_score,
-                             trapezoid_info, extra)
+        if tag is None:
+            tag_ = inf_none_gen
+            label_ = label
+        else:
+            tag_ = tag
+            label_ = label_score if label is None else label
+        offset_ = inf_zero_gen if offset is None else offset
+
+        if trapezoid_info is None:
+            segment = seg_length = None
+            func_args = zip(offset_, length, token, tag_, label_, orient)
+            data_to_tree = tri_d2t
+        else:
+            segment, seg_length = trapezoid_info
+            func_args = zip(offset_, length, token, tag_, label_, orient, seg_length)
+            func_args = (args + (segment,) for args in func_args)
+            data_to_tree = tra_d2t
+
+        str_trees, batch_warnings, log_warnings = [], [], {}
+        for i, dargs in enumerate(func_args):
+            tree, warnings = data_to_tree(self.i2vs, *dargs, fallback_label = 'VROOT')
+            tree.un_chomsky_normal_form()
+            str_trees.append(' '.join(str(tree).split()))
+            batch_warnings.append(warnings)
+            if warnings:
+                log_warnings[i] = warnings
+        tee_trees(self.join, f'data.{self.epoch}', length, str_trees, None, bin_width)
+        
+        if log_warnings:
+            self._logger(f'  Batch #{batch_id} has {len(log_warnings)} fallbacked conversions:')
 
 from data.stan_types import calc_stan_accuracy
 class ParsingCBVA(CBVA):
     def _after(self):
-        if self._head_tree:
-            self._head_tree.close()
-        self._data_tree.close()
         proc = parseval(self._evalb, *self._fnames)
         report = proc.stdout.decode()
         scores = rpt_summary(report, False, True)
@@ -319,18 +324,16 @@ class ParsingCBVA(CBVA):
                 for e, error in enumerate(errors):
                     self._logger(f'    {e}. ' + error)
                 fname = f'data.{self.epoch}.rpt'
-                with open(self._ctvis.join(fname), 'w') as fw:
+                with open(self.join(fname), 'w') as fw:
                     fw.write(report)
                 self._logger(f'  (Check {fname} for details.)')
 
-        self._head_tree = self._data_tree = None
-
         if self._length_bins is not None and self._scores_of_bins:
-            with open(self._ctvis.join(f'{self.epoch}.scores'), 'w') as fw:
+            with open(self.join(f'{self.epoch}.scores'), 'w') as fw:
                 fw.write('wbin,num,lp,lr,f1,ta\n')
                 for wbin in self._length_bins:
-                    fhead = self._ctvis.join(f'head.bin_{wbin}.tree')
-                    fdata = self._ctvis.join(f'data.bin_{wbin}.tree')
+                    fhead = self.join(f'head.bin_{wbin}.tree')
+                    fdata = self.join(f'data.{self.epoch}.bin_{wbin}.tree')
                     proc = parseval(self._evalb, fhead, fdata)
                     smy = rpt_summary(proc.stdout.decode(), False, True)
                     fw.write(f"{wbin},{','.join(str(smy.get(x, 0)) for x in ('N', 'LP', 'LR', 'F1', 'TA'))}\n")
@@ -342,11 +345,8 @@ class ParsingCBVA(CBVA):
 from collections import defaultdict
 class SentimentCBVA(CBVA):
     def _after(self):
-        if self._head_tree:
-            self._head_tree.close()
-        self._data_tree.close()
         flip_lines = defaultdict(list) if self.save_tensors else None
-        _, smy = calc_stan_accuracy(*self._fnames, self._logger, flip_lines)
+        _, root_smy, all_smy = calc_stan_accuracy(*self._fnames, self._logger, flip_lines)
         if flip_lines:
             for flip_n, nhd in flip_lines.items():
                 nhd.sort(key = lambda x: x[0] - flip_n)
@@ -355,7 +355,7 @@ class SentimentCBVA(CBVA):
                         fw.write(f'{eid}. prediction has {n - flip_n} more flips\n\n')
                         fw.write('\n'.join(head) + '\n\n')
                         fw.write('\n'.join(data) + '\n\n')
-        return sentiment_score_desc_logg(smy)
+        return sentiment_score_desc_logg(root_smy, all_smy)
 
 
 class ScatterVis(BaseVis):

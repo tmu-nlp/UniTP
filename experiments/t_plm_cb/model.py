@@ -18,11 +18,11 @@ class XLNetSentimentCB(XLNetLeaves, _SentimentCB):
         super().__init__(*largs, **kwargs)
 
     def forward(self, *largs, **kwargs):
-        return super().forward(*largs, **kwargs, squeeze_existence = False)
+        return super().forward(*largs, **kwargs, offset = 0, squeeze_existence = False)
 
 class XLNetSentimentOnSyntacticCB(XLNetLeaves, _SentimentOnSyntacticCB):
     def __init__(self, *largs, **kwargs):
         super().__init__(*largs, **kwargs)
 
     def forward(self, *largs, **kwargs):
-        return super().forward(*largs, **kwargs, squeeze_existence = False)
+        return super().forward(*largs, **kwargs, offset = 0, squeeze_existence = False)

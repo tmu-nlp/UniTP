@@ -12,9 +12,9 @@ def trapezoid_to_layers(data, segments, seg_length, i2l = None, offset = 0):
         if i2l is not None:
             if hasattr(layer, 'shape') and len(layer.shape) > 1:
                 if i2l[0] == NIL:
-                    layer = ['-'.join(i2l[y] for y in x if y > 0) for x in layer]
+                    layer = [''.join(i2l[y] for y in x if y > 0) for x in layer]
                 else:
-                    layer = ['-'.join(i2l[y] for y in x) for x in layer]
+                    layer = [''.join(i2l[y] for y in x) for x in layer]
             else:
                 layer = [i2l[x] for x in layer]
         layers.append(layer)

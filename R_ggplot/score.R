@@ -23,11 +23,11 @@ txl$gp <- rep('4', length(txl$wbin))
 txm$gp <- rep('5', length(txm$wbin))
 
 # tri$type <- rep('/bn', length(tri$wbin))
-may$type <- rep('multi-branching', length(may$wbin))
-tra$type <- rep('binary', length(tra$wbin))
+may$type <- rep('CM', length(may$wbin))
+tra$type <- rep('CB', length(tra$wbin))
 # fxl$type <- rep('binary', length(fxl$wbin))
-txl$type <- rep('binary', length(txl$wbin))
-txm$type <- rep('multi-branching', length(txm$wbin))
+txl$type <- rep('CB', length(txl$wbin))
+txm$type <- rep('CM', length(txm$wbin))
 
 data <- rbind(may, tra, txl, txm)
 
@@ -46,7 +46,7 @@ p <- p + scale_x_continuous(breaks = wlens,
                             expand = c(0.03, 0.03),
                             sec.axis = sec_axis(~.,
                                                 breaks = wlens, labels = tra$num, 
-                                                name = "Number of Test Samples"))
+                                                name = "Number of Gold Trees in PTB Test Set"))
 # p <- p + scale_color_discrete(labels = c('XLNet', 'Trapezoid', 'Triangle'), breaks = c('XLNet', 'Trapezoid', 'Triangle'))
 # p <- p + scale_shape_discrete(labels = c('XLNet', 'Trapezoid', 'Triangle'), breaks = c('XLNet', 'Trapezoid', 'Triangle'))
 p <- p + theme(legend.position = c(0.29, 0.17),

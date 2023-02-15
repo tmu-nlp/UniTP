@@ -77,17 +77,22 @@ def discontinuous_score_desc_logg(tp, tr, tf, dp, dr, df):
     desc_for_logger = f'({tp:.2f}/{tr:.2f}/{tf:.2f}|{dp:.2f}/{dr:.2f}/{df:.2f})'
     return desc_for_screen, desc_for_logger
 
-def sentiment_score_desc_logg(scores):
-    logg = '/'.join(k + f'{v:.2f}' for k, v in zip(scores._fields, scores))
+def sentiment_score_desc_logg(root_scores, all_scores):
+    logg = []
     desc = '('
-    for field, value in zip(scores._fields, scores):
+    scores = {}
+    for field, root_value, all_value in zip(root_scores._fields, root_scores, all_scores):
         if field == 'q':
-            value = byte_style(f'{value:.2f}', '7', underlined = True)
+            value = f'{root_value:.0f}\'' + byte_style(f'{all_value:.2f}', '7', underlined = True)
         else:
-            value = f'{value:.0f}' + "'|"[field == 'Q']
-        desc += byte_style(field, '7') + value
+            value = f'{root_value:.0f}\'{all_value:.0f}/'
+        cap_field = field.upper()
+        desc += byte_style(cap_field, '7') + value
+        scores[cap_field] = root_value
+        scores[field] = all_value
+        logg.append(cap_field + f'{all_value:.2f}\'{root_value:.2f}')
     desc += ')'
-    scores = {k: v for k, v in zip(scores._fields, scores)}
+    logg = '/'.join(logg)
     return scores, desc, logg
 
 def serialize_matrix(m, skip = None):

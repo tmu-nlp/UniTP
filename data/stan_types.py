@@ -105,7 +105,7 @@ NEG_SET = '01'
 POS_SET = '34'
 def neg_pos(head, data, _numerators, _denominators, offset):
     gr = head.label()
-    pr = data.label().split('-')
+    pr = data.label()
     neutral = pr[0] == NEUTRAL
     fine = gr == pr[0]
     if gr in NEG_SET:
@@ -144,7 +144,7 @@ def flipped(tree, path = ()):
 
 from nltk.tree import Tree
 from collections import namedtuple
-SentimentScore = namedtuple('SentimentScore', 'D, T, Q, d, t, q')
+SentimentScore = namedtuple('SentimentScore', 'd, t, q')
     # 0: root_fine, 1: root_PnN 2: root_PN, 3: fine, 4: PnN 5: PN
 def calc_stan_accuracy(hfname, dfname, on_error, flip_lines = None):
     
@@ -184,4 +184,5 @@ def calc_stan_accuracy(hfname, dfname, on_error, flip_lines = None):
                 denominators[i] += d
                 scores.append(n/d*100 if d else float('nan'))
             sents.append(scores)
-    return sents, SentimentScore(*(n/d*100 if d else float('nan') for n,d in zip(numerators, denominators)))
+    scores = tuple(n/d*100 if d else float('nan') for n,d in zip(numerators, denominators))
+    return sents, SentimentScore(*scores[:3]), SentimentScore(*scores[3:])

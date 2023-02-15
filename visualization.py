@@ -11,15 +11,15 @@ from utils.file_io import join, isfile, parpath
 from utils.pickle_io import pickle_load, pickle_dump
 from utils.param_ops import HParams
 
-IOVocab = namedtuple('IOVocab', 'vocabs, type, IOHead_fields, IOData_fields, threshold')
-_IOHead = namedtuple('_IOHead', 'tree, token, offset, length')
+IOVocab = namedtuple('IOVocab', 'vocabs, IOHead_fields, IOData_fields, threshold')
+_IOHead = namedtuple('_IOHead', 'type, tree, token, offset, length')
 DataStat = namedtuple('DataStat', 'data, stat')
 class TensorVis:
     @classmethod
     def from_vfile(cls, fpath): # vocabs, IOHead_fields, IOData_fields, threshold
         return cls(parpath(fpath), *pickle_load(fpath))
 
-    def __init__(self, fpath, vocabs, type, IOHead_fields, IOData_fields, threshold = None, clean_fn = None, fname = 'vocabs.pkl'):
+    def __init__(self, fpath, vocabs, IOHead_fields, IOData_fields, threshold = None, clean_fn = None, fname = 'vocabs.pkl'):
         files = listdir(fpath)
         if isinstance(vocabs, dict):
             assert (threshold is None) ^ isinstance(threshold, dict)
@@ -32,11 +32,10 @@ class TensorVis:
             if callable(clean_fn): # TODO
                 clean_fn(files)
         else:
-            pickle_dump(join(fpath, fname), IOVocab(pkl_vocabs, type, IOHead_fields, IOData_fields, pkl_thresh))
+            pickle_dump(join(fpath, fname), IOVocab(pkl_vocabs, IOHead_fields, IOData_fields, pkl_thresh))
         self._anew = not vfile_exists
         self._fpath = fpath
         self._vocabs = HParams(pkl_vocabs)
-        self._type = type
         self._head_type = namedtuple('IOHead', IOHead_fields)
         self._data_type = namedtuple('IOData', IOData_fields)
         self._threshold = HParams(pkl_thresh) if threshold else None
@@ -53,10 +52,6 @@ class TensorVis:
         return self._vocabs
 
     @property
-    def type(self):
-        return self._type
-
-    @property
     def IOHead(self):
         return self._head_type
 
@@ -68,133 +63,20 @@ class TensorVis:
     def threshold(self):
         return self._threshold
 
-from contextlib import ExitStack
 class DiscontinuousTensorVis(TensorVis):
     def __init__(self, fpath, vocabs, thresholds):
         common = 'tag, label, right, joint, direc'
         IOHead_fields = 'token, ' + common
         IOData_fields = f'tree, {common}, batch_segment, segment, mpc_word, mpc_phrase, warning, scores, tag_score, label_score, right_score, joint_score, direc_score'
-        super().__init__(fpath, vocabs, None, IOHead_fields, IOData_fields, thresholds)
+        super().__init__(fpath, vocabs, IOHead_fields, IOData_fields, thresholds)
 
     def set_head(self, batch_id, tree, token, length):
         size = token.shape[1]
-        pickle_dump(self.join(f'head.{batch_id}_{size}.pkl'), (tree, token, 1, length))
+        pickle_dump(self.join(f'head.{batch_id}_{size}.pkl'), (None, tree, token, 1, length))
 
     def set_data(self, batch_id, epoch, *l_args):
         assert len(self._data_type._fields) == len(l_args)
         pickle_dump(self.join(f'data.{batch_id}_{epoch}.pkl'), l_args)
-
-def tee_trees(join_fn, mode, lengths, trees, batch_id, bin_width):
-    ftrees = {}
-    write_all = batch_id is None
-    write_len = isinstance(bin_width, int)
-    with ExitStack() as stack:
-        if write_all:
-            fh = stack.enter_context(open(join_fn(f'{mode}.tree'), 'a'))
-        else:
-            fh = stack.enter_context(open(join_fn(f'{mode}.{batch_id}.tree'), 'w'))
-        for wlen, tree in zip(lengths, trees):
-            print(tree, file = fh)
-            if write_len:
-                wbin = wlen // bin_width
-                if wbin in ftrees:
-                    fw = ftrees[wbin]
-                else:
-                    fw = open(join_fn(f'{mode}.bin_{wbin}.tree'), 'a')
-                    ftrees[wbin] = stack.enter_context(fw)
-                print(tree, file = fw)
-    return ftrees.keys()
-
-from copy import deepcopy
-from data.continuous.binary.triangle import data_to_tree as tri_d2t
-from data.continuous.binary.trapezoid import data_to_tree as tra_d2t
-from utils.shell_io import parseval, rpt_summary
-class ContinuousTensorVis(TensorVis):
-    def __init__(self, fpath, vocabs, condense_per):
-        assert condense_per >= 0
-        common = 'tag, label, orient'
-        IOHead_fields = 'token, ' + common
-        IOData_fields = f'tree, offset, length, word_emb, tree_emb, {common}, tag_score, label_score, orient_score, trapezoid_info, warning, summary'
-        super().__init__(fpath, vocabs, condense_per, IOHead_fields, IOData_fields)
-
-    def set_head(self, fhtree, trees, *args):
-        str_trees = []
-        for tree in trees:
-            tree = deepcopy(tree)
-            tree.un_chomsky_normal_form()
-            str_tree = ' '.join(str(tree).split())
-            str_trees.append(str_tree)
-            print(str_tree, file = fhtree)
-
-        if args:
-            batch_id, size, bin_width, token, offset, length, condense_per = args
-
-            fname = self.join(f'head.{batch_id}_{size}.pkl')
-            pickle_dump(fname, (condense_per, str_trees, token, offset, length)) # type check
-            return tee_trees(self.join, 'head', length, str_trees, batch_id, bin_width)
-
-    def set_data(self, fdtree, error_log_fn, batch_id, epoch,
-                 offset, length, token, token_emb, tree_emb,
-                 tag, label, orient,
-                 tag_score, label_score, orient_score,
-                 trapezoid_info, size_bin_width_evalb):
-
-        if tag is None:
-            tag_ = inf_none_gen
-            label_ = label
-        else:
-            tag_ = tag
-            label_ = label_score if label is None else label
-        offset_ = inf_zero_gen if offset is None else offset
-
-        if trapezoid_info is None:
-            segment = seg_length = None
-            func_args = zip(offset_, length, token, tag_, label_, orient)
-            data_to_tree = tri_d2t
-        else:
-            segment, seg_length = trapezoid_info
-            func_args = zip(offset_, length, token, tag_, label_, orient, seg_length)
-            func_args = (args + (segment,) for args in func_args)
-            data_to_tree = tra_d2t
-
-        str_trees, batch_warnings, log_warnings = [], [], {}
-        for i, dargs in enumerate(func_args):
-            tree, warnings = data_to_tree(self.vocabs, *dargs, fallback_label = 'VROOT')
-            tree.un_chomsky_normal_form()
-            str_tree = ' '.join(str(tree).split())
-            print(str_tree, file = fdtree) # TODO use stack to protect opened file close and delete
-            str_trees.append(str_tree)
-            batch_warnings.append(warnings)
-            if warnings:
-                log_warnings[i] = warnings
-        
-        if log_warnings:
-            error_log_fn(f'  Batch #{batch_id} has {len(log_warnings)} fallbacked conversions:')
-
-        if size_bin_width_evalb:
-            size, bin_width, evalb = size_bin_width_evalb
-            tee_trees(self.join, 'data', length, str_trees, batch_id, bin_width)
-
-            fhead = f'head.{batch_id}_{size}.pkl'
-            assert isfile(self.join(fhead)), f"Need a head '{fhead}'"
-            fhead = self.join(f'head.{batch_id}.tree')
-            fdata = self.join(f'data.{batch_id}.tree')
-
-            proc = parseval(evalb, fhead, fdata)
-            idv, smy = rpt_summary(proc.stdout.decode(), True, True)
-
-            fname = self.join('summary.pkl')
-            if isfile(fname):
-                summary = pickle_load(fname)
-            else:
-                summary = {}
-            summary[(batch_id, epoch)] = smy
-            pickle_dump(fname, summary)
-
-            fdata = self.join(f'data.{batch_id}_{epoch}.pkl')
-            data = self.IOData(str_trees, offset, length, token_emb, tree_emb, tag, label, orient,
-                tag_score, label_score, orient_score, trapezoid_info, batch_warnings, (idv, smy))
-            pickle_dump(fdata, tuple(data))
 
 # dpi_value     = master.winfo_fpixels('1i')
 # master.tk.call('tk', 'scaling', '-displayof', '.', dpi_value / 72.272)

@@ -1,6 +1,6 @@
 # UniTP
 Unified Tokenization and Parsing framework (UniTP) in PyTorch for our two papers in [ACL Findings 2021](https://aclanthology.org/2021.findings-acl.194) and 
-[TACL 2022](https://aclanthology.org/2022.tacl-na.na).
+[TACL](https://aclanthology.org/2022.tacl-na.na).
 This is Neural Combinatory Constituency Parsing (NCCP) family which also performs addtional word segmentation (WS), sentiment analysis (SA), named entity recoginition (NER).
 
 This project is extended from [https://github.com/tmu-nlp/nccp](https://github.com/tmu-nlp/nccp).
@@ -73,3 +73,16 @@ If you want to edit the range of hyperparameter explorating, please find a respe
 ### Visualization (not avaliable now)
 We gave an exemplary illustration from [https://github.com/tmu-nlp/nccp](https://github.com/tmu-nlp/nccp).
 However, because of few demands for visualization, `./visualization.py` becomes obsoleted.
+
+## For NLP2023 OKINAWA (言語処理学会第29回年次大会)
+To convert the Penn Treebank into a graphbank:
+
+    # Output all trees into one XML file,
+    ./ptb_to.py g path_to_ptb_wsj gptb.xml
+
+    # or into separate XML files respecting the wsj folder
+    ./ptb_to.py g path_to_ptb_wsj gptb_folder
+
+    # Additionally, following [https://www.aclweb.org/anthology/W11-2913/](DPTB) conversion:
+    ./ptb_to.py d path_to_ptb_wsj dptb.xml
+    ./ptb_to.py d path_to_ptb_wsj dptb_folder

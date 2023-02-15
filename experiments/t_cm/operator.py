@@ -4,7 +4,7 @@ from utils.math_ops import is_bin_times
 from utils.types import M_TRAIN, BaseType, frac_open_0, true_type, tune_epoch_type, frac_06
 from models.utils import fraction, mean_stdev
 from models.loss import binary_cross_entropy, hinge_loss
-from experiments.helper.co import CO, CVP
+from experiments.helper.co import CO, CVP, tee_trees
 from experiments.helper import make_tensors, speed_logg, continuous_score_desc_logg
 from data.penn_types import C_PTB, E_NER
 
@@ -105,7 +105,6 @@ class CMOperator(CO):
 
     def _before_validation(self, ds_name, epoch, use_test_set = False, final_test = False):
         devel_bins, test_bins = self._mode_length_bins
-        devel_init, test_init = self._initial_run
         epoch_major, epoch_minor = epoch.split('.')
         if use_test_set:
             if final_test:
@@ -117,12 +116,6 @@ class CMOperator(CO):
                     draw_weights = is_bin_times(int(epoch_major))
                 else:
                     draw_weights = False
-            if self.multi_corp:
-                flush_heads = test_init[ds_name]
-                test_init[ds_name] = False
-            else:
-                flush_heads = test_init
-                self._initial_run = devel_init, False
             length_bins = test_bins
         else:
             folder = ds_name + '_devel'
@@ -130,24 +123,17 @@ class CMOperator(CO):
                 draw_weights = is_bin_times(int(epoch_major))
             else:
                 draw_weights = False
-            if self.multi_corp:
-                flush_heads = devel_init[ds_name]
-                devel_init[ds_name] = False
-            else:
-                flush_heads = devel_init
-                self._initial_run = False, test_init
             length_bins = devel_bins
 
+        m_corp = None
+        i2vs = self.i2vs
         if self.multi_corp:
             m_corp = ds_name
-            i2vs = self.i2vs[ds_name]
+            i2vs = i2vs[ds_name]
             length_bins = length_bins[ds_name]
-        else:
-            m_corp = None
-            i2vs = self.i2vs
         work_dir = self.recorder.create_join(folder)
         
-        if serial := (draw_weights or flush_heads or self.dm is None or ds_name in E_NER):
+        if serial := (draw_weights or length_bins is None or self.dm is None or ds_name in E_NER):
             if ds_name in E_NER:
                 vis = NERVA(
                     epoch,
@@ -155,7 +141,7 @@ class CMOperator(CO):
                     self._evalb,
                     i2vs,
                     self.recorder.log,
-                    flush_heads
+                    length_bins is None
                 )
             else:
                 vis = CMVA(
@@ -166,8 +152,7 @@ class CMOperator(CO):
                     self.recorder.log,
                     ds_name == C_PTB,
                     draw_weights,
-                    length_bins,
-                    flush_heads
+                    length_bins
                 )
         else:
             vis = CMVP(epoch, work_dir, self._evalb, self.recorder.log, self.dm, m_corp)
@@ -182,24 +167,23 @@ class CMOperator(CO):
             scores, desc, logg, length_bins = vis.after()
         else:
             scores, desc, logg = vis.after()
-            length_bins = None
+            length_bins = True
         if self.multi_corp:
             desc = ds_name.upper() + desc
             logg = ds_name + ' ' + logg
         else:
             desc = 'Evalb' + desc
 
-        if length_bins is not None:
-            if self.multi_corp:
-                if use_test_set:
-                    test_bins [ds_name] = length_bins
-                else:
-                    devel_bins[ds_name] = length_bins
+        if self.multi_corp:
+            if use_test_set:
+                test_bins [ds_name] = length_bins
             else:
-                if use_test_set:
-                    self._mode_length_bins = devel_bins, length_bins # change test
-                else:
-                    self._mode_length_bins = length_bins, test_bins # change devel
+                devel_bins[ds_name] = length_bins
+        else:
+            if use_test_set:
+                self._mode_length_bins = devel_bins, length_bins # change test
+            else:
+                self._mode_length_bins = length_bins, test_bins # change devel
 
         _desc, _logg, speed_outer, speed_dm = speed_logg(count, seconds, None if serial else self._dm)
         scores['speed'] = speed_outer
@@ -248,7 +232,6 @@ from utils.file_io import join, isfile, listdir, remove
 from utils.shell_io import parseval, rpt_summary
 from data.continuous.multib.mp import tensor_to_tree
 from data.continuous import draw_str_lines
-from visualization import tee_trees
 from sys import stderr
 from copy import deepcopy
 
@@ -256,14 +239,13 @@ class CMVA(BaseVis):
     def __init__(self, epoch, work_dir, evalb, i2vs, logger,
                  mark_np_without_dt,
                  draw_weights   = False,
-                 length_bins    = None,
-                 flush_heads    = False):
+                 length_bins    = None):
         super().__init__(epoch, work_dir, i2vs)
         self._evalb = evalb
         htree = self.join('head.tree')
         dtree = self.join(f'data.{epoch}.tree')
         self._fnames   = htree, dtree
-        self._is_anew  = not isfile(htree) or flush_heads
+        self._is_anew  = not isfile(htree)
         self._rpt_file = self.join(f'data.{epoch}.rpt')
         self._logger   = logger
         self._i2vs     = i2vs.token, i2vs.tag, i2vs.label, 
@@ -272,10 +254,6 @@ class CMVA(BaseVis):
         self._error_idx = 0, []
         self._headedness_stat = self.join(f'data.{epoch}.headedness'), {}
         self._mark_np_without_dt = mark_np_without_dt
-        for fname in listdir(work_dir):
-            if 'bin_' in fname and fname.endswith('.tree'):
-                if flush_heads and fname.startswith('head.') or fname.startswith('data.'):
-                    remove(join(work_dir, fname))
 
     def _before(self):
         htree, dtree = self._fnames
@@ -283,6 +261,10 @@ class CMVA(BaseVis):
         if self._is_anew:
             self._length_bins = set()
             if isfile(htree): remove(htree)
+            for fname in listdir(self._work_dir):
+                if 'bin_' in fname and fname.endswith('.tree'):
+                    if fname.startswith('head.') or fname.startswith('data.'):
+                        remove(self.join(fname))
         if self._draw_file and isfile(self._draw_file):
             remove(self._draw_file)
 
@@ -438,7 +420,7 @@ class NERVA(BaseVis):
         self.close()
 
     def close(self):
-        if self._head_tree: self._head_tree.close()
+        if self._head_tree and not isinstance(self._head_tree, bool): self._head_tree.close()
         if self._data_tree: self._data_tree.close()
 
     def _process(self, _, batch):

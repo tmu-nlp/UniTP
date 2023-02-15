@@ -144,6 +144,15 @@ draw_lm <- function() {
                    axis.title.y = element_blank())
     p
     ggsave(paste0(folder, 'disco.lm.pdf'), height = 1.3, width = 4)
+    # p <- p + theme(strip.text.x = element_text(margin = margin(b = 1.2, t = 0.1)),
+    #                axis.title.x = element_blank(),
+    #                axis.title.y = element_blank(),
+    #                legend.title = element_blank(),
+    #                legend.background = element_blank(),
+    #                legend.key = element_rect(fill = "white", color = "white"),
+    #                legend.position = c(0.75, 0.125))
+    # p
+    # ggsave(paste0(folder, 'disco.lm.pdf'), height = 3, width = 1.8)
     
     # data$medf <- factor(data$medf, levels = medf_levels, labels = medf_labels)
     # #len,height,gap,linear,square_layers,square,max_square,medf

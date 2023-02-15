@@ -7,21 +7,22 @@ int_breaks <- function(x, n = 8) {
 }
 
 folder <- 'stat.model/'
+split <- 'test'
 
 load_model_corp <- function(model, corp) {
-    data <- load_corp(paste0('MbFo.', model), corp)
+    data <- load_corp(paste('MbFo', model, split, sep = '.'), corp)
     data$model <- rep(model, nrow(data))
     data
 }
 
 plot_corp <- function(corp, first_row) {
-    db <- load_model_corp('xbert_dccp', corp)
-    dm <- load_model_corp('xbert_xccp', corp)
+    db <- load_model_corp('plm_db', corp)
+    dm <- load_model_corp('plm_dm', corp)
     data <- rbind(db, dm)
     data <- subset(data, metric == 'multib' & bin < 9 | metric == 'fanout' & bin < 4)
-    data$metric <- factor(data$metric, levels = c('fanout', 'multib'), labels = c('Fan-out (k)', 'Multi-branching Arity (n-ary)'))
+    data$metric <- factor(data$metric, levels = c('fanout', 'multib'), labels = c('Fan-out (k)', 'Multi-branching Arity (m-ary)'))
     data$corp <- factor(data$corp, levels = c('dptb', 'tiger'), labels = c('DPTB', 'Tiger'))
-    data$model <- factor(data$model, levels = c('xbert_dccp', 'xbert_xccp'), labels = c('DB', 'DM'))
+    data$model <- factor(data$model, levels = c('plm_db', 'plm_dm'), labels = c('DB', 'DM'))
     # print(data)
 
     num_labels <- function(x) {
@@ -49,7 +50,7 @@ plot_corp <- function(corp, first_row) {
     fx <- element_text(margin = margin(b = 1.8, t = 0.7))
     fy <- element_text(margin = margin(l = 1.8, r = 0.7))
     if (first_row) {
-        sec.name <- 'Number of Gold Test Trees'
+        sec.name <- 'Number of Gold Trees in Test Sets'
         p <- p + theme(axis.text.x.bottom  = element_blank(),
                        axis.ticks.x.bottom = element_blank(),
                        legend.position = c(0.6, 0.2),
@@ -58,7 +59,7 @@ plot_corp <- function(corp, first_row) {
                        legend.title = element_text(size = 9),
                        strip.text.x = fx,
                        strip.text.y = fy,
-                       plot.tag.position = c(0.02, 0.56),
+                       plot.tag.position = c(0.03, 0.65),
                        plot.tag = element_text(size = 10))
         p <- p + labs(tag = "F1")
     } else {
@@ -89,4 +90,4 @@ annotate_figure(p)
 # p <- p + facet_grid(corp~metric, scale = 'free_x', space='free')
 # p <- p + geom_bar(stat = 'identity', position = 'dodge')
 
-ggsave(paste0(folder, 'MbFo.pdf'), height = 2.2, width = 4.1)
+ggsave(paste0(folder, paste('MbFo', split, 'pdf', sep = '.')), height = 2.2, width = 4.1)

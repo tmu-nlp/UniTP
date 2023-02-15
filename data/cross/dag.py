@@ -47,3 +47,33 @@ class PathFinder:
 
     def __getitem__(self, cid):
         return self._paths[cid]
+
+
+import xml.etree.ElementTree as ET
+
+class XMLWriter:
+    def __init__(self):
+        self._lines = []
+
+    def add(self, bottom, top_down, root_id = 0):
+        s = ET.Element('s', id = str(len(self._lines) + 1))
+        graph = ET.SubElement(s, 'graph', {}, root = str(root_id)) # TODO level in {ctree, dtree, dag}
+        self._lines.append(graph)
+
+        terminals = ET.SubElement(graph, 'terminals')
+        nonterminals = ET.SubElement(graph, 'nonterminals')
+
+        for bid, word, tag in bottom:
+            ET.SubElement(terminals, 't', id = str(bid), word = word, pos = tag)
+        
+        for nid, td in top_down.items():
+            nt = ET.SubElement(nonterminals, 'nt', id = str(nid), cat = td.label)
+            for cid, ftag in td.children.items():
+                ET.SubElement(nt, 'edge', label = ftag if ftag else '--', idref = str(cid))
+
+    def dump(self, fname):
+        body = ET.Element('body')
+        body.extend(self._lines)
+        tree = ET.ElementTree(body)
+        ET.indent(tree, space = ' ' * 4, level = 0)
+        tree.write(fname)
