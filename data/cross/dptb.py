@@ -1,11 +1,14 @@
-change_trace = {
+change_trace = { # terminal node
     "`` Nasty innuendoes , '' says *-2 John Siegal , Mr. Dinkins 's issues director , `` designed * *-1 to prosecute a case of political corruption that *T*-74 simply does n't exist . ''": ((1, 0, 0, 1, 0, 0), '*T*'),
     "`` A very striking illusion , '' Mr. Hyman says *-1 now , his voice dripping with skepticism , `` but an illusion nevertheless . ''": ((4, 0, 1, 1, 0, 0), '*T*'),
+    "Walter Sisulu , the ANC 's former secretary general who *T*-2 served 26 years in prison before *T*-3 being released *-1 two weeks ago , urged peace , negotiation and discipline .": ((0, 2, 1, 1, 1, 3, 1, 0, 0, 0), '2'),
+    "Still , he adds 0 *T*-2 , `` I could see * owning both , given that individuals often have an advantage over big investors in * spotting special situations * based on their own insights , '' he adds *T*-1 .": ((0,1,1,1,1,1,0,0), '1')
 }
 
 remove_none = {"They 're going *-1 to decide what their employees can *RNR*-2 or can not *RNR*-2 read *T*-3 . ''": (1,1,1,1,1,1,1,1,2,2),
     "Mrs. Yeargin says 0 she pleaded guilty because she realized 0 it *EXP*-2 would no longer be possible *-1 to win reinstatement , and because she was afraid of further charges .": (1, 1, 1, 1, 2, 0, 1, 1, 1, 1, 1, 2, 2, 0),
-    "IT *EXP*-2 PAYS *-1 to follow a management career path -- even at law firms .": (1, 1, 0)}
+    "IT *EXP*-2 PAYS *-1 to follow a management career path -- even at law firms .": (1, 1, 0)
+}
 
 add_node = {
     "But , says 0 *T*-1 chief investigator Tom Smith , this `` does not translate into support for conservatism in general or into conservative positions on feminist and civil rights issues . ''": (((1,), 3, 'PRN'),),
@@ -23,6 +26,10 @@ adjust_exp = {
     "`` It *EXP*-2 's one thing * to say 0 you can sterilize , and another * to then successfully pollinate the plant , '' he said *T*-1 .": (lambda x: wrap_with_label_fn(x, (1, 0), 1, 'S'), lambda x: shift_node_fn(x, (1, 1, 0), (1, 0, 1)), lambda x: del_node_fn(x, (1, 1)), lambda x: rename_node_fn(x, (1, 3), 'S')),
     "It *EXP*-1 will take several weeks * to repair the bridge , and several months * to repair some of the 101 connections .": (lambda x: wrap_with_label_fn(x, (0,), 2, 'S'), lambda x: wrap_with_label_fn(x, (0, 1, 1, 1), 3, 'S'), lambda x: shift_node_fn(x, (0, 1, 1, 1), (1, )), lambda x: del_node_fn(x, (1,)), lambda x: rename_node_fn(x, (3,), 'S')),
     "It *EXP*-1 took me a half-hour * to move 10 feet from my parking spot in an outer lot to an aisle , and an additional hour * to reach an inner roadway a half-block away .": (lambda x: del_node_fn(x, (1,)), lambda x: wrap_with_label_fn(x, (0,), 2, 'S'), lambda x: rename_node_fn(x, (3,), 'S')),
+}
+
+shift_node = {
+    "Moreover , some analysts said 0 they expect a foreign paper company with deeper pockets than Georgia-Pacific to end up *-1 acquiring Nekoosa , *-2 signaling to the rest of the industry that hostile bids are unproductive .": (((3,1,1,1,1,1,1,4), (3,1,1,1,2)),)
 }
 
 shift_trace = {
@@ -46,11 +53,13 @@ add_trace = {
 
 remove_trace = {
     "As Mr. Colton of the NAHB acknowledges *T*-1 : `` Government is not going *-2 to solve the problem ... .": (),
-    "Rival Boston Herald columnist Howie Carr , who *T*-1 usually rails at Statehouse `` hacks '' and nepotism , argued that the new drawings were designed *-2 *-3 to hide Mr. Madden 's `` rapidly growing forehead '' and the facial defects of `` chinless '' Dan Shaughnessy , a Globe sports columnist .": (1, 1, 1, 1, 1),}
+    "Rival Boston Herald columnist Howie Carr , who *T*-1 usually rails at Statehouse `` hacks '' and nepotism , argued that the new drawings were designed *-2 *-3 to hide Mr. Madden 's `` rapidly growing forehead '' and the facial defects of `` chinless '' Dan Shaughnessy , a Globe sports columnist .": (1, 1, 1, 1, 1),
+    "Nearby , five temporary residents of the school shelter *ICH*-2 sit on stools , *-1 having their necks and backs kneaded by volunteer masseuses .": (2,)
+}
 
 delete_node = {
     "But as Drexel analyst Linda Dunn *T*-1 notes , its properties will be developed *-2 over 15 to 20 years .":((1,0,1,1,0), (1,0,1,1,1)),
-    "The spy network would serve two clients *NOT* : the Panamanian government , by * monitoring political opponents in the region , and the U.S. , by * tracking the growing Communist influence in the unions organized * at United Fruit Co. 's banana plantations in Bocas del Toros and Puerto Armuelles .": ((1, 1, 2),)
+    "The spy network would serve two clients *NOT* : the Panamanian government , by * monitoring political opponents in the region , and the U.S. , by * tracking the growing Communist influence in the unions organized * at United Fruit Co. 's banana plantations in Bocas del Toros and Puerto Armuelles .": ((1, 1, 2),),
 }
 
 add_s_and_shift_trace = {"This calamity is `` far from over , '' he says 0 *T*-1 .": ((0,), 2, (), (0,))}
@@ -65,7 +74,11 @@ short_circuits = {
     "And only last week the newspaper Vanguardia Liberal in the city of Bucaramanga was bombed *-1 , and its installations destroyed *-2 .",
     "Import growth from the year-earlier months slowed to 16 % in July and 7.1 % in August , compared with an average growth rate of 26 % in the first half .",
     "In the Grand Boulevard Plaza developed * by Matanky Realty Group in Chicago 's Third Ward , opposite the Robert Taylor Homes , 29 % of the stores to date have been leased *-1 to blacks and 14 % to members of other minority groups .",
-    "The spy network would serve two clients *NOT* : the Panamanian government , by * monitoring political opponents in the region , and the U.S. , by * tracking the growing Communist influence in the unions organized * at United Fruit Co. 's banana plantations in Bocas del Toros and Puerto Armuelles ."
+    "The spy network would serve two clients *NOT* : the Panamanian government , by * monitoring political opponents in the region , and the U.S. , by * tracking the growing Communist influence in the unions organized * at United Fruit Co. 's banana plantations in Bocas del Toros and Puerto Armuelles .",
+    "Moreover , some analysts said 0 they expect a foreign paper company with deeper pockets than Georgia-Pacific to end up *-1 acquiring Nekoosa , *-2 signaling to the rest of the industry that hostile bids are unproductive .",
+    "Walter Sisulu , the ANC 's former secretary general who *T*-2 served 26 years in prison before *T*-3 being released *-1 two weeks ago , urged peace , negotiation and discipline .",
+    "Nearby , five temporary residents of the school shelter *ICH*-2 sit on stools , *-1 having their necks and backs kneaded by volunteer masseuses .",
+    "Still , he adds 0 *T*-2 , `` I could see * owning both , given that individuals often have an advantage over big investors in * spotting special situations * based on their own insights , '' he adds *T*-1 ."
 }
 short_circuits.update(adjust_exp.keys() | change_eq.keys())
 
@@ -133,8 +146,11 @@ def fix_for_ptb(tree, short_circuits):
     if sent in short_circuits: return
     if sent in change_trace:
         path, typ = change_trace[sent]
-        _, tid = tree[path].split('-')
-        tree[path] = typ + '-' + tid
+        _typ, tid = tree[path].split('-')
+        if typ.isdigit():
+            tree[path] = _typ + '-' + typ
+        else:
+            tree[path] = typ + '-' + tid
     elif sent in shift_trace:
         s_path, d_path = shift_trace[sent]
         shift_trace_fn(tree, s_path, d_path)
@@ -162,6 +178,9 @@ def fix_for_ptb(tree, short_circuits):
     elif sent in adjust_exp:
         for fn in adjust_exp[sent]:
             fn(tree)
+    elif sent in shift_node:
+        for src, dst in shift_node[sent]:
+            shift_node_fn(tree, src, dst)
     elif sent in change_eq:
         path, tp, im, eq = change_eq[sent]
         temp = tree[path + tp]

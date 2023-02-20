@@ -183,7 +183,7 @@ class Signal:
             data += [ort, adt]
             if adt:
                 data.append(self.efficient_tree)
-        return tuple(data)
+        return data
 
     @classmethod
     def instantiate(cls, args):

@@ -7,6 +7,7 @@ from data.cross import gap_degree, multi_attachment
 from data.cross.dptb import read_tree, read_graph
 from tqdm import tqdm
 from data.cross.dag import XMLWriter
+from collections import defaultdict
 
 try:
     _, to_type, wsj_path, xml_fpath = argv
@@ -14,7 +15,7 @@ try:
     reader = BracketParseCorpusReader(wsj_path, r".*/wsj_.*\.mrg")
 except:
     print('Invalid command: ', ' '.join(argv[1:]), file = stderr)
-    print('Usage: to_gptb type path_to_WSJ FOLDER_or_XML_FILE_NAME', file = stderr)
+    print('Usage: ptb_to.py [d|g] [path_to_WSJ] [FOLDER_or_XML_FILE_NAME]', file = stderr)
     exit()
 
 if to_type not in ('g', 'd', 'gptb', 'dptb'):
@@ -33,9 +34,11 @@ else:
 fileids = reader.fileids()
 if one_xml := xml_fpath.endswith('.xml'):
     one_xml = XMLWriter()
+    err_log = xml_fpath[:-4] + '.error'
 else:
     if not isdir(xml_fpath):
         mkdir(xml_fpath)
+    err_log = join(xml_fpath, '.error')
     xml_files = {}
     xml_folders = set()
     for fileid in fileids:
@@ -45,6 +48,8 @@ else:
             if not isdir(fpath):
                 mkdir(fpath)
 
+count_suc = count_error = 0
+error_log = defaultdict(list)
 with tqdm(desc = wsj_path, total = len(fileids)) as qbar:
     for fileid in fileids:
         trees = reader.parsed_sents(fileid)
@@ -56,12 +61,23 @@ with tqdm(desc = wsj_path, total = len(fileids)) as qbar:
             qbar.update(0)
             try:
                 bt, td = convert(tree)
+                count_suc += 1
             except:
+                error_log[fileid].append(str(eid))
+                count_error += 1
                 continue
 
             (one_xml if one_xml else xml_writer).add(bt, td, **graph_info(bt, td))
         if not one_xml:
             xml_writer.dump(xml_files[fileid])
         qbar.update(1)
+    qbar.desc = f'Successful {count_suc} samples'
+    if count_error:
+        qbar.desc += f' and {count_error} errors (see {err_log})'
 if one_xml:
     one_xml.dump(xml_fpath)
+
+if error_log:
+    with open(err_log, 'w') as fw:
+        for fileid, eids in error_log.items():
+            fw.write(fileid + '\t' + ','.join(eids) + '\n')
