@@ -1,6 +1,6 @@
 # UniTP
 Unified Tokenization and Parsing framework (UniTP) in PyTorch for our two papers in [ACL Findings 2021](https://aclanthology.org/2021.findings-acl.194) and 
-[TACL](https://aclanthology.org/2022.tacl-na.na).
+[TACL 2023](https://direct.mit.edu/tacl/article/doi/10.1162/tacl_a_00546/115348/Discontinuous-Combinatory-Constituency-Parsing).
 This is Neural Combinatory Constituency Parsing (NCCP) family which also performs addtional word segmentation (WS), sentiment analysis (SA), named entity recoginition (NER).
 
 This project is extended from [https://github.com/tmu-nlp/nccp](https://github.com/tmu-nlp/nccp).
